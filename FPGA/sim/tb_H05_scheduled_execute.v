@@ -16,9 +16,9 @@ module tb_H05_scheduled_execute;
     reg clear_fault;
 
     wire cmd_accepted;
-    wire cmd_executed;
+    wire cmd_idle;
     wire [`H05_RETURN_CODE_WIDTH-1:0] cmd_return_code;
-    wire cmd_waiting_for_execute;
+    wire cmd_wait;
     wire cmd_fault;
     wire apply_now;
     wire [31:0] active_control_value;
@@ -42,9 +42,9 @@ module tb_H05_scheduled_execute;
         .raw_tick_exhausted(raw_tick_exhausted),
         .clear_fault(clear_fault),
         .cmd_accepted(cmd_accepted),
-        .cmd_executed(cmd_executed),
+        .cmd_idle(cmd_idle),
         .cmd_return_code(cmd_return_code),
-        .cmd_waiting_for_execute(cmd_waiting_for_execute),
+        .cmd_wait(cmd_wait),
         .cmd_fault(cmd_fault),
         .apply_now(apply_now),
         .active_control_value(active_control_value)
@@ -109,7 +109,7 @@ module tb_H05_scheduled_execute;
         rst = 1'b0;
         repeat (3) @(posedge clk);
         #1;
-        check(cmd_ready && !cmd_waiting_for_execute && !cmd_fault &&
+        check(cmd_ready && cmd_idle && !cmd_wait && !cmd_fault &&
               cmd_return_code == `H05_RETURN_CODE_IDLE,
               "reset must leave a healthy idle scheduler");
 
@@ -118,7 +118,7 @@ module tb_H05_scheduled_execute;
         first_target = raw_tick + 64'd12;
         send_command(32'd1, first_target, 32'h1234_5678);
         #1;
-        check(cmd_accepted && cmd_waiting_for_execute && !cmd_ready &&
+        check(cmd_accepted && !cmd_idle && cmd_wait && !cmd_ready &&
               cmd_return_code == `H05_RETURN_CODE_PENDING &&
               active_control_value == 32'h1234_5678,
               "valid command acceptance and control-value latch");
@@ -126,25 +126,25 @@ module tb_H05_scheduled_execute;
         while (raw_tick < first_target)
             @(posedge clk);
         #1;
-        check(apply_seen && cmd_executed && !cmd_waiting_for_execute &&
+        check(apply_seen && cmd_idle && !cmd_wait &&
               cmd_return_code == `H05_RETURN_CODE_SUCCESS &&
               active_control_value == 32'h1234_5678,
               "apply_now at target tick");
         @(posedge clk);
         #1;
-        check(!cmd_waiting_for_execute && cmd_ready,
+        check(cmd_idle && !cmd_wait && cmd_ready,
               "scheduler returns to idle after apply_now");
 
         // Invalid ID and late target are rejected without poisoning the idle
         // scheduler.
         send_command(32'd0, raw_tick + 64'd20, 32'h0);
         #1;
-        check(!cmd_accepted &&
+        check(!cmd_accepted && cmd_idle && !cmd_fault &&
               cmd_return_code == `H05_RETURN_CODE_ID_INVALID && cmd_ready,
               "zero command ID is rejected");
         send_command(32'd2, raw_tick, 32'h0);
         #1;
-        check(!cmd_accepted &&
+        check(!cmd_accepted && cmd_idle && !cmd_fault &&
               cmd_return_code == `H05_RETURN_CODE_CMD_MISSED && cmd_ready,
               "past target tick is rejected");
 
@@ -165,7 +165,7 @@ module tb_H05_scheduled_execute;
         @(posedge clk);
         #1;
         cmd_valid = 1'b0;
-        check(cmd_waiting_for_execute && !cmd_ready &&
+        check(!cmd_idle && cmd_wait && !cmd_ready &&
               active_control_value == 32'hcafebabe,
               "held valid command transfers after cmd_ready returns");
 

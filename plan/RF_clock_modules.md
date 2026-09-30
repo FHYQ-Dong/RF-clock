@@ -1,458 +1,494 @@
-# RF-clock 模块实施计划与功能说明
+# RF-clock Module Implementation Plan and Functional Description
 
-> 本文件是 `RF-clock` 的学习/复现计划。它把参考工程中的 H00-H19 拆成可以理解和逐步验证的模块。
-> **模块出现在本文件中，不表示它已经在当前仓库实现。** 当前仓库的真实基线仍只有 `FPGA/src/` 下的三个骨架文件。
+> This document is the learning and reproduction plan for `RF-clock`. It decomposes H00–H19 from the reference design into modules that can be understood and verified incrementally.
+> **A module being listed here does not mean that it is already implemented in this repository.** The current implementation baseline is still only the three skeleton files under `FPGA/src/`.
 >
-> 参考依据：
+> Reference documents:
 >
 > - `D:/Program/Research/keysight-bb84-testbed/plan/RFSoC/PL_hardware.md`
 > - `D:/Program/Research/keysight-bb84-testbed/plan/RFSoC/RF_clock.md`
 > - `D:/Program/Research/keysight-bb84-testbed/docs/RF_clock/README.zh.md`
 > - `D:/Program/Research/keysight-bb84-testbed/docs/RF_clock/pl_time_control_v1.md`
 
-## 1. 先理解我们到底要解决什么问题
+## 1. What problem are we actually solving?
 
-QKD 两端不是“各自产生一个 10 MHz 就算同步”。目标是：A、B 两台 RFSoC 对同一个量子实验事件使用可比较的时间表。RF 链路发送已知的 PRN 波形，接收端通过相关峰估计波形到达时间，再结合两个方向的测量、硬件延时标定和本地时钟状态，估计两端的钟差和频率差。
+The two QKD endpoints are not synchronized merely because each one generates a 10 MHz signal. The goal is for two RFSoCs, A and B, to use comparable time schedules for the same quantum-experiment event. The RF link transmits a known PRN waveform; the receiver estimates its arrival time from the correlation peak. Measurements in both directions, calibrated hardware delays, and local clock status are then combined to estimate clock offset and frequency offset.
 
-一次单向测量至少包含四部分：
-
-```text
-接收时间 - 发送时间
-    = 传播时间 + 发射/接收硬件延时 + 两端钟差
-```
-
-因此必须同时解决四类问题：
-
-1. FPGA 内有没有一个不会偷偷回绕的统一时间轴？
-2. 发送的 PRN 波形和接收的采样，怎样对应到这个时间轴？
-3. 接收端如何判断相关峰是真信号而不是噪声或多径？
-4. 软件算出的修正，如何在确定的硬件时刻安全执行？
-
-H00-H19 就是围绕这四类问题拆开的模块。它们不是 19 个互不相关的文件，而是一条有依赖关系的链路。
-
-## 2. 术语和时间层次
-
-| 名词                 | 含义                                            | 不能混淆的地方                                  |
-| -------------------- | ----------------------------------------------- | ----------------------------------------------- |
-| `clk`              | 某个 RTL 时钟域的时钟边沿                       | 不一定是 RF 采样时钟，也不一定跨域安全          |
-| `raw_tick`         | 统一时间域中的粗粒度计数值，建议 64 位          | 它是数字时间坐标，不是 UTC 秒，也不是亚纳秒 TDC |
-| chip/码片            | PRN 序列中的一个`+1/-1` 符号                  | 一个码片通常展开成多个 DAC 样本                 |
-| sample/样本          | ADC/DAC 数据流中的一个 I/Q 采样点               | 样本编号不是`raw_tick`，需要 H06 建立映射     |
-| frame/帧             | 一次带编号、种子、长度和配置身份的 PRN 发送单元 | 帧号是旁带身份，不自动成为认证信息              |
-| event/测时事件       | 一次相关搜索得到的候选或有效到达记录            | 没有质量门限通过时只能标为候选                  |
-| boot/epoch/config ID | 运行、时间映射、波形配置的版本身份              | 防止旧数据或旧命令混入新运行                    |
-
-## 3. 模块依赖总图
+A one-way measurement contains at least:
 
 ```text
-H00 平台外壳
- └─ H01 复位/参考资格
-     ├─ H03 raw_timebase ── H04 PPS 捕获
-     │                    └─ H05 未来 tick 定时提交
-     └─ H02 AXI 控制寄存器
-
-H03 + 样本时钟
- └─ H06 sample_time_bridge ── H07 采集/DMA
-
-H08 PRN 帧源
- └─ H09 BPSK/矩形/RRC/RFDC 发射
-                              │ RF 链路
-RFDC ADC ── H10 接收前端 ── H11 载波校正
-                          └─ H12 相关器
-                              └─ H13 峰质量
-                                  └─ H14 分数峰
-                                      └─ H15 测时事件 FIFO
-
-H15 + PS 双向协议/校准/滤波
- └─ H16 伺服安全门 ── H05 定时执行器/物理时钟接口
+receive time - transmit time
+    = propagation time + transmit/receive hardware delay + clock offset between the endpoints
 ```
 
-## 4. P0：平台、复位和统一时间
+The design must therefore solve four classes of problems:
 
-### H00 `base_shell`：RFSoC 顶层平台
+1. Does the FPGA have a common time axis that cannot silently wrap?
+2. How are transmitted PRN chips and received samples mapped onto that time axis?
+3. How does the receiver distinguish a real correlation peak from noise or multipath?
+4. How are software-computed corrections applied safely at deterministic hardware times?
 
-**它要解决的问题：** 自定义 RTL 不能直接悬空使用。RFSoC 上有 PS、RF Data Converter、DDR、AXI 互连、多个时钟域和板级复位；如果没有顶层外壳，各个单元即使单独仿真通过，也无法组成可综合设计。
+H00–H19 split these four problems into modules. They are not 19 unrelated files; they form a dependency chain.
 
-**它负责：**
+## 2. Terminology and time layers
 
-- 实例化 PS、RFDC、DDR、AXI Interconnect、时钟和复位 IP；
-- 规定哪个时钟驱动时间控制、哪个时钟驱动 DAC/ADC 数据；
-- 把自定义 H01-H16 接到 AXI、RFDC、DMA 和外部引脚；
-- 统一传递 boot ID、配置 ID、健康状态和故障复位。
+| Term | Meaning | What must not be confused |
+| --- | --- | --- |
+| `clk` | An edge-driven RTL clock domain | It is not necessarily the RF sample clock and is not automatically safe across domains |
+| `raw_tick` | A coarse counter in the common time domain, preferably 64 bits | It is a digital time coordinate, not UTC seconds and not a sub-nanosecond TDC |
+| chip | A `+1/-1` symbol in the PRN sequence | One chip is normally expanded into multiple DAC samples |
+| sample | One I/Q sample in an ADC/DAC stream | A sample number is not a `raw_tick`; H06 establishes the mapping |
+| frame | One numbered PRN transmission unit with seed, length, and configuration identity | A frame number is sideband identity, not authentication by itself |
+| event | A candidate or valid arrival record produced by one correlation search | Without passing quality thresholds it remains only a candidate |
+| boot/epoch/config ID | The identity/version of a run, time mapping, or waveform configuration | It prevents stale data or stale commands from entering a new run |
 
-**它不负责：** 计算相关峰或实现 Kalman 滤波。它是“把模块装到板上”的平台，不是同步算法。
-
-**验收重点：** BD 能生成、HWH 与 bitstream 配对、时钟/复位连接正确、约束和 CDC 检查通过。仿真中的顶层连通不等于板上可部署。
-
-### H01 `clock_reset_guard`：复位和参考资格保护
-
-**它要解决的问题：** 外部锁定信号和复位可能异步到达。直接把异步信号送入逻辑会产生亚稳态；复位释放不同步会让不同寄存器在不同拍开始工作，造成假事件和半初始化状态。
-
-**它负责：**
-
-- 异步断言复位，使用同步时钟释放复位；
-- 用两级同步器采样外部 `reference_locked_async`；
-- 要求锁定连续保持若干拍后，才产生 `reference_ok`；
-- 参考失效时撤销“时间有效/允许采集/允许发射”资格。
-
-**关键接口（建议）：**
+## 3. Module dependency graph
 
 ```text
-输入：clk, arst_n, reference_locked_async
-输出：rst, reference_ok
+H00 platform shell
+ └─ H01 reset/reference qualification
+     ├─ H03 raw_timebase ── H04 PPS capture
+     │                    └─ H05 future-tick scheduled commit
+     └─ H02 AXI control registers
+
+H03 + sample clock
+ └─ H06 sample_time_bridge ── H07 capture/DMA
+
+H08 PRN frame source
+ └─ H09 BPSK/rectangular/RRC/RFDC transmit chain
+                                      │ RF link
+RFDC ADC ── H10 receive front end ── H11 carrier correction
+                                  └─ H12 correlator
+                                      └─ H13 peak quality
+                                          └─ H14 fractional peak
+                                              └─ H15 measurement FIFO
+
+H15 + PS bidirectional protocol/calibration/filter
+ └─ H16 servo safety gate ── H05 scheduled executor/physical-clock interface
 ```
 
-**特别重要：** 参考失效不应把 H03 的原始计数器偷偷清零。失效会使时间标签无效，但历史 tick 仍应单调递增。
+## 4. P0: Platform, reset, and common time
 
-### H02 `control_regs`：PS 与 PL 的 AXI-Lite 控制入口
+### H00 `base_shell`: RFSoC platform top level
 
-**它要解决的问题：** Linux/PYNQ 通过 AXI-Lite 写寄存器时，地址通道和数据通道可以不同步到达；软件还需要读身份、状态、快照和错误码。如果只写几个裸寄存器，容易出现半写配置、读到撕裂的 64 位值和错误命令被接受。
+**Problem it solves:** Custom RTL cannot be used as a floating collection of modules. An RFSoC contains the PS, RF Data Converter, DDR, AXI interconnect, multiple clock domains, and board-level reset. Without a top-level shell, individually simulated units cannot form a synthesizable design.
 
-**它负责：**
+**How it solves the problem:** It places the PS, RFDC, DDR, AXI interconnect, clock/reset IP, and custom H modules in one synthesizable top level. Clock domains, reset domains, board pins, versions, and health signals are made explicit at that boundary.
 
-- AXI4-Lite AW/W/B/AR/R 握手；
-- 4 字节对齐和 `WSTRB` 字节使能；
-- 设计 ID、ABI 版本、功能位和构建 ID；
-- 影子寄存器、完整性位图和原子快照；
-- 非法地址、只读写入、部分命令写入返回 `SLVERR`。
+**It is responsible for (following that solution path):**
 
-**它不负责：** 判断一个未来 tick 是否物理可执行。那是 H05 的职责。
+- Instantiating the PS, RFDC, DDR, AXI Interconnect, clock, and reset IP;
+- Defining which clock drives time control and which clocks drive DAC/ADC data;
+- Connecting H01–H16 to AXI, RFDC, DMA, and external pins;
+- Propagating boot ID, configuration ID, health status, and fault reset.
 
-### H03 `raw_timebase` / `raw_tick`：统一粗时间轴
+**Acceptance focus:** The block design is generated; the HWH matches the bitstream; clock/reset connections, constraints, and CDC checks pass. Top-level simulation connectivity is not the same as board deployment readiness.
 
-**它要解决的问题：** 没有统一计数器，发送时间、接收时间、PPS 和软件命令就没有共同坐标，无法比较“事件发生在什么时候”。
+### H01 `clock_reset_guard`: Reset and reference qualification
 
-**它负责：**
+**Problem it solves:** External lock signals and reset can arrive asynchronously. Sending an asynchronous signal directly into logic can create metastability; releasing reset without synchronization can make registers start on different cycles, producing false events and partially initialized state.
 
-- 每个有效时钟边沿递增一个 64 位无符号计数；
-- 复位时从零开始；
-- 计数到全 1 后保持全 1，并报告 `exhausted`；
-- 记录 tick 的标称频率，例如原型阶段的 100 MHz；
-- 让 boot/epoch/config 作为独立身份存在，而不是把它们塞进 tick。
+**How it solves the problem:** It synchronizes the asynchronous lock indication, releases internal reset through a controlled synchronous pipeline, and requires the lock to remain stable for several cycles before granting time and capture qualification. If the reference fails, qualification is revoked without destroying the historical time axis.
 
-**建议接口：**
+**It is responsible for (following that solution path):**
+
+- Asserting reset asynchronously and releasing it synchronously to the local clock;
+- Sampling external `reference_locked_async` with a two-stage synchronizer;
+- Requiring the lock to remain asserted for several cycles before producing `reference_ok`;
+- Revoking “time valid / capture allowed / transmit allowed” qualification when the reference fails.
+
+**Suggested interface:**
 
 ```text
-输入：clk, rst
-输出：raw_tick[63:0], exhausted
+Inputs:  clk, arst_n, reference_locked_async
+Outputs: rst, reference_ok
 ```
 
-**它不负责：**
+**Important:** Reference loss must not silently clear H03's raw counter. It invalidates time labels, but historical ticks must remain monotonically increasing.
 
-- 把计数器校准成 UTC；
-- 直接产生亚纳秒时间；
-- 因为参考丢失而回拨或重启计数；
-- 直接改变 ADC/DAC 物理采样时钟。
+### H02 `control_regs`: AXI-Lite control entry between PS and PL
 
-### H04 `pps_capture`：PPS 粗捕获和健康监测
+**Problem it solves:** AXI-Lite address and data channels may arrive independently, while software also needs identity, status, snapshots, and error codes. A few bare registers can lead to partially written configurations, torn 64-bit reads, and invalid commands being accepted.
 
-**它要解决的问题：** 外部 PPS 与 FPGA 时钟不同步，且脉冲可能丢失、太短或周期异常。软件不能只看一个边沿就认为系统锁定。
+**How it solves the problem:** It decouples the AXI-Lite handshakes from internal updates, stages multiword writes in shadow registers, and only publishes a complete, legal configuration. Snapshot and versioned readback paths provide a coherent software view.
 
-**它负责：**
+**It is responsible for (following that solution path):**
 
-- 两级同步异步 PPS 输入；
-- 检测同步后的上升沿；
-- 在 `raw_tick` 坐标下记录最后一个 PPS 的 tick 和事件序号；
-- 计算相邻 PPS 间隔；
-- 检查 `PERIOD ± TOLERANCE`；
-- 产生 PPS 超时、异常间隔和恢复状态；
-- 参考重新有效后要求先观察到低电平，避免启动时高电平被误判为事件。
+- AXI4-Lite AW/W/B/AR/R handshakes;
+- Four-byte alignment and `WSTRB` byte enables;
+- Design ID, ABI version, feature bits, and build ID;
+- Shadow registers, integrity bitmaps, and atomic snapshots;
+- Returning `SLVERR` for illegal addresses, writes to read-only locations, and partial command writes.
 
-**它不负责：** UTC 秒编号、亚纳秒 TDC 或外部 PPS 的电气整形。它只是粗粒度数字捕获。
+### H03 `raw_timebase` / `raw_tick`: Common coarse time axis
 
-### H05 `scheduled_commit`：未来 tick 的确定性执行
+**Problem it solves:** Without a common counter, transmit time, receive time, PPS, and software commands have no shared coordinate, so events cannot be compared in time.
 
-**它要解决的问题：** Linux 线程什么时候运行不可预测。软件现在写寄存器，不等于硬件现在就应该改变时间或波形；如果立即执行，操作系统调度抖动会进入 QKD 时隙。
+**How it solves the problem:** A single unsigned 64-bit counter increments on every valid time-clock edge and saturates at all ones. Exhaustion and boot/epoch/config identities are reported separately, so every event shares a non-wrapping coarse coordinate.
 
-**它负责：**
+**It is responsible for (following that solution path):**
 
-- 接收命令 ID、`target_tick` 和不透明控制值；
-- 使用影子寄存器实现原子提交；
-- 拒绝零 ID、重复/乱序 ID、目标已过去或提前量不足的命令；
-- 在 `raw_tick == target_tick` 的硬件边沿执行；
-- 支持取消、失效和错过目标的完成码；
-- 将“提交被接受”和“命令实际执行”分开报告。
+- Incrementing one 64-bit unsigned counter on every valid clock edge;
+- Starting from zero on reset;
+- Holding at all ones after exhaustion and reporting `exhausted`;
+- Recording the nominal tick frequency, such as 100 MHz in the prototype;
+- Keeping boot/epoch/config as separate identities instead of embedding them in the tick.
 
-**关键语义：** `apply_now` 应在目标边沿被消费者采样；不能把晚一拍的 `executed` 脉冲误当成实际执行边沿。
-
-## 5. P0：样本时间和采集链
-
-### H06 `sample_time_bridge`：样本编号与统一时间的桥
-
-**它要解决的问题：** ADC/DAC 数据通常运行在独立时钟域。`raw_tick` 告诉我们统一时间，但不能直接说明某个 ADC lane 的第 12345 个样本对应哪个 tick。
-
-**它负责：**
-
-- 在样本域维护样本编号；
-- 在已知参考边沿请求一个时间锚点；
-- 通过 CDC/FIFO 把“样本编号—raw tick—配置版本”成组传递；
-- 记录锚点前后样本范围，而不是假装拥有无限精度；
-- 在停钟、背压、参考失效或旧回复时报告无效。
-
-**它不负责：** 把普通 ADC 采样变成亚采样精度的 TDC 结果。它提供粗时间上下界和不确定度。
-
-### H07 `capture_dma`：有限窗口采集和搬运
-
-**它要解决的问题：** RFDC 是连续流，而 PS/DMA 需要有边界的数据块。没有明确的窗口、头部和故障标记，软件无法判断数据是否完整，也无法离线重放。
-
-**它负责：**
-
-- 按命令捕获有限长度 I/Q 窗口；
-- 使用双 bank 或快照存储避免读写互相覆盖；
-- 添加首样本编号、时间锚点、样本率、I/Q 格式、配置 ID、缺口和饱和标志；
-- 生成 CRC/AXIS 包并交给 DMA；
-- 处理背压、短传输、溢出和复位恢复。
-
-**它不负责：** 直接判断 PRN 相关峰。它只保证数据可保存、可验证、可重放。
-
-## 6. P1：PRN 发射链
-
-### H08 `prn_frame_source`：可重复的 PRN 码片帧源
-
-**它要解决的问题：** A、B 两端必须产生完全相同、可重现的参考序列，接收端才能用相关器找出到达延迟。PRN 是测时标记，不是 QKD 密钥，也不是自动认证机制。
-
-**它负责：**
-
-- 接收帧描述符：帧号、非零种子、码片数、boot/config ID；
-- 从指定种子开始产生 LFSR 序列；
-- 输出码片比特、码片序号、首/末标志；
-- 支持 `valid/ready` 背压，只有握手成功才推进序列；
-- 活动帧期间检测禁用、abort、身份变化并锁存故障；
-- 报告已经交给下游多少码片。
-
-**参考 H08 的默认规则：** 16 位右移 LFSR，反馈为旧状态 `bit0 ^ bit2 ^ bit3 ^ bit5`，输出旧状态 bit0，默认一拍最多 8 个码片。当前 `FPGA/src/prn_generator.v` 只是这个功能的核心雏形，尚缺帧、握手和故障语义；当前注释中的 32 位多项式需要和项目规格统一。
-
-### H09 `tx_shape_rfdc`：把码片变成安全的 DAC 样本
-
-**它要解决的问题：** PRN 比特不是 RFDC 能直接发送的 I/Q 样本。还必须确定每码片多少个样本、幅度是多少、样本如何打包，以及故障时如何真正静默。
-
-**它分成几层：**
-
-1. `bpsk_mapper`：把 0/1 变成 `-A/+A`；
-2. `tx_rect_samples`：先做矩形展开，验证码片顺序、样本数量和帧边界；
-3. `tx_rrc_coeff_bank`：保存 RRC 系数和系数版本；
-4. `tx_rrc_fir`：做定点 FIR、舍入和饱和；
-5. `tx_frame_scheduler`：按未来 tick/样本目标预填并释放；
-6. `rfdc_tx_adapter`：适配 DAC 的 I/Q 打包、DUC 和插值接口。
-
-**特别重要：** RF-DAC 不一定使用 `TVALID` 来屏蔽输入。因此失锁、欠载、配置不一致时必须让数据本身为零，不能只拉低 `valid`。
-
-**建议顺序：** 先完成矩形基线，再冻结 SPS、滚降系数、tap 数、系数 Q 格式和幅度范围，最后实现 RRC。
-
-## 7. P1：接收和相关测时链
-
-### H10 `rx_frontend`：ADC/RFDC 接收前端
-
-**它要解决的问题：** ADC 输出通常是多 lane、特定位宽和特定时钟关系的 I/Q 数据；RF 载波还需要数字下变频和抽取。未经整理的数据不能直接送相关器。
-
-**它负责：**
-
-- RFDC ADC 的运行期配置和状态检查；
-- DDC、NCO、抽取和必要的低通滤波；
-- `rfadc_iq_unpack`：lane 重排、I/Q 对齐和 valid 检查；
-- 检测连续性缺口、饱和、复位预热和无效样本；
-- 把统一的数据格式交给 H11/H12。
-
-**它不负责：** 估计钟差。它只把模拟接收结果变成可信的数字基带流。
-
-### H11 `carrier_corrector`：载波频偏和相位校正
-
-**它要解决的问题：** 两端本振和 RF 链路会产生载波频偏、相位旋转和随时间变化的相位。如果不校正，相关峰会降低、变宽，甚至落在错误位置。
-
-**它负责：**
-
-- 用 NCO/相位累加器旋转复数 I/Q；
-- 接收 PS 估计的频偏和相位参数；
-- 保持帧内相位连续；
-- 检查正负号、参数版本和更新边界；
-- 首版允许旁路，先验证相关器。
-
-**它不负责：** 修正两端粗时间钟差。载波相位和时间基准是相关但不同的问题。
-
-### H12 `correlator_windowed`：有限窗口匹配相关器
-
-**它要解决的问题：** 接收端不知道 PRN 到达的准确样本位置，必须在搜索窗口内逐个候选延迟比较接收波形和本地模板。
-
-**它负责：**
-
-- 保存或流式生成本地 PRN/成型模板；
-- 在有限搜索窗口内计算复相关；
-- 输出整数样本延迟和复数累加值；
-- 管理累加位宽，避免长码和高幅度时溢出；
-- 明确窗口边界，避免把不完整模板当成有效峰。
-
-**资源原则：** 不要一开始实现全周期、全并行相关。先用抽取数据和有限窗口验证算法，再根据码长、采样率和帧率决定折叠、复用或 FFT 方案。
-
-### H13 `peak_quality`：判断相关峰是否可信
-
-**它要解决的问题：** 最大相关值不一定是真信号，噪声尖峰、多径、饱和和窗口边界都可能产生假峰。没有质量判断，错误时间会进入伺服闭环。
-
-**它负责：**
-
-- 找主峰及其位置和幅度；
-- 计算保护区外第二峰、背景能量、峰旁比、峰宽；
-- 检测多峰、宽峰、边界峰、低 SNR 和饱和；
-- 输出 `valid/invalid/candidate` 和原因码；
-- 为后续滤波器提供测量协方差或质量等级。
-
-### H14 `fractional_peak`：分数样本峰值估计
-
-**它要解决的问题：** ADC 样本间隔可能是数纳秒，整数峰只能给出一个采样格点。为了达到更好的测时分辨率，需要利用峰附近多个点估计峰的分数位置。
-
-**它负责：**
-
-- 使用三点抛物线或后续更准确的插值模型；
-- 输出定点分数延迟；
-- 处理分母为零、峰在窗口边界、限幅和多峰情况；
-- 用已知延迟扫描标定系统性偏差。
-
-**它不负责：** 凭空创造带宽或精度。插值输出的小数位数不等于实际测时准确度。
-
-### H15 `measurement_fifo`：测时事件记录和跨域交付
-
-**它要解决的问题：** 相关器在 PL 中产生的结果需要安全交给 PS；如果多个字段分拍更新，软件可能读到“峰位置来自这次、质量来自上次”的撕裂记录。
-
-**它负责：**
-
-- 原子组装一条测时事件；
-- 记录本地事件序号、方向、帧号候选、整数峰、分数峰、质量和状态；
-- 携带 boot/epoch/config/calibration ID；
-- 处理 FIFO 满、丢事件和重复消费；
-- 明确候选事件与已确认事件的区别。
-
-## 8. P1：双向同步和伺服执行
-
-### H16 `servo_output_guard`：安全地应用同步修正
-
-**它要解决的问题：** 软件根据测量算出修正后，不能立即随意改计数器或时钟。必须在未来的确定 tick 执行，并在测量失效时阻止错误控制量继续作用。
-
-**它负责：**
-
-- 接收经过版本和范围检查的相位/频率修正；
-- 把修正转换成 H05 可执行的未来命令；
-- 管理 `LOCKED`、`HOLDOVER`、`INVALID`、`REACQUIRE` 状态；
-- 设置控制量限速、超时和看门狗；
-- 输出逻辑时间修正、测试 PPS 或物理执行器控制；
-- 把执行结果和实际 tick 返回给 PS。
-
-**逻辑时间与物理时钟必须分开报告：** 修改 FPGA 时间累加器，不等于已经校正 RFSoC 的物理 10 MHz、ADC/DAC 采样时钟或节点内 WR 输出。
-
-## 9. P2：QKD 应用扩展
-
-### H17 `sagnac_awg`：QKD 波形和时隙触发
-
-**它要解决的问题：** 同步结果最终要驱动 Sagnac 环、激光器、偏振控制器和探测门。每个 QKD 帧/时隙需要在可追踪时间表中播放正确波形。
-
-**它负责：**
-
-- 预加载有限组波形；
-- 按帧号、时隙号和编码状态选波形；
-- 在 H16/H05 指定的时刻开始播放；
-- 输出给光学设备和仪器的数字触发；
-- 记录波形版本、幅度和实际首末样本时间。
-
-### H18 `tdc_coarse`：光子事件粗时间戳
-
-**它要解决的问题：** SNSPD 输出的是离散电脉冲，QKD 需要记录每一个光子事件，而不是只记录 PRN 相关峰。
-
-**它负责：**
-
-- 接收经过电平转换的 SNSPD/NIM/LVDS/LVCMOS 输入；
-- 同步输入并检测上升/下降沿；
-- 记录通道、边沿、粗 tick 和事件序号；
-- 管理死时间、溢出和事件 FIFO；
-- 与外部 Swabian TimeTagger 对照计数。
-
-### H19 `tdc_fine`：进位链细时间 TDC
-
-**它要解决的问题：** H18 的时间只能量化到 PL 时钟周期；若 QKD 需要更细的到达时间，需要测量脉冲在时钟边沿之间的相位。
-
-**它负责：**
-
-- 用 FPGA `CARRY8` 构造延迟链；
-- 用采样寄存器捕获温度计码；
-- 做气泡修正、编码和粗/细时间拼接；
-- 通过码密度标定得到实际 bin 宽度；
-- 评估温度漂移、通道偏差、DNL/INL 和死时间。
-
-**它不应提前实现：** 在输入电平、布局、温度和参考设备都没有冻结前，不能声称某个固定皮秒精度。
-
-## 10. 不属于 H 编号、但实际必需的支撑模块
-
-### 10.1 时钟域和复位支撑
-
-- `anchor_cdc_fifo`：在时间域、ADC 域、DAC 域之间传递带版本的原子消息；
-- `capture_reset_guard`：停钟、FIFO 未就绪、DMA 未排空时禁止重新采集；
-- `capture_source_guard`：检查 RFDC 健康、I/Q 同时有效、IRQ 和饱和状态；
-- 各域的同步器、握手、超时和旧消息丢弃逻辑。
-
-这些不是“加一个 FIFO 就完成 CDC”。必须定义哪个域拥有消息、复位时怎样清空旧消息、恢复后如何分配新的 boot ID。
-
-### 10.2 数据缓存、封包和 DMA
-
-- `capture_packetizer`：把样本、头部、故障前缀和 CRC 组织成固定格式；
-- `capture_snapshot_bank`：有限窗口双 bank/URAM/BRAM 存储；
-- `capture_control`：AXI-Lite 影子命令和完成记录；
-- DMA/宽度转换/写 fence：使用 AMD IP，配合所有权和排空证明；
-- `capture_management`：PS 侧负责启动、停机、失败保留和新 boot 恢复。
-
-### 10.3 发射链控制支撑
-
-- `tx_rrc_command_regs`：PS 写入帧、SPS、幅度、目标样本和系数版本；
-- `tx_rrc_config_bridge`：把配置从控制域原子地带到数据域；
-- `tx_rrc_sample_scheduler`：按 DAC 样本目标释放；
-- `tx_rrc_control`：管理系数 bank、预填、完成和故障。
-
-### 10.4 RFDC 和板级管理
-
-- RFDC AXI 配置/状态访问；
-- RFDC IRQ 锁存、屏蔽、确认和故障恢复；
-- 时钟芯片 SPI 启动和只读状态检查；
-- MTS（多 Tile 同步）配置和每次启动的延迟记录；
-- 外部 10 MHz/PPS 电气接口和 GPIO 管理。
-
-这些部分优先使用厂商 IP 和官方驱动，不能仅靠自定义 RTL 模拟通过就算板级完成。
-
-## 11. PS 软件模块
-
-PL 负责确定性边沿，PS 负责复杂计算、网络和记录。建议至少有以下软件组件：
-
-| 软件模块                    | 解决的问题                                                             |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `pl_control_client`       | 读取设计 ID/ABI，发起快照、提交和取消命令，验证完成记录。              |
-| `rfdc_manager`            | 配置 RFDC、NCO、DDC/DUC、Tile 和 MTS，读取健康状态。                   |
-| `capture_manager`         | 管理 DMA 缓冲区、启动/停机/排空/恢复，拒绝没有完整性证明的包。         |
-| `prn_reference`           | 生成与 RTL 一致的 PRN 和成型参考，提供 golden vector。                 |
-| `measurement_pairer`      | 配对 A→B/B→A 测量，检查帧号、序号和时间窗口。                        |
-| `delay_calibrator`        | 加载方向性硬件延时、线缆延时和校准版本。                               |
-| `offset_frequency_filter` | 估计钟差/频偏，初版可用 Python/NumPy，稳定后再迁移 C++。               |
-| `sync_state_manager`      | 管理锁定、保持、失锁、重新捕获和 QKD 数据有效边界。                    |
-| `network_protocol`        | 交换测量记录、版本、完整性和认证字段；网络到达时间不能替代硬件时间戳。 |
-| `run_manifest`            | 记录 bitstream、软件、时钟配置、校准、板卡和原始数据哈希。             |
-
-## 12. 当前 `RF-clock` 的实际实施顺序
-
-当前仓库只有：
+**Suggested interface:**
 
 ```text
-FPGA/src/raw_tick.v          # 空骨架
-FPGA/src/prn_generator.v     # 不完整的 LFSR 骨架
-FPGA/src/rrc_pulse_shaper.v  # 空文件
+Inputs:  clk, rst
+Outputs: raw_tick[63:0], exhausted
 ```
 
-不要一开始复制参考工程的所有 DMA、管理和 RFDC 文件。建议按以下里程碑跟做：
+### H04 `pps_capture`: PPS coarse capture and health monitoring
 
-### Milestone 0：冻结规格
+**Problem it solves:** External PPS is asynchronous to the FPGA clock, and a pulse can be missing, too short, or have an abnormal period. Software must not declare the system locked from one edge alone.
 
-- 确定时间域时钟频率和复位极性；
-- 将 `raw_tick` 定为 64 位；
-- 决定 PRN 是采用参考 H08 的 16 位 LFSR，还是另行冻结 32 位多项式；
-- 确定 chip rate、采样率、每码片样本数和帧长度；
-- 写出固定 golden vector。
+**How it solves the problem:** It synchronizes PPS, detects edges in the `raw_tick` domain, records event sequence and inter-arrival intervals, and applies period tolerance, timeout, and recovery rules. A newly valid reference must first be observed low so a startup-high level is not mistaken for an event.
 
-### Milestone 1：最小数字时间系统
+**It is responsible for (following that solution path):**
 
-建议文件：
+- Synchronizing the asynchronous PPS input;
+- Detecting synchronized rising edges;
+- Recording the latest PPS tick and event sequence in `raw_tick` coordinates;
+- Computing adjacent PPS intervals and checking `PERIOD ± TOLERANCE`;
+- Reporting PPS timeout, bad intervals, and recovery;
+- Requiring a low observation after reference requalification.
+
+### H05 `scheduled_commit`: Deterministic execution at a future tick
+
+**Problem it solves:** Linux thread scheduling is nondeterministic. A register write made “now” is not the same as changing time or waveform state at a deterministic hardware instant; immediate execution would inject OS scheduling jitter into QKD slots.
+
+**How it solves the problem:** Command fields are first latched in shadow registers. After handshake and range checks, an immutable commit is formed. Runtime logic compares `raw_tick` with the target tick, emits a one-cycle action at the target edge, and reports accepted, waiting, executed, missed, cancelled, or faulted outcomes.
+
+**It is responsible for (following that solution path):**
+
+- Receiving command ID, `target_tick`, and opaque control value;
+- Providing atomic commit through shadow registers;
+- Rejecting zero IDs, duplicate/out-of-order IDs, past targets, and insufficient lead time;
+- Executing on the hardware edge where `raw_tick == target_tick`;
+- Supporting cancellation, invalidation, and missed-target completion codes;
+- Reporting command acceptance separately from actual execution.
+
+**Key semantic:** `apply_now` must be sampled by the consumer on the target edge. A one-cycle-late `executed` pulse must not be mistaken for the physical execution edge.
+
+## 5. P0: Sample time and capture chain
+
+### H06 `sample_time_bridge`: Bridge from sample numbers to common time
+
+**Problem it solves:** ADC/DAC data normally runs in an independent clock domain. `raw_tick` gives a common time coordinate, but it does not say which tick corresponds to sample 12345 on an ADC lane.
+
+**How it solves the problem:** At a known reference edge it captures the sample counter and `raw_tick` together, then transfers that versioned anchor as an atomic CDC/FIFO message. The mapping is represented by a sample range and uncertainty rather than by pretending to have unlimited precision; stopped clocks, backpressure, and stale replies invalidate the anchor.
+
+**It is responsible for (following that solution path):**
+
+- Maintaining a sample number in the sample domain;
+- Requesting a time anchor at a known reference edge;
+- Transferring “sample number – raw tick – configuration version” as one CDC/FIFO message;
+- Recording sample ranges before and after the anchor;
+- Reporting invalidity on stopped clocks, backpressure, reference loss, or stale replies.
+
+### H07 `capture_dma`: Bounded-window capture and transport
+
+**Problem it solves:** RFDC is a continuous stream, while PS/DMA needs bounded blocks. Without explicit windows, headers, and fault markers, software cannot know whether data is complete or replay it offline.
+
+**How it solves the problem:** It cuts the stream into bounded windows with explicit start/stop conditions, attaches timing and integrity metadata, and uses double banking, CRC, and DMA backpressure to deliver verifiable blocks.
+
+**It is responsible for (following that solution path):**
+
+- Capturing finite I/Q windows on command;
+- Using double-bank or snapshot storage to avoid read/write overwrite;
+- Adding first-sample number, time anchor, sample rate, I/Q format, configuration ID, gap, and saturation flags;
+- Generating CRC/AXIS packets for DMA;
+- Handling backpressure, short transfers, overflow, and reset recovery.
+
+## 6. P1: PRN transmit chain
+
+### H08 `prn_frame_source`: Repeatable PRN chip-frame source
+
+**Problem it solves:** Endpoints A and B must generate exactly the same reproducible reference sequence so the receiver can find arrival delay by correlation. PRN is a timing marker, not a QKD key and not an authentication mechanism by itself.
+
+**How it solves the problem:** A fixed LFSR, seed, and frame descriptor generate a repeatable chip sequence. The sequence advances only when downstream `ready` accepts a chip, while frame boundaries, identity changes, aborts, and faults are latched into status.
+
+**It is responsible for (following that solution path):**
+
+- Receiving a frame descriptor: frame number, nonzero seed, chip count, and boot/config ID;
+- Generating the LFSR sequence from the selected seed;
+- Outputting chip bit, chip index, start/end markers;
+- Supporting `valid/ready` backpressure so the sequence advances only on a successful handshake;
+- Detecting disable, abort, or identity changes during an active frame and latching a fault;
+- Reporting how many chips have been accepted downstream.
+
+**H08 default rules:** A 16-bit right-shift LFSR, with feedback from old-state `bit0 ^ bit2 ^ bit3 ^ bit5`, outputting old-state bit0, and producing at most eight chips per cycle in the prototype. `FPGA/src/prn_generator.v` is only the core functional skeleton; framing, handshake, and fault semantics are still missing. The 32-bit polynomial in the current comments must be reconciled with the project specification.
+
+### H09 `tx_shape_rfdc`: Convert chips into safe DAC samples
+
+**Problem it solves:** PRN bits are not I/Q samples that RFDC can send directly. The design must define samples per chip, amplitude, packing, and how to become electrically silent during a fault.
+
+**How it solves the problem:** The transmit chain is built in layers—bit mapping, chip expansion, RRC coefficient/FIR processing, frame scheduling, and RFDC adaptation. A rectangular baseline is verified first; fixed-point parameters are frozen next. On loss of lock or underrun, the actual DAC data—not only `valid`—is forced to zero.
+
+**It is responsible for (following that solution path):**
+
+- Mapping chips to signed I/Q amplitudes;
+- Performing shaping, scheduling, and RFDC packing at the selected sample rate;
+- Producing deterministic silent data on fault or loss of qualification.
+
+**Implementation layers:**
+
+1. `bpsk_mapper`: map 0/1 to `-A/+A`;
+2. `tx_rect_samples`: rectangular expansion to verify chip order, sample count, and frame boundaries;
+3. `tx_rrc_coeff_bank`: store RRC coefficients and coefficient version;
+4. `tx_rrc_fir`: fixed-point FIR, rounding, and saturation;
+5. `tx_frame_scheduler`: prefill and release at future tick/sample targets;
+6. `rfdc_tx_adapter`: adapt DAC I/Q packing, DUC, and interpolation interfaces.
+
+### H10 `rx_frontend`: ADC/RFDC receive front end
+
+**Problem it solves:** ADC output is usually multi-lane I/Q data with a particular width and clock relationship; the RF carrier also needs digital downconversion and decimation. Unnormalized data cannot be sent directly to the correlator.
+
+**How it solves the problem:** It first normalizes lane ordering, I/Q alignment, valid semantics, and clock relationships, then performs DDC/NCO/decimation/filtering. Gaps, saturation, and warm-up are encoded in the stream before it is handed to H11/H12.
+
+**It is responsible for (following that solution path):**
+
+- RFDC ADC run-time configuration and status checks;
+- DDC, NCO, decimation, and required low-pass filtering;
+- `rfadc_iq_unpack`: lane reorder, I/Q alignment, and valid checks;
+- Detecting continuity gaps, saturation, reset warm-up, and invalid samples;
+- Passing a unified data format to H11/H12.
+
+### H11 `carrier_corrector`: Carrier frequency-offset and phase correction
+
+**Problem it solves:** Local oscillators and the RF link introduce carrier frequency offset, phase rotation, and time-varying phase. Without correction, the correlation peak is reduced, broadened, or misplaced.
+
+**How it solves the problem:** A versioned frequency/phase estimate drives an NCO or phase accumulator that rotates complex I/Q samples. Frame phase continuity and parameter update boundaries are checked; the first version can be bypassed while the correlator is validated independently.
+
+**It is responsible for (following that solution path):**
+
+- Rotating complex I/Q with an NCO/phase accumulator;
+- Accepting frequency and phase parameters estimated by PS;
+- Maintaining phase continuity within a frame;
+- Checking sign conventions, parameter versions, and update boundaries;
+- Supporting a bypass path for the first implementation.
+
+### H12 `correlator_windowed`: Finite-window matched correlator
+
+**Problem it solves:** The receiver does not know the exact sample position of the PRN arrival, so it must compare the received waveform with a local template at candidate delays within a search window.
+
+**How it solves the problem:** A stored or streaming local template is correlated over an explicitly bounded window. The correlator outputs integer-sample delay and complex accumulation, with controlled width and boundary rules; resource-driven folding, reuse, or FFT options are considered only after the bounded algorithm is verified.
+
+**It is responsible for (following that solution path):**
+
+- Storing or streaming the local PRN/shaped template;
+- Computing complex correlation over the finite search window;
+- Outputting integer delay and complex accumulation;
+- Managing accumulator width to avoid overflow for long codes or high amplitude;
+- Rejecting incomplete templates at window boundaries.
+
+### H13 `peak_quality`: Decide whether a correlation peak is trustworthy
+
+**Problem it solves:** The maximum correlation value is not necessarily the real signal. Noise spikes, multipath, saturation, and a peak at the window boundary can all produce false peaks. Without quality assessment, a bad time measurement can enter the servo loop.
+
+**How it solves the problem:** It evaluates the main peak, the second peak outside a guard region, background energy, peak width, and boundary position. Multipath, low SNR, saturation, and other conditions become quality levels and reason codes; only measurements passing the threshold proceed to the servo.
+
+**It is responsible for (following that solution path):**
+
+- Finding the main peak, its location, and its amplitude;
+- Computing second-peak, background, peak-to-sidelobe, and width metrics;
+- Detecting multipath, broad or boundary peaks, low SNR, and saturation;
+- Producing `valid/invalid/candidate` and reason codes;
+- Supplying measurement covariance or quality level to later filters.
+
+### H14 `fractional_peak`: Fractional-sample peak estimation
+
+**Problem it solves:** The ADC sample interval can be several nanoseconds, so an integer peak only identifies one sample grid point. Neighboring samples must be used to estimate a fractional position for finer timing resolution.
+
+**How it solves the problem:** It interpolates several samples around the peak, handles zero denominators, boundaries, clipping, and multipath explicitly, and calibrates fixed bias with known-delay scans. The number of fractional bits is kept separate from actual timing accuracy.
+
+**It is responsible for (following that solution path):**
+
+- Applying a three-point parabolic model or a later, more accurate interpolator;
+- Outputting fixed-point fractional delay;
+- Handling zero denominator, window boundary, clipping, and multipath cases;
+- Calibrating systematic bias using known delays.
+
+### H15 `measurement_fifo`: Timing-event records and cross-domain delivery
+
+**Problem it solves:** PL correlation results must be delivered safely to PS. If fields update in different cycles, software may read a torn record—for example, a peak position from one event with quality from the previous event.
+
+**How it solves the problem:** It assembles all fields into one atomic event before crossing into a FIFO. Sequence numbers, overflow/drop reporting, and candidate/confirmed flags make event ownership and validity explicit.
+
+**It is responsible for (following that solution path):**
+
+- Atomically assembling one timing event;
+- Recording local event sequence, direction, candidate frame number, integer/fractional peak, quality, and status;
+- Carrying boot/epoch/config/calibration IDs;
+- Handling FIFO full, dropped events, and duplicate consumption;
+- Distinguishing candidate events from confirmed events.
+
+## 8. P1: Bidirectional synchronization and servo execution
+
+### H16 `servo_output_guard`: Safely apply synchronization corrections
+
+**Problem it solves:** A correction computed by software must not immediately rewrite a counter or clock arbitrarily. It must execute at a deterministic future tick, and invalid measurements must not continue driving the control loop.
+
+**How it solves the problem:** Only corrections that pass version, range, and quality checks are converted into H05 future commands. LOCKED, HOLDOVER, INVALID, and REACQUIRE states, rate limits, timeouts, and a watchdog prevent unsafe control values from being applied.
+
+**It is responsible for (following that solution path):**
+
+- Receiving validated phase/frequency corrections;
+- Converting them into future commands executable by H05;
+- Managing LOCKED, HOLDOVER, INVALID, and REACQUIRE states;
+- Applying control slew limits, timeouts, and watchdog protection;
+- Outputting logical-time corrections, test PPS, or physical-actuator control;
+- Returning execution result and actual tick to PS.
+
+**Logical time and physical clocks must be reported separately:** Modifying an FPGA time accumulator does not mean that the RFSoC physical 10 MHz, ADC/DAC sampling clock, or node-local WR output has been corrected.
+
+## 9. P2: QKD application extensions
+
+### H17 `sagnac_awg`: QKD waveform and slot triggering
+
+**Problem it solves:** The synchronization result must eventually drive a Sagnac loop, lasers, polarization controllers, and detector gates. Every QKD frame/slot needs the correct waveform from a traceable time schedule.
+
+**How it solves the problem:** A finite set of waveforms is preloaded and selected by frame, slot, and coding state. H16/H05 releases playback at the requested time, while version and actual first/last sample times are recorded.
+
+**It is responsible for (following that solution path):**
+
+- Preloading a finite waveform set;
+- Selecting a waveform by frame number, slot number, and coding state;
+- Starting playback at the time specified by H16/H05;
+- Outputting digital triggers to optical equipment and instruments;
+- Recording waveform version, amplitude, and actual first/last sample time.
+
+### H18 `tdc_coarse`: Coarse timestamps for photon events
+
+**Problem it solves:** An SNSPD produces discrete electrical pulses, and QKD must record every photon event rather than only PRN correlation peaks.
+
+**How it solves the problem:** Level-shifted SNSPD/NIM/LVDS/LVCMOS inputs are synchronized and edge-detected. Channel, edge, coarse tick, sequence, dead-time, and overflow information are recorded and delivered through an event FIFO for comparison with an external Swabian TimeTagger.
+
+**It is responsible for (following that solution path):**
+
+- Receiving level-shifted SNSPD/NIM/LVDS/LVCMOS inputs;
+- Synchronizing inputs and detecting rising/falling edges;
+- Recording channel, edge, coarse tick, and event sequence;
+- Managing dead time, overflow, and event FIFO;
+- Comparing counts with an external Swabian TimeTagger.
+
+### H19 `tdc_fine`: Carry-chain fine-time TDC
+
+**Problem it solves:** H18 quantizes time to the PL clock period. If QKD needs finer arrival timing, the phase of a pulse between clock edges must be measured.
+
+**How it solves the problem:** After input level, placement, temperature, and reference equipment are frozen, a CARRY8 delay line and sampling registers produce a thermometer code. Bubble correction, coarse/fine stitching, code-density calibration, temperature drift, channel skew, DNL/INL, and dead time are evaluated before a fine-time result is claimed.
+
+**It is responsible for (following that solution path):**
+
+- Building a delay line with FPGA `CARRY8`;
+- Capturing the thermometer code with sampling registers;
+- Performing bubble correction, encoding, and coarse/fine time stitching;
+- Obtaining actual bin widths through code-density calibration;
+- Evaluating temperature drift, channel skew, DNL/INL, and dead time.
+
+## 10. Required support modules outside the H numbering
+
+### 10.1 Clock-domain and reset support
+
+**Problem they solve:** Messages and reset state cross time, ADC, and DAC domains, while clocks can stop and FIFOs can retain stale state.
+
+**How they solve it:** CDC FIFOs and explicit ownership rules transfer versioned atomic messages. Reset guards wait for the domain to be ready, flush old messages, and allocate a new boot ID after recovery.
+
+**Responsibilities:**
+
+- `anchor_cdc_fifo`: transfer versioned atomic messages between time, ADC, and DAC domains;
+- `capture_reset_guard`: prevent recapture while clocks are stopped, FIFOs are not ready, or DMA has not drained;
+- `capture_source_guard`: check RFDC health, simultaneous I/Q validity, IRQ, and saturation;
+- Synchronizers, handshakes, timeout logic, and stale-message discard in each domain.
+
+This is not “CDC completed by adding one FIFO.” The design must define message ownership, reset flushing, and boot-ID allocation after recovery.
+
+### 10.2 Data buffering, packetization, and DMA
+
+**Problem they solve:** Samples, headers, fault context, and ownership must reach PS as complete packets with a clear lifetime.
+
+**How they solve it:** Fixed packet formats, finite snapshot banks, shadow control commands, and DMA fences make buffer ownership and drain completion explicit.
+
+**Responsibilities:**
+
+- `capture_packetizer`: organize samples, headers, fault prefixes, and CRC into a fixed format;
+- `capture_snapshot_bank`: finite-window storage in double-bank/URAM/BRAM;
+- `capture_control`: AXI-Lite shadow commands and completion records;
+- DMA/width conversion/write fences: use AMD IP with ownership and drain proofs;
+- `capture_management`: PS-side start, stop, failure retention, and new-boot recovery.
+
+### 10.3 Transmit-chain control support
+
+**Problem they solve:** Waveform and filter configuration crosses from software/control clock domains into a running DAC data path.
+
+**How they solve it:** Configuration is versioned and transferred atomically; a sample scheduler releases only committed data, while the control block owns coefficient banks, prefill, completion, and fault handling.
+
+**Responsibilities:**
+
+- `tx_rrc_command_regs`: PS writes frame, SPS, amplitude, target sample, and coefficient version;
+- `tx_rrc_config_bridge`: atomically transfer configuration into the data domain;
+- `tx_rrc_sample_scheduler`: release data at the DAC sample target;
+- `tx_rrc_control`: manage coefficient banks, prefill, completion, and faults.
+
+### 10.4 RFDC and board management
+
+**Problem they solve:** RFDC, clock chips, MTS, and external 10 MHz/PPS/GPIO interfaces have board-specific startup and health requirements.
+
+**How they solve it:** Vendor IP and official drivers perform configuration and status access; IRQs and faults are latched and acknowledged, while every MTS/startup operation records its delay and status.
+
+**Responsibilities:**
+
+- RFDC AXI configuration/status access;
+- RFDC IRQ latch, mask, acknowledge, and fault recovery;
+- Clock-chip SPI startup and read-only status checks;
+- MTS (multi-tile synchronization) configuration and per-start delay records;
+- External 10 MHz/PPS electrical interfaces and GPIO management.
+
+These functions should preferentially use vendor IP and official drivers. Passing a custom-RTL simulation is not board-level completion.
+
+## 11. PS software modules
+
+PL owns deterministic edges; PS owns complex computation, networking, and records. At minimum, provide:
+
+| Software module | Problem it solves |
+| --- | --- |
+| `pl_control_client` | Reads design ID/ABI, starts snapshots, submits/cancels commands, and validates completion records. |
+| `rfdc_manager` | Configures RFDC, NCO, DDC/DUC, tiles, and MTS, and reads health status. |
+| `capture_manager` | Manages DMA buffers, start/stop/drain/recovery, and rejects packets without integrity proof. |
+| `prn_reference` | Generates PRN and shaping references consistent with RTL and provides golden vectors. |
+| `measurement_pairer` | Pairs A→B/B→A measurements and checks frame IDs, sequence, and time windows. |
+| `delay_calibrator` | Loads directional hardware delay, cable delay, and calibration versions. |
+| `offset_frequency_filter` | Estimates clock offset/frequency; the first version may use Python/NumPy before moving to C++. |
+| `sync_state_manager` | Manages lock, holdover, loss of lock, reacquisition, and QKD-data validity boundaries. |
+| `network_protocol` | Exchanges measurements, versions, integrity, and authentication fields; network arrival time cannot replace hardware timestamps. |
+| `run_manifest` | Records bitstream, software, clock configuration, calibration, board, and raw-data hashes. |
+
+## 12. Current implementation order for `RF-clock`
+
+The repository currently contains only:
+
+```text
+FPGA/src/raw_tick.v          # empty skeleton
+FPGA/src/prn_generator.v     # incomplete LFSR skeleton
+FPGA/src/rrc_pulse_shaper.v  # empty file
+```
+
+Do not start by copying every DMA, management, and RFDC file from the reference project. Follow these milestones:
+
+### Milestone 0: Freeze the specification
+
+- Fix the time-domain clock frequency and reset polarity;
+- Define `raw_tick` as 64 bits;
+- Decide whether PRN uses the reference H08 16-bit LFSR or a separately frozen 32-bit polynomial;
+- Fix chip rate, sample rate, samples per chip, and frame length;
+- Write fixed golden vectors.
+
+### Milestone 1: Minimum digital time system
+
+Suggested files:
 
 ```text
 FPGA/src/clock_reset_guard.v
@@ -463,11 +499,11 @@ FPGA/sim/tb_raw_timebase.v
 FPGA/sim/tb_time_control.v
 ```
 
-验收：复位、每拍递增、低字进位、全 1 饱和、参考失效不回拨、PPS 异步相位和未来 tick 精确执行。
+Acceptance: reset, per-cycle increment, low-word carry, all-ones saturation, no rollback on reference loss, asynchronous PPS phase, and exact future-tick execution.
 
-### Milestone 2：数字 PRN 发射回环
+### Milestone 2: Digital PRN transmit loopback
 
-建议文件：
+Suggested files:
 
 ```text
 FPGA/src/prn_frame_source.v
@@ -479,11 +515,11 @@ FPGA/sim/tb_tx_chain.v
 FPGA/data/golden/prn_vectors.csv
 ```
 
-验收：不同种子和长度逐位一致、完整周期/边界正确、背压不跳码、帧身份变化会报错、故障时 DAC 数据实际为零。
+Acceptance: bit-for-bit agreement for different seeds and lengths, correct full-cycle/boundary behavior, no chip skipping under backpressure, an error on frame-identity changes, and actual zero DAC data during faults.
 
-### Milestone 3：RRC 成型
+### Milestone 3: RRC shaping
 
-先写 Python/NumPy 参考模型，再实现：
+First write a Python/NumPy reference model, then implement:
 
 ```text
 FPGA/src/rrc_coeff_bank.v
@@ -492,11 +528,11 @@ FPGA/src/rrc_pulse_shaper.v
 FPGA/sim/tb_rrc_pulse_shaper.v
 ```
 
-验收：RTL 与 Python 逐样本一致，明确延迟、舍入、饱和、系数版本和帧尾处理。RRC 不应在这些参数未冻结前实现。
+Acceptance: RTL matches Python sample by sample, with explicit latency, rounding, saturation, coefficient version, and frame-tail behavior. Do not implement RRC before these parameters are frozen.
 
-### Milestone 4：接收和离线测时
+### Milestone 4: Receive and offline timing measurement
 
-先从文件/仿真样本开始，不立即接真实 RFDC：
+Start from files/simulation samples rather than real RFDC:
 
 ```text
 FPGA/src/rx_frontend.v
@@ -506,41 +542,41 @@ FPGA/src/fractional_peak.v
 FPGA/src/measurement_fifo.v
 ```
 
-验收：已知延迟、噪声、频偏、多径、无峰、双峰、窗口边界和饱和都能产生正确状态，而不是静默输出一个看似有效的时间。
+Acceptance: known delay, noise, frequency offset, multipath, no peak, double peak, window boundary, and saturation all produce correct status rather than a silently valid-looking time.
 
-### Milestone 5：双向软件闭环
+### Milestone 5: Bidirectional software loop
 
-- 用 Python 完成 A→B/B→A 事件配对；
-- 加入硬件延时/不对称校准；
-- 用人为注入的钟差和频偏验证滤波器符号；
-- 只把经过质量检查的结果送给 H05/H16；
-- 先验证逻辑时间修正，再讨论物理 10 MHz 执行器。
+- Pair A→B/B→A events in Python;
+- Add hardware-delay/asymmetry calibration;
+- Inject known clock offset/frequency offset to verify filter signs;
+- Send only quality-checked results to H05/H16;
+- Validate logical-time correction before discussing a physical 10 MHz actuator.
 
-### Milestone 6：RFSoC 平台集成
+### Milestone 6: RFSoC platform integration
 
-最后再加入 RFDC、DMA、AXI、CDC、时钟芯片、XDC、Vivado Tcl 和板上验收。仿真通过、独立综合通过、布局布线通过和真实板卡通过是四个不同结论，不能互相替代。
+Only then add RFDC, DMA, AXI, CDC, clock chips, XDC, Vivado Tcl, and board acceptance. Simulation pass, standalone synthesis pass, place-and-route pass, and real-board pass are four different conclusions and cannot replace one another.
 
-## 13. 每个模块都必须回答的验收问题
+## 13. Acceptance questions every module must answer
 
-实现任何一个模块前，先写清楚：
+Before implementing any module, state clearly:
 
-1. 它的输入来自哪个时钟域？
-2. 每个输入的有效条件和复位值是什么？
-3. 它产生的是数据、时间戳、状态还是故障原因？
-4. 背压、丢样、超时、复位和配置变化时怎么做？
-5. 输出的版本/ID 是否能证明它属于当前运行？
-6. 有什么固定 golden vector 或断言能验证它？
-7. 这个结论是 RTL 仿真、综合、布局布线，还是实际板卡测量？
+1. Which clock domain supplies each input?
+2. What are the valid conditions and reset values for each input?
+3. Does each output represent data, a timestamp, status, or a fault reason?
+4. What happens under backpressure, dropped samples, timeout, reset, and configuration change?
+5. Can the output version/ID prove that it belongs to the current run?
+6. Which fixed golden vector or assertion verifies it?
+7. Is the evidence RTL simulation, synthesis, place-and-route, or actual board measurement?
 
-## 14. 尚未冻结的关键问题
+## 14. Key questions not yet frozen
 
-以下问题没有答案前，可以做数字原型，但不应声称完成 44 km QKD 同步：
+Until these questions are answered, a digital prototype may be built, but completion of 44 km QKD synchronization must not be claimed:
 
-- RF 载波、带宽、码片速率、采样率和帧周期；
-- PRN 码长、整周期歧义和最大搜索窗口；
-- DAC/ADC 数字参考面与天线馈电参考面；
-- A/B 两方向的硬件延时和不对称校准方法；
-- B 端到底修正逻辑时间、板上时钟芯片，还是外部可控振荡器；
-- PPS、10 MHz、SNSPD 输入的电平、阻抗、脉宽和引脚；
-- QKD 对平均偏差、RMS 抖动、保持时间和重捕获时间的正式指标；
-- 测量报文的认证、重放防护和运行编号。
+- RF carrier, bandwidth, chip rate, sample rate, and frame period;
+- PRN length, full-period ambiguity, and maximum search window;
+- DAC/ADC digital reference plane and antenna-feed reference plane;
+- Hardware delay and asymmetry calibration for both directions;
+- Whether endpoint B corrects logical time, the on-board clock chip, or an externally controlled oscillator;
+- Electrical level, impedance, pulse width, and pins for PPS, 10 MHz, and SNSPD inputs;
+- Formal QKD limits for mean offset, RMS jitter, holdover time, and reacquisition time;
+- Authentication, replay protection, and run numbering for measurement messages.

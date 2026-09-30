@@ -10,10 +10,10 @@
   * fields, waits for the target tick, and exposes the latched control value to
   * the downstream PRN/RRC/AWG command consumer.
   *
-  * `apply_now` is the target-edge enable.  `cmd_executed` is a one-clock
-  * completion event generated when H05 reaches that edge.  The completion
-  * event means that H05 applied the command; it is not an acknowledgement
-  * from a downstream peripheral.
+  * `apply_now` is the target-edge enable.  `cmd_accepted` is a one-clock
+  * event generated only when a semantically valid command is latched for
+  * execution.  A command-level rejection is reported by `cmd_return_code`
+  * while the scheduler remains idle; it is not a sticky scheduler fault.
 */
 
 /* State machine:
@@ -49,10 +49,10 @@
   - `clear_fault`: One-clock request to leave `STATE_FAULT`.  Recovery is allowed only when `schedule_enable` is high and `raw_tick_exhausted` is low.
 
 ## Output Signals:
-  - `cmd_ready`: Valid/ready backpressure signal. High only in healthy `STATE_IDLE`; a transfer occurs on `cmd_valid && cmd_ready` at a clock edge.
-  - `cmd_accepted`: One-clock pulse on a successful command transfer. It means the command was accepted and is now waiting for execution, not that it has already executed.
-  - `cmd_waiting_for_execute`: Level signal indicating `STATE_WAIT`.
-  - `cmd_executed`: One-clock pulse on the target edge after H05 reaches `raw_tick == cmd_target_tick`. `cmd_return_code` changes to `SUCCESS` at the same state transition.
+  - `cmd_ready`: Valid/ready backpressure signal. High only in healthy `STATE_IDLE`; a transport transfer occurs on `cmd_valid && cmd_ready` at a clock edge.
+  - `cmd_idle`: Level signal indicating that no command is waiting for execution (`STATE_IDLE`). It does not by itself guarantee that a new command can be accepted; use `cmd_ready` for that.
+  - `cmd_accepted`: One-clock pulse only when the transferred command passes H05 validation and is latched for execution. It is not asserted for a command-level rejection.
+  - `cmd_wait`: Level signal indicating `STATE_WAIT`.
   - `cmd_fault`: Level signal indicating sticky `STATE_FAULT`; while high, `cmd_ready` remains low.
   - `cmd_return_code`: Latched status/result for the whole H05 command path:
     - `4'b0101` `IDLE`: reset/recovered idle baseline;
@@ -61,14 +61,18 @@
     - `4'b0001` `ID_INVALID`: command ID was zero, duplicated, or old;
     - `4'b0010` `CMD_MISSED`: target was already too late or was skipped;
     - `4'b0011` `TIME_INVALID`: timebase or scheduling permission failed.
-  - `cmd_accepted` and `cmd_waiting_for_execute` therefore correspond to the `PENDING` code, while `cmd_executed` corresponds to `SUCCESS`. For a rejected command or a fault, the corresponding error code remains latched even if the state machine is no longer in `STATE_WAIT`.
+  - `cmd_accepted` and `cmd_wait` correspond to the `PENDING` code. When `apply_now` is asserted at the target edge, the state returns to idle and `cmd_return_code` becomes `SUCCESS`. For a rejected command or a fault, the corresponding error code remains latched.
   - `apply_now`: Combinational target-edge enable. It is high while the sampled `raw_tick` equals the latched target and the scheduling conditions remain valid. Downstream synchronous logic should sample this signal together with `active_control_value`.
   - `active_control_value`: Latched control value for the pending/most recently executed command. It does not change when H02 rewrites its shadow fields.
 
 ## Integration assumptions and limitations:
   - H02 and H05 command-channel signals are assumed to be in the same clock domain. A CDC bridge is required if the AXI clock and H05 timebase clock differ.
   - There is only one in-flight command; H05 is not a FIFO.
-  - A successful `cmd_executed` reports the H05 timing event only.  If a downstream block must acknowledge that it consumed the control value, add a separate completion/ready handshake rather than redefining `cmd_executed`.
+  - `apply_now` is the one-cycle target-edge event for downstream command consumers. If a downstream block must acknowledge that it consumed the control value, add a separate completion/ready handshake; `cmd_return_code == SUCCESS` is a latched result, not a pulse.
+*/
+
+/* Delays:
+  - 0-cycle delay from the cmd_target_tick to the apply_now signal.
 */
 
 `include "H05_protocol_defs.vh"
@@ -96,8 +100,8 @@ module H05_scheduled_execute #(
 
     // Command status and execution outputs.
     output reg         cmd_accepted,
-    output wire        cmd_waiting_for_execute,
-    output reg         cmd_executed,
+    output wire        cmd_idle,
+    output wire        cmd_wait,
     output wire        cmd_fault,
     output reg [`H05_RETURN_CODE_WIDTH-1:0] cmd_return_code,
     output wire        apply_now,
@@ -113,7 +117,8 @@ module H05_scheduled_execute #(
     reg [63:0] target_tick;
     reg [31:0] control_value;
 
-    assign cmd_waiting_for_execute = (state == STATE_WAIT);
+    assign cmd_idle = (state == STATE_IDLE);
+    assign cmd_wait = (state == STATE_WAIT);
     assign cmd_fault = (state == STATE_FAULT);
 
     // A command is accepted only when the scheduler is idle, healthy, and
@@ -143,14 +148,13 @@ module H05_scheduled_execute #(
             target_tick     <= 64'b0;
             control_value   <= 32'b0;
             cmd_accepted    <= 1'b0;
-            cmd_executed    <= 1'b0;
             cmd_return_code <= `H05_RETURN_CODE_IDLE;
         end else begin
-            // These are one-clock event pulses. cmd_return_code is a latched
-            // status: PENDING after acceptance, SUCCESS only after the target
-            // edge, and an error code if execution is abandoned.
+            // cmd_accepted is a one-clock semantic-acceptance pulse.
+            // cmd_return_code is a latched status/result: PENDING after
+            // acceptance, SUCCESS after the target edge, and an error code
+            // for a rejection or abandoned execution.
             cmd_accepted <= 1'b0;
-            cmd_executed <= 1'b0;
 
             case (state)
                 STATE_IDLE: begin
@@ -188,10 +192,9 @@ module H05_scheduled_execute #(
                         state           <= STATE_FAULT;
                         cmd_return_code <= `H05_RETURN_CODE_TIME_INVALID;
                     end else if (raw_tick == target_tick) begin
-                        // apply_now was high for this target edge. The state
-                        // transition and cmd_executed report completion.
+                        // apply_now is high for this target edge. The state
+                        // transition and SUCCESS code record completion.
                         state           <= STATE_IDLE;
-                        cmd_executed    <= 1'b1;
                         cmd_return_code <= `H05_RETURN_CODE_SUCCESS;
                     end else if (raw_tick > target_tick) begin
                         // Defensive handling in case the target was skipped.
