@@ -1,0 +1,19 @@
+# python
+__pycache__/
+
+# Vivado batch build outputs
+FPGA/build/
+vivado.jou
+vivado.log
+FPGA/ip/*.vivado.log
+FPGA/ip/*/project/
+FPGA/ip/*/metadata/
+
+# Generated H09 simulation reports and waveform data
+FPGA/data/*.html
+FPGA/data/*.csv
+FPGA/data/*.png
+
+# Syncthing
+.stfolder/
+.stignore

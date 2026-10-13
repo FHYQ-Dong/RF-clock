@@ -14,7 +14,7 @@
   - `PPS_TIMEOUT`: The timeout period for receiving a valid PPS signal (in clock cycles)
   - `STABLE_CYCLES`: The number of consecutive valid PPS signals required to assert the locked signal
 
-## Input Signals:
+## Input Signals
   - `clk`: Working clock (100 MHz)
   - `rst`: Synchronous reset (active high)
   - `pps_in_async`: Asynchronous PPS signal

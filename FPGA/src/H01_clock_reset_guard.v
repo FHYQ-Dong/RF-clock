@@ -9,11 +9,11 @@
 ## Parameter:
   - `STABLE_CYCLES`: Number of stable cycles required for the clock to be considered locked
 
-## Input Signals:
+## Input Signals
   - `clk`: working clock (100 MHz)
   - `arst_n`: Asynchronous reset (active low), comes from the external domain (e.g. power-on reset)
 
-## Input Signals:
+## Input Signals
   - `clock_pll_locked_async`: PLL clock locked signal (async)
   - `rfdc_locked_async`: RFDC clock locked signal (async)
   - `external_ref_locked_async`: External reference clock locked signal (async)

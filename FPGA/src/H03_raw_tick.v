@@ -7,11 +7,11 @@
 
 /* Interface
 
-## Input Signals:
+## Input Signals
   - clk: 100 MHz clock signal
   - rst: Synchronous reset signal (active high)
 
-## Output Signals:
+## Output Signals
   - raw_tick_out: 64-bit timestamp
   - exhausted: Signal indicating timestamp exhaustion
 */
