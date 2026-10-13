@@ -5,32 +5,35 @@
   - 1-cycle delay from the frame_seed being set to the output being generated.
 */
 
-`include "H05_protocol_defs.vh"
-`include "H08_protocol_defs.vh"
+// TODO: 重写regs，表示当前cycle状态
 
-module PRN_generator (
+`include "src/H05_protocol_defs.vh"
+`include "src/H08_protocol_defs.vh"
+
+
+module H08_PRN_generator (
     input wire clk,
     input wire rst,
     input wire prn_enable,
     input wire clear_fault,
 
-    input wire frame_valid,
-    output wire frame_ready,
-    output reg frame_accepted,
+    input wire        frame_valid,
+    output wire       frame_ready,
+    output reg        frame_accepted,
     input wire [31:0] frame_id,
     input wire [15:0] frame_seed,
     input wire [31:0] frame_len,
 
-    output wire chip_valid,
-    input wire chip_ready,
-    output wire prn_chip,
+    output wire        chip_valid,
+    input wire         chip_ready,
+    output wire        prn_chip,
     output wire [31:0] chip_index,
-    output wire chip_last,
+    output wire        chip_last,
     
-    output wire frame_idle,
-    output wire frame_generating,
-    output wire frame_fault,
-    output reg [3:0] frame_return_code,
+    output wire        frame_idle,
+    output wire        frame_generating,
+    output wire        frame_fault,
+    output reg [3:0]   frame_return_code,
     output wire [31:0] active_frame_id
 );
     localparam [1:0] STATE_IDLE = 2'b00;
@@ -94,8 +97,14 @@ module PRN_generator (
                     end
                 end
                 STATE_GENERATING: begin
-                    // Output chip is implemented using the combinational logic, so at this time it has already reached to the last chip, next cycle the state should return to IDLE
-                    if (chip_valid && chip_ready) begin
+                    // chip_valid/chip_index/prn_chip remain stable while the
+                    // downstream applies backpressure.  Only a real
+                    // handshake advances the LFSR and chip counter.
+                    if (!prn_enable) begin
+                        state <= STATE_FAULT;
+                        frame_return_code <= `H08_RETURN_CODE_DOWNSTREAM_READY_NOT_KEPT;
+                    end
+                    else if (chip_ready) begin
                         if (chip_count_reg == frame_len_reg - 1) begin
                             state <= STATE_IDLE;
                             frame_return_code <= `H08_RETURN_CODE_SUCCESS;
@@ -112,6 +121,8 @@ module PRN_generator (
                             chip_count_reg <= chip_count_reg + 1;
                         end
                     end
+                    // Otherwise chip_ready is low: hold all generating
+                    // registers and keep the current chip available.
                 end
                 STATE_FAULT: begin
                     psnr_state <= 16'b0;

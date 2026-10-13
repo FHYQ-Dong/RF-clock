@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-`include "../src/H08_protocol_defs.vh"
+`include "src/H08_protocol_defs.vh"
 
 module tb_H08_PRN_generator;
     reg clk;
@@ -31,7 +31,7 @@ module tb_H08_PRN_generator;
     integer i;
     reg [15:0] expected_lfsr;
 
-    PRN_generator dut (
+    H08_PRN_generator dut (
         .clk(clk),
         .rst(rst),
         .prn_enable(prn_enable),
