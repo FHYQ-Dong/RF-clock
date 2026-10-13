@@ -1,0 +1,38 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.1 (lin64) Build 5076996 Wed May 22 18:36:09 MDT 2024
+| Date         : Mon Oct 12 18:54:09 2026
+| Host         : RF-clock running 64-bit Ubuntu 22.04.5 LTS
+| Command      : report_ip_status
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+IP Status Summary
+
+1. Project IP Status
+--------------------
+Your project uses 3 IP. Some of these IP may have undergone changes in this release of the software. Please review the recommended actions.
+
+More information on the Xilinx versioning policy is available at www.xilinx.com.
+
+Project IP Instances
++---------------+------------+---------------------+-----------+--------------------+---------+---------------+------------+----------------------+
+| Instance Name | Status     | Recommendation      | Change    | IP Name            | IP      | New Version   | New        | Original Part        |
+|               |            |                     | Log       |                    | Version |               | License    |                      |
++---------------+------------+---------------------+-----------+--------------------+---------+---------------+------------+----------------------+
+| rfdc_rrc      | Up-to-date | No changes required |  *(1)     | Zynq Ultrascale+   | 2.6     | 2.6 (Rev. 9)  | Included   | xczu48dr-ffvg1517-2- |
+|               |            |                     |           | RF Data Converter  | (Rev.   |               |            |                      |
+|               |            |                     |           |                    | 9)      |               |            |                      |
++---------------+------------+---------------------+-----------+--------------------+---------+---------------+------------+----------------------+
+| rrc_adc_clk   | Up-to-date | No changes required |  *(2)     | Clocking Wizard    | 6.0     | 6.0 (Rev. 14) | Included   | xczu48dr-ffvg1517-2- |
+|               |            |                     |           |                    | (Rev.   |               |            |                      |
+|               |            |                     |           |                    | 14)     |               |            |                      |
++---------------+------------+---------------------+-----------+--------------------+---------+---------------+------------+----------------------+
+| rrc_dac_clk   | Up-to-date | No changes required |  *(3)     | Clocking Wizard    | 6.0     | 6.0 (Rev. 14) | Included   | xczu48dr-ffvg1517-2- |
+|               |            |                     |           |                    | (Rev.   |               |            |                      |
+|               |            |                     |           |                    | 14)     |               |            |                      |
++---------------+------------+---------------------+-----------+--------------------+---------+---------------+------------+----------------------+
+*(1) /tools/Xilinx/Vivado/2024.1/data/ip/xilinx/usp_rf_data_converter_v2_6/doc/usp_rf_data_converter_v2_6_changelog.txt
+*(2) /tools/Xilinx/Vivado/2024.1/data/ip/xilinx/clk_wiz_v6_0/doc/clk_wiz_v6_0_changelog.txt
+*(3) /tools/Xilinx/Vivado/2024.1/data/ip/xilinx/clk_wiz_v6_0/doc/clk_wiz_v6_0_changelog.txt
+
+
