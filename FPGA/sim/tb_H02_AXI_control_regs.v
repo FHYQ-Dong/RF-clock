@@ -34,15 +34,15 @@ module tb_H02_AXI_control_regs;
 
     wire [31:0] cmd_id_shadow;
     wire [63:0] target_tick_shadow;
-    wire [31:0] control_value_shadow;
+    wire [191:0] control_value_shadow;
     wire        cmd_valid;
     wire [31:0] cmd_id;
     wire [63:0] cmd_target_tick;
-    wire [31:0] cmd_control_value;
+    wire [191:0] cmd_control_value;
     wire        cmd_commit_pulse;
     wire        fault_clear_pulse;
     wire        cmd_fields_complete;
-    wire [3:0]  cmd_written_mask;
+    wire [8:0]  cmd_written_mask;
 
     integer failures;
     integer commit_count;
@@ -81,6 +81,37 @@ module tb_H02_AXI_control_regs;
         .raw_tick_exhausted(raw_tick_exhausted),
         .raw_tick(raw_tick),
         .cmd_ready(cmd_ready),
+        .h05_cmd_idle(1'b1),
+        .h05_cmd_wait(1'b0),
+        .h05_cmd_fault(1'b0),
+        .h05_cmd_return_code(8'h05),
+        .tx_admission_ready(1'b1),
+        .tx_active(1'b0),
+        .tx_done(1'b0),
+        .tx_fault(1'b0),
+        .tx_return_code(8'h00),
+        .h03_exhausted_status(1'b0),
+        .h08_ready_status(1'b1),
+        .h08_idle_status(1'b1),
+        .h08_active_status(1'b0),
+        .h08_fault_status(1'b0),
+        .h08_return_code_status(4'h4),
+        .h09_ready_status(1'b1),
+        .h09_active_status(1'b0),
+        .h09_fault_status(1'b0),
+        .h09_return_code_status(4'h0),
+        .rfdc_ready_status(1'b1),
+        .rfdc_active_status(1'b0),
+        .rfdc_fault_status(1'b0),
+        .rfdc_return_code_status(4'h0),
+        .h10_tx_fault_latched(1'b0),
+        .h03_exhausted_latched(1'b0),
+        .h08_fault_latched(1'b0),
+        .h08_return_code_latched(4'h4),
+        .h09_fault_latched(1'b0),
+        .h09_return_code_latched(4'h0),
+        .rfdc_fault_latched(1'b0),
+        .rfdc_return_code_latched(4'h0),
         .cmd_id_shadow(cmd_id_shadow),
         .target_tick_shadow(target_tick_shadow),
         .control_value_shadow(control_value_shadow),
@@ -227,19 +258,24 @@ module tb_H02_AXI_control_regs;
         axi_write(8'h44, 32'h0000_1000, 4'b1111, response);
         axi_write(8'h48, 32'h0000_0001, 4'b1111, response);
         axi_write(8'h4c, 32'hdead_beef, 4'b1111, response);
+        axi_write(8'h50, 32'h0102_0304, 4'b1111, response);
+        axi_write(8'h54, 32'h0506_0708, 4'b1111, response);
+        axi_write(8'h58, 32'h090a_0b0c, 4'b1111, response);
+        axi_write(8'h5c, 32'h0d0e_0f10, 4'b1111, response);
+        axi_write(8'h60, 32'h1112_1314, 4'b1111, response);
         check(target_tick_shadow == 64'h0000_0001_0000_1000 &&
-              control_value_shadow == 32'hdead_beef &&
+              control_value_shadow == 192'h1112_1314_0d0e_0f10_090a_0b0c_0506_0708_0102_0304_dead_beef &&
               cmd_fields_complete,
               "all command shadow fields assembled");
 
         // A commit must remain valid while H05 is busy/not ready.
         cmd_ready = 1'b0;
-        axi_write(8'h50, 32'h0000_0001, 4'b1111, response);
+        axi_write(8'h64, 32'h0000_0001, 4'b1111, response);
         repeat (2) @(posedge clk);
         check(response == 2'b00 && commit_count == 0 && cmd_valid &&
               cmd_id == 32'h0000_0021 &&
               cmd_target_tick == 64'h0000_0001_0000_1000 &&
-              cmd_control_value == 32'hdead_beef &&
+              cmd_control_value == 192'h1112_1314_0d0e_0f10_090a_0b0c_0506_0708_0102_0304_dead_beef &&
               !cmd_fields_complete,
               "command valid must hold stable while H05 is not ready");
 
@@ -249,7 +285,7 @@ module tb_H02_AXI_control_regs;
         check(commit_count == 1 && !cmd_valid,
               "valid/ready command handshake");
 
-        axi_write(8'h50, 32'h0000_0001, 4'b1111, response);
+        axi_write(8'h64, 32'h0000_0001, 4'b1111, response);
         check(response == 2'b10 && commit_count == 1,
               "incomplete command must return SLVERR");
 
@@ -258,7 +294,7 @@ module tb_H02_AXI_control_regs;
         axi_read(8'h20, read_data, response);
         check(response == 2'b00, "snapshot tick low read");
 
-        axi_write(8'h58, 32'h0000_0001, 4'b1111, response);
+        axi_write(8'h6c, 32'h0000_0001, 4'b1111, response);
         repeat (2) @(posedge clk);
         check(response == 2'b00 && fault_clear_count == 1,
               "H05 fault-clear pulse");

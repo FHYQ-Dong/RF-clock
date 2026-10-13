@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-`include "../src/H05_protocol_defs.vh"
+`include "src/H05_protocol_defs.vh"
 
 module tb_H05_scheduled_execute;
     reg clk;
@@ -10,10 +10,14 @@ module tb_H05_scheduled_execute;
     wire cmd_ready;
     reg [31:0] cmd_id;
     reg [63:0] cmd_target_tick;
-    reg [31:0] cmd_control_value;
+    reg [191:0] cmd_control_value;
     reg schedule_enable;
     reg raw_tick_exhausted;
     reg clear_fault;
+    reg tx_admission_ready;
+    reg tx_done;
+    reg tx_fault;
+    reg [`H05_RETURN_CODE_WIDTH-1:0] tx_return_code;
 
     wire cmd_accepted;
     wire cmd_idle;
@@ -21,7 +25,7 @@ module tb_H05_scheduled_execute;
     wire cmd_wait;
     wire cmd_fault;
     wire apply_now;
-    wire [31:0] active_control_value;
+    wire [191:0] active_control_value;
 
     integer failures;
     reg [63:0] first_target;
@@ -41,6 +45,10 @@ module tb_H05_scheduled_execute;
         .schedule_enable(schedule_enable),
         .raw_tick_exhausted(raw_tick_exhausted),
         .clear_fault(clear_fault),
+        .tx_admission_ready(tx_admission_ready),
+        .tx_done(tx_done),
+        .tx_fault(tx_fault),
+        .tx_return_code(tx_return_code),
         .cmd_accepted(cmd_accepted),
         .cmd_idle(cmd_idle),
         .cmd_return_code(cmd_return_code),
@@ -80,7 +88,7 @@ module tb_H05_scheduled_execute;
             @(negedge clk);
             cmd_id = id;
             cmd_target_tick = target;
-            cmd_control_value = value;
+            cmd_control_value = {{160{1'b0}}, value};
             cmd_valid = 1'b1;
             while (!cmd_ready)
                 @(posedge clk);
@@ -97,10 +105,14 @@ module tb_H05_scheduled_execute;
         cmd_valid = 1'b0;
         cmd_id = 32'd0;
         cmd_target_tick = 64'd0;
-        cmd_control_value = 32'd0;
+        cmd_control_value = 192'd0;
         schedule_enable = 1'b1;
         raw_tick_exhausted = 1'b0;
         clear_fault = 1'b0;
+        tx_admission_ready = 1'b1;
+        tx_done = 1'b0;
+        tx_fault = 1'b0;
+        tx_return_code = {`H05_RETURN_CODE_WIDTH{1'b0}};
         failures = 0;
         apply_seen = 1'b0;
 
@@ -120,20 +132,25 @@ module tb_H05_scheduled_execute;
         #1;
         check(cmd_accepted && !cmd_idle && cmd_wait && !cmd_ready &&
               cmd_return_code == `H05_RETURN_CODE_PENDING &&
-              active_control_value == 32'h1234_5678,
+              active_control_value[191:32] == 160'b0 &&
+              active_control_value[31:0] == 32'h1234_5678,
               "valid command acceptance and control-value latch");
 
-        while (raw_tick < first_target)
+        while (!apply_seen)
             @(posedge clk);
         #1;
-        check(apply_seen && cmd_idle && !cmd_wait &&
-              cmd_return_code == `H05_RETURN_CODE_SUCCESS &&
-              active_control_value == 32'h1234_5678,
-              "apply_now at target tick");
+        check(apply_seen && !cmd_idle && cmd_wait &&
+              cmd_return_code == `H05_RETURN_CODE_PENDING &&
+              active_control_value[191:32] == 160'b0 &&
+              active_control_value[31:0] == 32'h1234_5678,
+              "apply_now starts TX execution at target tick");
+        tx_done = 1'b1;
         @(posedge clk);
         #1;
-        check(cmd_idle && !cmd_wait && cmd_ready,
-              "scheduler returns to idle after apply_now");
+        tx_done = 1'b0;
+        check(cmd_idle && !cmd_wait && cmd_ready &&
+              cmd_return_code == `H05_RETURN_CODE_SUCCESS,
+              "scheduler returns to idle after TX completion");
 
         // Invalid ID and late target are rejected without poisoning the idle
         // scheduler.
@@ -153,7 +170,7 @@ module tb_H05_scheduled_execute;
         @(negedge clk);
         cmd_id = 32'd3;
         cmd_target_tick = raw_tick + 64'd12;
-        cmd_control_value = 32'hcafebabe;
+        cmd_control_value = {{160{1'b0}}, 32'hcafebabe};
         cmd_valid = 1'b1;
         repeat (2) @(posedge clk);
         #1;
@@ -166,7 +183,8 @@ module tb_H05_scheduled_execute;
         #1;
         cmd_valid = 1'b0;
         check(!cmd_idle && cmd_wait && !cmd_ready &&
-              active_control_value == 32'hcafebabe,
+              active_control_value[191:32] == 160'b0 &&
+              active_control_value[31:0] == 32'hcafebabe,
               "held valid command transfers after cmd_ready returns");
 
         // Losing the scheduling authority while waiting creates a sticky
