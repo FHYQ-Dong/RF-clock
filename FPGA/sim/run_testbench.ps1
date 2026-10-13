@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
-    [string[]] $Test = @('ALL')
+    [string[]] $Test = @('ALL'),
+    [string] $H09OutputDir
 )
 
 Set-StrictMode -Version Latest
@@ -9,10 +10,21 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = (Resolve-Path (Join-Path $scriptDir '..\..')).Path
+$fpgaDir = (Resolve-Path (Join-Path $repoDir 'FPGA')).Path
 $srcDir = (Resolve-Path (Join-Path $repoDir 'FPGA\src')).Path
+$dataDir = (Resolve-Path (Join-Path $repoDir 'FPGA\data')).Path
 $simDir = (Resolve-Path (Join-Path $repoDir 'FPGA\sim')).Path
 $buildDir = Join-Path ([System.IO.Path]::GetTempPath()) 'rfclock_iverilog'
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+
+if ([string]::IsNullOrWhiteSpace($H09OutputDir)) {
+    $H09OutputDir = $dataDir
+} elseif (-not [System.IO.Path]::IsPathRooted($H09OutputDir)) {
+    $H09OutputDir = [System.IO.Path]::GetFullPath(
+        (Join-Path (Get-Location) $H09OutputDir)
+    )
+}
+New-Item -ItemType Directory -Force -Path $H09OutputDir | Out-Null
 
 $testMap = [ordered]@{
     H01 = @{
@@ -45,6 +57,11 @@ $testMap = [ordered]@{
         Dut = 'H08_PRN_generator.v'
         Tb  = 'tb_H08_PRN_generator.v'
     }
+    H09 = @{
+        Top = 'tb_H09_pulse_shape'
+        Dut = 'H09_pulse_shape.v'
+        Tb  = 'tb_H09_pulse_shape.v'
+    }
 }
 
 function Show-Usage {
@@ -53,8 +70,12 @@ Usage:
   .\run_testbench.ps1             Run all registered testbenches
   .\run_testbench.ps1 H05         Run one testbench
   .\run_testbench.ps1 H01 H03     Run selected testbenches
+  .\run_testbench.ps1 H09 -H09OutputDir .\FPGA\data
 
-Valid test names: H01 H02 H03 H04 H05 H08 ALL
+Valid test names: H01 H02 H03 H04 H05 H08 H09 ALL
+
+H09 defaults to FPGA/data for its three CSV output files. Use
+-H09OutputDir to override that directory.
 '@ | Write-Host
 }
 
@@ -77,7 +98,7 @@ foreach ($requested in $Test) {
             $selected.Add($name)
         }
     } else {
-        Write-Error "Unknown test '$requested'. Valid names: H01 H02 H03 H04 H05 H08 ALL"
+        Write-Error "Unknown test '$requested'. Valid names: H01 H02 H03 H04 H05 H08 H09 ALL"
     }
 }
 
@@ -130,7 +151,7 @@ foreach ($name in $selected) {
 
     Write-Host "[BUILD] $name"
     $compileOutput = @(
-        & $iverilogCommand '-g2012' ("-I{0}" -f $srcDir) '-s' $entry.Top '-o' $outputPath $dutPath $tbPath 2>&1 |
+        & $iverilogCommand '-g2012' ("-I{0}" -f $fpgaDir) '-s' $entry.Top '-o' $outputPath $dutPath $tbPath 2>&1 |
             ForEach-Object { "$($_)" }
     )
     $compileExitCode = $LASTEXITCODE
@@ -148,7 +169,13 @@ foreach ($name in $selected) {
     }
 
     Write-Host "[RUN  ] $name"
-    & $vvpCommand $outputPath
+    $runArguments = @($outputPath)
+    if ($name -eq 'H09') {
+        $runArguments += "+SAMPLE_FILE=$(Join-Path $H09OutputDir 'h09_rtl_samples.csv')"
+        $runArguments += "+BEAT_FILE=$(Join-Path $H09OutputDir 'h09_rtl_beats.csv')"
+        $runArguments += "+INPUT_FILE=$(Join-Path $H09OutputDir 'h09_rtl_input.csv')"
+    }
+    & $vvpCommand @runArguments
     if ($LASTEXITCODE -ne 0) {
         $failed.Add($name)
         Write-Host "[FAIL ] $name (vvp exit $LASTEXITCODE)" -ForegroundColor Red
