@@ -18,3 +18,11 @@ PL/data/*.png
 # Syncthing
 .stfolder/
 .stignore
+
+# Local editor and tool settings (kept only on this machine)
+.codegraph/
+.cursor/
+.sigasi/
+.vscode/
+.editorconfig
+project.sigasi

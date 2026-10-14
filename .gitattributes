@@ -1,4 +1,4 @@
-# Text files are stored with LF (see .editorconfig); git converts on add.
+# Text files are stored with LF; git converts on add.
 * text=auto eol=lf
 
 # git-lfs
