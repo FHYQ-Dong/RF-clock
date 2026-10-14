@@ -382,4 +382,7 @@
     原因是接线变了（示波器测试时改成 DAC → 示波器 CH1 三通 → 用户所说的 "ADC_1"），不是 run9。TX 幅度
     加大 31 倍 |rx| 仍在噪声水平，说明线缆没接到接收口 ADC_B（推断接的是 ADC_A），只改变了串扰通道。正式的
     M3 要 DAC_A → SMA 线 → ≥ 20 dB 衰减器 → ADC_B，不经示波器三通
-- [x] **提交**：rf-clock 1.2.1.1（36cc575）、换行统一为 LF（f591358）、rf-clock 1.3.0.0（其后一个提交）
+- [x] **提交**：rf-clock 1.2.1.1（7dca4f7）、换行统一为 LF（342fd34）、rf-clock 1.3.0.0（9ee9ccd）
+- [x] **本地设置移出仓库**（2026-10-14，用户要求）：`.codegraph`、`.cursor`、`.sigasi`、`.vscode`、
+  `.editorconfig`、`project.sigasi` 用 `git filter-repo` 从全部历史中删除，加入 `.gitignore`，文件只留在
+  本机；全部提交重新签名，`main` 与 `v2-python-overlay` 已 force push（上面的提交号是改写后的）
