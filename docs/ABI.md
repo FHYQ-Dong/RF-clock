@@ -1,4 +1,4 @@
-# RF-clock PL 编程手册（ABI 1.2）
+# RF-clock PL 编程手册（ABI 1.3）
 
 本手册说明 ARM 软件如何控制 RF-clock 的 PL：第一部分是寄存器级协议（相当于仪器的
 命令集），第二部分是封装这些协议的 Python 库 `rf_clock.pl`。
@@ -108,14 +108,14 @@ Python：`PLClient.validate()`。
 
 | 地址 | 访问 | 格式                        | 复位值            |
 | ---- | ---- | --------------------------- | ----------------- |
-| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00010002（1.2） |
+| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00010003（1.3） |
 
 ```text
-R32 0x04  → 0x00010002
+R32 0x04  → 0x00010003
 ```
 
 major 不等于软件支持的值就拒绝运行；`PPS_INPUTS`、`PPS_CONFIG` 需要 minor ≥ 1，
-`BUILD_VERSION` 需要 minor ≥ 2（§14）。
+`BUILD_VERSION` 需要 minor ≥ 2，`TX_REPEAT` 需要 minor ≥ 3（§14）。
 Python：`PLClient.validate()`、`DeviceInfo.version`。
 
 #### 4.1.3 `CONTROL` — 命令脉冲
@@ -170,7 +170,7 @@ Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`�
 | 0x94 | RO   | [31:24] A，[23:16] B，[15:8] C，[7:0] D | 构建时`pyproject.toml` 的版本 |
 
 ```text
-R32 0x94  → 0x01020000（rf-clock 1.2.0.0）
+R32 0x94  → 0x01030000（rf-clock 1.3.0.0）
 ```
 
 构建脚本 `PL/bd/create_rf_clock_bd.tcl` 读取 `pyproject.toml` 的 `version = "A.B.C.D"`，写成常量
@@ -362,6 +362,7 @@ W32 0x48 <beats>          1 … TX_DEPTH
 ```
 
 从 buffer 的第 0 个 beat 开始连续发出这么多 beat。0 或超过 `TX_DEPTH` 拒绝为 `REJ_LENGTH`。
+重复播放见 `TX_REPEAT`（§4.5.9）。
 
 #### 4.5.3 `CONTROL.TX_DOORBELL` — 提交 TX 命令
 
@@ -369,15 +370,16 @@ W32 0x48 <beats>          1 … TX_DEPTH
 W32 0x40 <target_lo>
 W32 0x44 <target_hi>
 W32 0x48 <beats>
+W32 0x5C <passes>         1.3 起；不写则沿用上次的值（复位为 1）
 W32 0x08 0x01
 R32 0x4C  → 0x01 (ARMED)  否则见 §5.2
 ```
 
-只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期。第一条
+只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条
 不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改
 shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING
 甚至 DONE（看 `TX_SEQ` 是否增加来区分）。
-Python：`PLClient.arm_tx(target, beats)`。
+Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
 
 #### 4.5.4 `CONTROL.TX_CANCEL` — 取消
 
@@ -438,6 +440,29 @@ W32 base+i*32+28 <beat i, 字节 28..31>
   尚未单独验证（对 BPSK 实信号无影响）。
 - 波形不变时只写一次，之后每次发射只提交 TX 命令。
 - TX 为 ARMED 或 RUNNING 时**不得**写 buffer，否则 TX 进入 FAULT，返回码 `FAULT_BUF_WRITE`。
+
+#### 4.5.9 `TX_REPEAT` — 重复播放（shadow，1.3 起）
+
+| 地址 | 访问      | 格式            | 复位值 |
+| ---- | --------- | --------------- | ------ |
+| 0x5C | RW shadow | u32，1 … 65535 | 1      |
+
+```text
+W32 0x5C <passes>         1 … TX_REPEAT_MAX (65535)
+```
+
+一条 TX 命令把 buffer 的第 0 … `TX_LENGTH`−1 个 beat 连续播放 `TX_REPEAT` 遍：每一遍最后一个
+beat 的下一拍就是下一遍的第 0 个 beat，中间没有空拍。`TX_ACTUAL` 是第一遍的开始时刻；全部播完
+才进入 DONE，`TX_SEQ` 只加 1。0 或大于 65535 时 doorbell 拒绝为 `REJ_LENGTH`。总时长
+`TX_LENGTH × TX_REPEAT` 拍，最长约 45 s；RUNNING 中不能取消。
+
+shadow 在 doorbell 时才被取用，不写就沿用上次的值。`PLClient.arm_tx` 在 1.3 起的 bitstream 上
+每次都写它（默认 1）；在更早的 bitstream 上这个地址不存在（写入返回 SLVERR），所以不写，
+`repeat` 不为 1 时抛 `IdentityError`。
+
+首尾相接的波形要用周期波形（`WaveformGenerator(periodic=True)`，§11.9）：普通突发两端各有
+RRC 拖尾，直接重复会在接缝处不连续。
+Python：`PLClient.arm_tx(target, beats, repeat=n)`。
 - 属于 fabric 时钟域，写之前确认时钟状态 GPIO（§1.2）。
 
 Python：`TXBuffer.write_beats(beats)`。
@@ -628,7 +653,8 @@ TX 和 RX 相互独立，可以同时 ARMED，也可以用同一次 `CONTROL` �
 ### 6.1 TX
 
 第 0 个 beat 被 DAC AXIS 接收的那一拍 `raw_tick == TX_TARGET`，此后每拍一个 beat，中间没有
-空隙；突发以外 DAC 输入为 0。突发中的第 n 个样本：
+空隙（`TX_REPEAT` > 1 时遍与遍之间也没有）；突发以外 DAC 输入为 0。突发中的第 n 个样本
+（重复播放时 n 从第一遍起连续计数）：
 
 ```text
 t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
@@ -717,7 +743,7 @@ PL
 1. 确认 tx_state 为 IDLE 或 DONE
 2. R64 0x28 → pps_tick（最近一次 PPS）
 3. target = pps_tick + 100000000 + 时隙偏移；下一个 PPS 之后，必然 ≥ 当前 tick + MIN_LEAD_TICKS
-4. W32 0x40 / 0x44 / 0x48，再 W32 0x08 0x01
+4. W32 0x40 / 0x44 / 0x48（1.3 起再写 0x5C 重复次数），再 W32 0x08 0x01
 5. R32 0x4C，确认为 0x01（ARMED）
 6. 轮询 STATUS 直到 tx_state = DONE 或 FAULT
 7. DONE：R64 0x54，校验 TX_ACTUAL == target
@@ -748,7 +774,7 @@ PL
 | 偏移 | 名称                | 访问 | 复位值     | 含义                                                | 详见    |
 | ---- | ------------------- | ---- | ---------- | --------------------------------------------------- | ------- |
 | 0x00 | `ID`              | RO   | 0x52434C4B | 设计标识 "RCLK"                                     | §4.1.1 |
-| 0x04 | `VERSION`         | RO   | 0x00010002 | [31:16] major，[15:0] minor                         | §4.1.2 |
+| 0x04 | `VERSION`         | RO   | 0x00010003 | [31:16] major，[15:0] minor                         | §4.1.2 |
 | 0x08 | `CONTROL`         | WO   | —         | 命令脉冲                                            | §4.1.3 |
 | 0x0C | `STATUS`          | RO   | —         | 状态字                                              | §4.2.1 |
 | 0x10 | `TIME_EPOCH`      | RO   | 0          | 时钟重新锁定次数                                    | §4.1.4 |
@@ -769,6 +795,7 @@ PL
 | 0x50 | `TX_SEQ`          | RO   | 0          | 完成的 TX 突发数                                    | §4.5.6 |
 | 0x54 | `TX_ACTUAL_LO`    | RO   | 0          | 实际开始 tick 低 32 位                              | §4.5.7 |
 | 0x58 | `TX_ACTUAL_HI`    | RO   | 0          | 实际开始 tick 高 32 位                              | §4.5.7 |
+| 0x5C | `TX_REPEAT`       | RW   | 1          | 重复播放遍数（shadow，1.3）                         | §4.5.9 |
 | 0x60 | `RX_TARGET_LO`    | RW   | 0          | RX 开窗 tick 低 32 位（shadow）                     | §4.6.1 |
 | 0x64 | `RX_TARGET_HI`    | RW   | 0          | RX 开窗 tick 高 32 位（shadow）                     | §4.6.1 |
 | 0x68 | `RX_LENGTH`       | RW   | 0          | RX 窗口长度（beat，shadow）                         | §4.6.2 |
@@ -930,7 +957,7 @@ GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
 | `time_epoch()`                                       | R32`TIME_EPOCH`                                                                         | int                                                                    |
 | `remember_epoch()`                                   | 记下当前 epoch                                                                            | int                                                                    |
 | `require_same_epoch(expected=None)`                  | 与记下的 epoch 比较                                                                       | 变化时`EpochChanged`                                                 |
-| `arm_tx(target, beats)`                              | §4.5.3                                                                                   | 接受则返回；拒绝抛`CommandRejected`；立即 FAULT 抛 `PLClientError` |
+| `arm_tx(target, beats, *, repeat=1)`                 | §4.5.3、§4.5.9                                                                           | 接受则返回；拒绝抛`CommandRejected`；立即 FAULT 抛 `PLClientError` |
 | `arm_rx(target, beats)`                              | §4.6.3                                                                                   | 同上                                                                   |
 | `wait_tx(timeout=1.0, poll_interval=0.001)`          | 轮询到`tx_state = DONE`，读 `TX_ACTUAL`                                                 | `TX_ACTUAL`；≠ target 抛 `TargetMissed`；FAULT 抛 `PLClientError`；超时 `WaitTimeout` |
 | `wait_rx(timeout=1.0, poll_interval=0.001)`          | 轮询到`rx_state = DONE`，读 `RX_RESULT`、`RX_ACTUAL`、`RX_BEATS`（§7.3 第 5–7 步）    | `RXWindow(target, actual, beats)`；作废抛 `RXWindowInvalid`；≠ target 抛 `TargetMissed`；超时 `WaitTimeout` |
@@ -1086,7 +1113,7 @@ buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复�
 
 ### 11.9 `rf_clock.pl.waveform`
 
-#### `WaveformGenerator(database_path=DEFAULT_DATABASE, config_id=DEFAULT_CONFIG_ID, amplitude=512, chip_count=4096, lfsr_seed=0xACE1)`
+#### `WaveformGenerator(database_path=DEFAULT_DATABASE, config_id=DEFAULT_CONFIG_ID, amplitude=512, chip_count=4096, lfsr_seed=0xACE1, periodic=False)`
 
 从 `config/RRC_config.db` 读 RRC 系数，在 ARM 上生成 BPSK PRN 波形（Q = 0）。
 
@@ -1101,6 +1128,18 @@ buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复�
 默认配置：8 个样本/码片，4096 个码片，32841 个样本，4106 个 beat（约 41 µs）。`config_id`
 找不到时直接报错，收发两端靠它确认用的是同一组系数。`load_config(database_path, config_id)`
 返回 `(配置字典, 系数列表)`。
+
+`periodic=True` 生成的是码序列无限重复时的一个周期：RRC 拖尾绕回到开头（循环卷积，
+`simulate_periodic_convolution`），长度正好 `chip_count × 8` 个样本 = `chip_count` 个 beat，
+没有拖尾。用 `arm_tx(..., repeat=n)` 重复播放时得到一段连续信号；65535 码片的 m 序列一个周期
+65535 beat，放得下。
+
+```python
+gen = WaveformGenerator(chip_count=65535, periodic=True)
+beats = gen.generate_beats()                  # 65535 beat
+pl.tx_buffer.write_beats(beats)
+pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
+```
 
 ### 11.10 `rf_clock.pl.beats`
 
@@ -1182,6 +1221,7 @@ bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-tri
 | 1.0  | 初版                                               |
 | 1.1  | 新增`PPS_INPUTS`（0x3C）、`PPS_CONFIG`（0x90） |
 | 1.2  | 新增`BUILD_VERSION`（0x94）                      |
+| 1.3  | 新增`TX_REPEAT`（0x5C）                          |
 
 ### 14.1 软件包与 overlay
 

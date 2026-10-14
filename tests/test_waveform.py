@@ -50,3 +50,20 @@ def test_requested_config_id_is_never_substituted(tmp_path):
     make_rrc_db(database)
     with pytest.raises(ValueError, match="not found"):
         load_config(database, DEFAULT_CONFIG_ID)
+
+
+def test_periodic_waveform_repeats_without_a_seam():
+    import numpy as np
+
+    from rf_clock.pl.waveform import (generate_test_chips, simulate_full_convolution,
+                                      simulate_periodic_convolution)
+
+    gen = WaveformGenerator()
+    sps = gen.samples_per_symbol
+    chips = generate_test_chips(64)
+    period = simulate_periodic_convolution(chips, gen.coeffs, sps, 512)
+    assert period.size == 64 * sps
+    # Three passes back to back equal the burst of three copies away from its ends.
+    burst = simulate_full_convolution(np.tile(chips, 3), gen.coeffs, sps, 512)
+    assert np.array_equal(burst[64 * sps: 128 * sps], period)
+    assert len(WaveformGenerator(chip_count=64, periodic=True).generate_beats()) == 64

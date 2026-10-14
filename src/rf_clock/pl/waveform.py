@@ -137,6 +137,36 @@ def simulate_full_convolution(
     return quantize_output(accumulator, amplitude)
 
 
+def simulate_periodic_convolution(
+    chips: Sequence[int] | np.ndarray,
+    coeffs: Sequence[int | float],
+    sps: int,
+    amplitude: float,
+) -> np.ndarray:
+    """One period of the RRC FIR output for ``chips`` repeated forever.
+
+    ``len(chips) * sps`` samples: the filter tail wraps onto the start
+    (circular convolution), so copies played back to back (``arm_tx(...,
+    repeat=n)``) form one continuous signal.  Sample n matches sample n of
+    :func:`simulate_full_convolution` once the wrapped tail has died out.
+    """
+
+    if len(chips) == 0:
+        raise ValueError("chips cannot be empty")
+    sps = int(sps)
+    if sps <= 0:
+        raise ValueError("sps must be positive")
+    period = len(chips) * sps
+    upsampled = np.zeros(period, dtype=np.float64)
+    upsampled[::sps] = np.asarray(chips, dtype=np.float64)
+    full = np.convolve(upsampled, np.asarray(coeffs, dtype=np.float64))
+    folded = full[:period].copy()
+    for start in range(period, full.size, period):
+        part = full[start:start + period]
+        folded[: part.size] += part
+    return quantize_output(folded, amplitude)
+
+
 def generate_test_chips(count: int, seed: int = DEFAULT_LFSR_SEED) -> np.ndarray:
     """Generate BPSK chips with the H08 16-bit LFSR convention."""
 
@@ -163,6 +193,10 @@ class WaveformGenerator:
     ``generate`` returns one signed 16-bit real (I) sample per element.  The
     uses BPSK, so Q is zero; :meth:`generate_iq` provides the explicit two
     column representation expected by the beat packer.
+
+    ``periodic=True`` gives one period of the repeated sequence instead of a
+    burst with RRC tails: ``chip_count * sps`` samples (``chip_count`` beats
+    at 8 samples per chip) for ``arm_tx(..., repeat=n)``.
     """
 
     database_path: Path | str = DEFAULT_DATABASE
@@ -170,6 +204,7 @@ class WaveformGenerator:
     amplitude: float = DEFAULT_DAC_AMPLITUDE
     chip_count: int = DEFAULT_CHIP_COUNT
     lfsr_seed: int = DEFAULT_LFSR_SEED
+    periodic: bool = False
 
     def __post_init__(self) -> None:
         self.database_path = Path(self.database_path)
@@ -199,7 +234,8 @@ class WaveformGenerator:
 
     @property
     def expected_sample_count(self) -> int:
-        return self.chip_count * self.samples_per_symbol + self.tail_samples
+        tail = 0 if self.periodic else self.tail_samples
+        return self.chip_count * self.samples_per_symbol + tail
 
     def chips(
         self,
@@ -226,12 +262,8 @@ class WaveformGenerator:
             raise ValueError("chips cannot be combined with count or seed")
         if chips is None:
             chips = self.chips(count=count, seed=seed)
-        return simulate_full_convolution(
-            chips,
-            self.coeffs,
-            self.samples_per_symbol,
-            self.amplitude,
-        )
+        convolve = simulate_periodic_convolution if self.periodic else simulate_full_convolution
+        return convolve(chips, self.coeffs, self.samples_per_symbol, self.amplitude)
 
     def generate_iq(
         self,
@@ -261,9 +293,12 @@ class WaveformGenerator:
         # Avoid importing the beat codec when a notebook only needs samples.
         from .beats import TX_LAYOUT, BeatPacker
 
-        return BeatPacker(layout=TX_LAYOUT if layout is None else layout).pack_samples(
-            self.generate_iq(chips, count=count, seed=seed)
-        )
+        layout = TX_LAYOUT if layout is None else layout
+        samples = self.generate_iq(chips, count=count, seed=seed)
+        if self.periodic and len(samples) % layout.lane_count:
+            # A padded last beat would put a gap between repeated passes.
+            raise ValueError("a periodic waveform must fill whole beats")
+        return BeatPacker(layout=layout).pack_samples(samples)
 
 
 # Friendly aliases for callers that prefer the shorter name.
@@ -284,4 +319,5 @@ __all__ = [
     "load_config",
     "quantize_output",
     "simulate_full_convolution",
+    "simulate_periodic_convolution",
 ]

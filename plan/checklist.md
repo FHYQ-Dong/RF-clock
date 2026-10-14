@@ -50,7 +50,10 @@
   ADC tile 0、2 各 2 路（`vin0_01`、`vin0_23`、`vin2_01`、`vin2_23`）。tile 0 和
   tile 2 都有自己的参考时钟，PLL 都可用
   - SMA 口：`vout20`（`DAC_VOUT0_230`）= **DAC_A**，`vout00`（`DAC_VOUT0_228`）= DAC_B（原理图
-    `~/ref/docs/sch/rfsoc4x2_sch.pdf` 与手册引脚表一致；手册框图写反了，2026-10-14）
+    `~/ref/docs/sch/rfsoc4x2_sch.pdf` 与手册引脚表一致；手册框图写反了，2026-10-14）。ADC：
+    `vin2_01`（tile 226 `VIN_I01`）= **ADC_B**，`vin2_23` = ADC_A，`vin0_01` = ADC_D，`vin0_23` = ADC_C。
+    原理图旧标号 DAC0/DAC1、ADC0…ADC3 依次对应 DAC_A/DAC_B、ADC_A…ADC_D（DAC1 = DAC_B，ADC1 = ADC_B）。
+    板上丝印就是 DAC_A/B、ADC_A…D（用户确认）：发射 DAC_A，接收 **ADC_B**
   - 依据：Xilinx RFSoC-PYNQ `boards/RFSoC4x2/base/base.tcl`（`RF-clock-ai:~/ref/pynq4x2/`），
     `ADC0/ADC2/DAC0/DAC2_PLL_Enable true`，以上 6 个模拟端口
   - 修正：此前从 RFSoC-MTS 参考设计推断"只有 tile 2 接时钟"是错的；该参考设计
@@ -287,7 +290,7 @@
     填进 xrfclk 的 `_Config` 再写（`board.program_clocks`），板上不再依赖 xrfclk 目录里的拷贝。
     板上：M1 30 s（周期全为 1e8、抖动 0）、M2 5 次 PASS，MTS 不变
     发布为 **rf-clock 1.2.1.1**（只改 Python/包数据，配 1.2.1.0 bitstream；用户定）。板上 `~/RF-clock`
-    即 1.2.1.1
+    即 1.2.1.1；本地工作区已含 1.3 的改动（`TX_REPEAT`，`pyproject.toml` = 1.3.0.0），1.3 会包含这些改动
   - 零延时后用同样方法热重启 5 次：197.5、194.5、193.0、197.5、201.0 ns，且第一个峰前出现更小的峰。
     **测量方法有缺陷**：`--scope-nco 100` 每次运行重设 NCO，突发起点的载波相位每次不同（0–360° = 0–10 ns），
     按"第 N 个峰"/阈值读数会在一个载波周期内跳。零延时前的 186.5–197 ns 也可能主要是这个原因，
@@ -362,4 +365,21 @@
   `PL` 的部件、`RFDC.mts`、`PLClient.info` 不再是可空类型（未就绪时访问抛异常）；`ClockStatusIO`
   与实现对齐；`pyproject.toml` 加 `[tool.pyright]`（`pythonPlatform = "Linux"`、`extraPaths`）。
   `uvx pyright --pythonpath .venv/Scripts/python.exe src tests examples tools`：0 错误
-- [ ] **提交**：目前所有改动都未提交
+- [x] **TX 重复播放**（用户要求，2026-10-14；ABI 1.3，rf-clock 1.3.0.0）：新寄存器 `TX_REPEAT`
+  （0x5C，shadow，1 … 65535，复位 1）；一条命令把 `TX_LENGTH` 个 beat 首尾相接播放 `TX_REPEAT`
+  遍，遍与遍之间没有空拍，`TX_ACTUAL` 为第一遍起点，全部播完才 DONE。Python：
+  `arm_tx(target, beats, repeat=n)`（1.3 之前的 bitstream 上不写这个地址）、
+  `WaveformGenerator(periodic=True)`（循环 RRC 卷积，无拖尾，65535 码片 = 65535 beat）
+  - [x] RTL 和仿真：P3 testbench 测 3 遍 × 5 beat、2 遍 × 满深度（从最后一个 bank 绕回第一个）、
+    65535 遍 × 1 beat，以及 0 和 65536 被拒；反向检查（新一遍从第 1 个 beat 开始）会失败
+  - [x] 构建 run9（`RF-clock-ai:~/build/rf_clock_impl_run9`）：WNS 0.322 ns，WHS 0.012 ns，无 critical
+    warning；URAM 68/80，BRAM36 10.5/1080
+  - [x] 打包、部署（板上 1.3.0.0，2026-10-14）；例子 03、M1（12 s）、M2（5 次）、M3 压力（3 × 6.4 MB）PASS
+  - [x] 上板：周期 65535 码片 × 10 遍由一条命令连续发出（6.55 ms），一个窗口收下；每遍单独相关，
+    10 个延时在 231.990–232.061 个样本（差 0.071），PSL 22–23 dB；`TX_ACTUAL` = target，
+    `TX_SEQ` 只加 1。遍间多一个空拍会让后面每遍延时累加 8 个样本，所以遍间无缝
+  - M3 延时这次 FAIL（231.95 个样本、标准差 684 ps、最小 PSL 5.1 dB），run8 在同样条件下结果相同：
+    原因是接线变了（示波器测试时改成 DAC → 示波器 CH1 三通 → 用户所说的 "ADC_1"），不是 run9。TX 幅度
+    加大 31 倍 |rx| 仍在噪声水平，说明线缆没接到接收口 ADC_B（推断接的是 ADC_A），只改变了串扰通道。正式的
+    M3 要 DAC_A → SMA 线 → ≥ 20 dB 衰减器 → ADC_B，不经示波器三通
+- [x] **提交**：rf-clock 1.2.1.1（36cc575）、换行统一为 LF（f591358）、rf-clock 1.3.0.0（其后一个提交）

@@ -11,6 +11,11 @@
 // while ARMED/RUNNING, or loss of time_valid enters FAULT, which only
 // CLEAR_FAULT leaves.  The waveform is never paused and resumed.
 //
+// A command may repeat the burst: cmd_repeat passes over beats
+// 0..length-1, where beat 0 of each pass follows the last beat of the
+// previous one in the next clock.  actual_tick is the start of the first
+// pass; DONE and seq follow the last.
+//
 // MIN_LEAD_TICKS must exceed TX_PIPE + 1 so an accepted target can be met.
 //
 // DEPTH need not be a power of two: port A addresses 2**ADDR_W beats, and
@@ -33,6 +38,7 @@ module p3_tx_player #(
     input  wire                   clear_fault,
     input  wire [63:0]            cmd_target,
     input  wire [31:0]            cmd_length,
+    input  wire [31:0]            cmd_repeat,
     // Waveform buffer port A (AXI BRAM Controller).
     input  wire                   bram_en,
     input  wire [DATA_W/8-1:0]    bram_we,
@@ -51,6 +57,7 @@ module p3_tx_player #(
     output wire                   fault
 );
     `include "src/p_defs.vh"
+    `include "src/p_regs.vh"
 
     localparam integer NBYTES     = DATA_W / 8;
     localparam integer BYTE_SHIFT = $clog2(NBYTES);
@@ -116,6 +123,7 @@ module p3_tx_player #(
     reg              rd_active;
     reg              rd_first;
     reg [ADDR_W:0]   rd_left;
+    reg [15:0]       passes_left;  // including the pass being read
     reg              s1_v, s1_f, s1_l;
     reg              s2_v, s2_f, s2_l;
     reg              o_v,  o_f,  o_l;
@@ -148,6 +156,7 @@ module p3_tx_player #(
             rd_active     <= 1'b0;
             rd_first      <= 1'b0;
             rd_left       <= {(ADDR_W+1){1'b0}};
+            passes_left   <= 16'd0;
             rd_addr       <= {ADDR_W{1'b0}};
             {s1_v, s1_f, s1_l} <= 3'b000;
             {s2_v, s2_f, s2_l} <= 3'b000;
@@ -160,15 +169,23 @@ module p3_tx_player #(
             // Pipeline advances every clock; fault/start below override.
             s1_v <= rd_active;
             s1_f <= rd_active && rd_first;
-            s1_l <= rd_active && (rd_left == 1);
+            s1_l <= rd_active && (rd_left == 1) && (passes_left == 1);
             {s2_v, s2_f, s2_l} <= {s1_v, s1_f, s1_l};
             {o_v,  o_f,  o_l}  <= {s2_v, s2_f, s2_l};
             o_data <= s2_v ? ram_q2 : {DATA_W{1'b0}};
             if (rd_active) begin
-                rd_addr  <= rd_addr + 1'b1;
-                rd_left  <= rd_left - 1'b1;
                 rd_first <= 1'b0;
-                if (rd_left == 1) rd_active <= 1'b0;
+                if (rd_left != 1) begin
+                    rd_addr <= rd_addr + 1'b1;
+                    rd_left <= rd_left - 1'b1;
+                end else if (passes_left != 1) begin
+                    // Next pass: beat 0 is read right after the last beat.
+                    rd_addr     <= {ADDR_W{1'b0}};
+                    rd_left     <= length;
+                    passes_left <= passes_left - 1'b1;
+                end else begin
+                    rd_active <= 1'b0;
+                end
             end
 
             case (state)
@@ -176,15 +193,17 @@ module p3_tx_player #(
                     if (doorbell) begin
                         if (!time_valid)
                             result <= RC_REJ_TIME_INVALID;
-                        else if (cmd_length == 32'd0 || cmd_length > DEPTH)
+                        else if (cmd_length == 32'd0 || cmd_length > DEPTH ||
+                                 cmd_repeat == 32'd0 || cmd_repeat > TX_REPEAT_MAX)
                             result <= RC_REJ_LENGTH;
                         else if (cmd_target < raw_tick + MIN_LEAD_TICKS)
                             result <= RC_REJ_STALE;
                         else begin
                             state      <= ST_ARMED;
                             result     <= RC_ARMED;
-                            start_tick <= cmd_target - TX_PIPE;
-                            length     <= cmd_length[ADDR_W:0];
+                            start_tick  <= cmd_target - TX_PIPE;
+                            length      <= cmd_length[ADDR_W:0];
+                            passes_left <= cmd_repeat[15:0];
                         end
                     end
                 end

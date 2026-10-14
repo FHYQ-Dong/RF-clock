@@ -1,8 +1,9 @@
 `timescale 1ns / 1ps
-// P3: buffer load/readback, exact start tick, gap-free burst, rejects,
-// and the three FAULT causes.
+// P3: buffer load/readback, exact start tick, gap-free burst, repeated
+// bursts, rejects, and the three FAULT causes.
 module tb_p3_tx_player;
     `include "src/p_defs.vh"
+    `include "src/p_regs.vh"
 
     localparam integer DATA_W = 256;
     localparam integer ADDR_W = 4;   // 16-beat window
@@ -21,6 +22,7 @@ module tb_p3_tx_player;
     reg         doorbell = 0, cancel = 0, clear_fault = 0;
     reg  [63:0] cmd_target = 0;
     reg  [31:0] cmd_length = 0;
+    reg  [31:0] cmd_repeat = 1;
     reg                bram_en = 0;
     reg [DATA_W/8-1:0] bram_we = 0;
     reg [BA_W-1:0]     bram_addr = 0;
@@ -41,7 +43,7 @@ module tb_p3_tx_player;
     ) dut (
         .clk(clk), .rst(rst), .raw_tick(raw_tick), .time_valid(time_valid),
         .doorbell(doorbell), .cancel(cancel), .clear_fault(clear_fault),
-        .cmd_target(cmd_target), .cmd_length(cmd_length),
+        .cmd_target(cmd_target), .cmd_length(cmd_length), .cmd_repeat(cmd_repeat),
         .bram_en(bram_en), .bram_we(bram_we), .bram_addr(bram_addr),
         .bram_wrdata(bram_wrdata), .bram_rddata(bram_rddata),
         .m_axis_tdata(tdata), .m_axis_tvalid(tvalid), .m_axis_tready(tready),
@@ -50,7 +52,7 @@ module tb_p3_tx_player;
     );
 
     initial begin
-        #50_000;
+        #1_000_000;  // the TX_REPEAT_MAX case alone takes 65535 clocks
         $display("FAIL tb_p3_tx_player (timeout)");
         $finish;
     end
@@ -91,22 +93,27 @@ module tb_p3_tx_player;
         end
     endtask
 
-    // Check the output beat by beat around the burst window.
-    task expect_burst(input [63:0] target, input integer len);
+    // Check the output beat by beat around the burst window: passes x len
+    // beats, pass after pass without a gap.
+    task expect_passes(input [63:0] target, input integer len, input integer passes);
         integer k;
         begin
             while (raw_tick != target - 2) @(negedge clk);
             check(tdata == 0, "zero two ticks before target");
             @(negedge clk);
             check(tdata == 0, "zero one tick before target");
-            for (k = 0; k < len; k = k + 1) begin
+            for (k = 0; k < len * passes; k = k + 1) begin
                 @(negedge clk);
                 check(raw_tick == target + k, "tick alignment");
-                check(tdata == beat(k), "burst beat content");
+                check(tdata == beat(k % len), "burst beat content");
             end
             @(negedge clk);
             check(tdata == 0, "zero after burst");
         end
+    endtask
+
+    task expect_burst(input [63:0] target, input integer len);
+        expect_passes(target, len, 1);
     endtask
 
     integer i;
@@ -203,6 +210,33 @@ module tb_p3_tx_player;
         check(state == ST_FAULT && result == RC_FAULT_TIME, "time loss is a fault");
         pulse_clear;
         check(seq == 2, "faulted bursts do not count as done");
+
+        // Repeated bursts: passes back to back, one DONE, TX_ACTUAL = first pass.
+        cmd_repeat = 3;
+        tgt = raw_tick + 30;
+        submit(tgt, 5);
+        expect_passes(tgt, 5, 3);
+        @(negedge clk);
+        check(state == ST_DONE && seq == 3 && actual_tick == tgt, "repeated burst done once");
+        cmd_repeat = 2;
+        tgt = raw_tick + 30;
+        submit(tgt, DEPTH);
+        expect_passes(tgt, DEPTH, 2);  // wraps from the last bank to the first
+        @(negedge clk);
+        check(state == ST_DONE && seq == 4, "repeated full-depth burst done");
+        cmd_repeat = TX_REPEAT_MAX;
+        tgt = raw_tick + 30;
+        submit(tgt, 1);
+        expect_passes(tgt, 1, TX_REPEAT_MAX);  // the whole pass counter
+        @(negedge clk);
+        check(state == ST_DONE && seq == 5, "maximum repeat done");
+        cmd_repeat = 0;
+        submit(raw_tick + 100, 4);
+        check(result == RC_REJ_LENGTH, "zero repeat rejected");
+        cmd_repeat = TX_REPEAT_MAX + 1;
+        submit(raw_tick + 100, 4);
+        check(result == RC_REJ_LENGTH, "repeat above TX_REPEAT_MAX rejected");
+        cmd_repeat = 1;
 
         if (errors == 0) $display("PASS tb_p3_tx_player");
         else             $display("FAIL tb_p3_tx_player (%0d errors)", errors);

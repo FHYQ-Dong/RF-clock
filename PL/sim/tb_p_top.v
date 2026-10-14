@@ -199,10 +199,13 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0001_0002, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0001_0003, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");
+        rd(REG_TX_REPEAT, v); check(v == 1, "TX_REPEAT reset value");
+        wr(REG_TX_REPEAT, 7); rd(REG_TX_REPEAT, v); check(v == 7, "TX_REPEAT readback");
+        wr(REG_TX_REPEAT, 1);
 
         n = 0;
         v = 0;

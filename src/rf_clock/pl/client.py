@@ -277,11 +277,19 @@ class PLClient:
             if poll_interval:
                 self._sleep(poll_interval)
 
-    def _command(self, operation: str, target: int, length: int, *, rx: bool) -> None:
+    def _command(self, operation: str, target: int, length: int, *, rx: bool,
+                 repeat: int = 1) -> None:
         if not isinstance(target, int) or not 0 <= target < (1 << 64):
             raise ValueError("target must be an unsigned 64-bit integer")
         if not isinstance(length, int) or length <= 0:
             raise ValueError("length must be a positive integer number of beats")
+        if not isinstance(repeat, int) or not 1 <= repeat <= abi.ABI.TX_REPEAT_MAX:
+            raise ValueError(f"repeat must be 1..{abi.ABI.TX_REPEAT_MAX}")
+        # TX_REPEAT exists from ABI 1.3; writing it on an older bitstream is a
+        # bus error, so it is only written where it exists.
+        has_repeat = not rx and self._info is not None and (self._info.version & 0xFFFF) >= 3
+        if repeat != 1 and not has_repeat:
+            self._require_minor(3, "TX_REPEAT")
         state = self.status().rx_state if rx else self.status().tx_state
         if state not in (abi.RxState.IDLE, abi.RxState.DONE):
             raise CommandRejected(operation, int(abi.ResultCode.REJ_BUSY))
@@ -295,6 +303,8 @@ class PLClient:
         self._write(target_lo, target & 0xFFFF_FFFF)
         self._write(target_lo + 4, target >> 32)
         self._write(length_reg, length)
+        if has_repeat:
+            self._write(abi.ABI.REG.TX_REPEAT, repeat)
         self._write(abi.ABI.REG.CONTROL, 1 << doorbell)
         result_reg = abi.ABI.REG.RX_RESULT if rx else abi.ABI.REG.TX_RESULT
         result = self._read(result_reg) & 0xFF
@@ -325,8 +335,13 @@ class PLClient:
             raise PLClientError(f"TX entered FAULT right after arming (result 0x{result:02x})")
         raise CommandRejected(operation, result)
 
-    def arm_tx(self, target: int, beats: int) -> None:
-        self._command("TX", target, beats, rx=False)
+    def arm_tx(self, target: int, beats: int, *, repeat: int = 1) -> None:
+        """Play TX buffer beats 0..beats-1 from tick ``target``.
+
+        ``repeat`` plays them that many times back to back without a gap
+        (TX_REPEAT, ABI 1.3); TX_ACTUAL is the start of the first pass.
+        """
+        self._command("TX", target, beats, rx=False, repeat=repeat)
 
     def arm_rx(self, target: int, beats: int) -> None:
         self._command("RX", target, beats, rx=True)

@@ -35,6 +35,7 @@ localparam [7:0] REG_TX_RESULT       = 8'h4C;  // RO
 localparam [7:0] REG_TX_SEQ          = 8'h50;  // RO
 localparam [7:0] REG_TX_ACTUAL_LO    = 8'h54;  // RO
 localparam [7:0] REG_TX_ACTUAL_HI    = 8'h58;  // RO
+localparam [7:0] REG_TX_REPEAT       = 8'h5C;  // RW shadow, passes over the burst (since 1.3)
 
 // ---- RX ----
 localparam [7:0] REG_RX_TARGET_LO    = 8'h60;  // RW shadow
@@ -89,9 +90,12 @@ localparam integer BUILDVER_ABI_MINOR_LSB = 16;  // [23:16] B
 localparam integer BUILDVER_BUILD_LSB     = 8;   // [15:8]  C
 localparam integer BUILDVER_PATCH_LSB     = 0;   // [7:0]   D
 
+// ---- TX_REPEAT: 1 .. TX_REPEAT_MAX passes, played back to back (reset 1) ----
+localparam [31:0] TX_REPEAT_MAX = 32'd65535;
+
 // ---- RX_RESULT / FAULT_INFO fields ----
 localparam integer RX_RESULT_FLAGS_LSB   = 8;   // RX_RESULT [11:8]
 localparam integer FAULT_INFO_COUNT_LSB  = 16;  // FAULT_INFO [31:16]
 
 localparam [31:0] P_DESIGN_ID = 32'h5243_4C4B;  // "RCLK"
-localparam [31:0] P_VERSION   = 32'h0001_0002;  // major.minor = 1.2
+localparam [31:0] P_VERSION   = 32'h0001_0003;  // major.minor = 1.3

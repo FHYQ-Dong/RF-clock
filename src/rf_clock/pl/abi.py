@@ -28,6 +28,7 @@ class ABI:
         TX_SEQ = 0x50
         TX_ACTUAL_LO = 0x54
         TX_ACTUAL_HI = 0x58
+        TX_REPEAT = 0x5C
         RX_TARGET_LO = 0x60
         RX_TARGET_HI = 0x64
         RX_LENGTH = 0x68
@@ -76,10 +77,11 @@ class ABI:
         BUILD_LSB = 0x8
         PATCH_LSB = 0x0
 
+    TX_REPEAT_MAX = 0xFFFF
     RX_RESULT_FLAGS_LSB = 0x8
     FAULT_INFO_COUNT_LSB = 0x10
     DESIGN_ID = 0x52434C4B
-    VERSION = 0x00010002
+    VERSION = 0x00010003
 
 class TxState(IntEnum):
     IDLE = 0x0

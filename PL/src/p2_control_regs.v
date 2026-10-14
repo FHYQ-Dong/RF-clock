@@ -40,6 +40,7 @@ module p2_control_regs #(
     output reg         clear_fault,
     output reg  [63:0] tx_target,
     output reg  [31:0] tx_length,
+    output reg  [31:0] tx_repeat,
     output reg  [63:0] rx_target,
     output reg  [31:0] rx_length,
     output reg  [1:0]  pps_config,   // {PPSCFG_INVERT, PPSCFG_SRC_TRIG}
@@ -101,6 +102,7 @@ module p2_control_regs #(
             s_axi_bresp  <= RESP_OKAY;
             tx_target    <= 64'd0;
             tx_length    <= 32'd0;
+            tx_repeat    <= 32'd1;
             rx_target    <= 64'd0;
             rx_length    <= 32'd0;
             pps_config   <= 2'b00;
@@ -124,6 +126,7 @@ module p2_control_regs #(
                         REG_TX_TARGET_LO: tx_target[31:0]  <= s_axi_wdata;
                         REG_TX_TARGET_HI: tx_target[63:32] <= s_axi_wdata;
                         REG_TX_LENGTH:    tx_length        <= s_axi_wdata;
+                        REG_TX_REPEAT:    tx_repeat        <= s_axi_wdata;
                         REG_RX_TARGET_LO: rx_target[31:0]  <= s_axi_wdata;
                         REG_RX_TARGET_HI: rx_target[63:32] <= s_axi_wdata;
                         REG_RX_LENGTH:    rx_length        <= s_axi_wdata;
@@ -184,6 +187,7 @@ module p2_control_regs #(
             REG_TX_TARGET_LO:    rd_value = tx_target[31:0];
             REG_TX_TARGET_HI:    rd_value = tx_target[63:32];
             REG_TX_LENGTH:       rd_value = tx_length;
+            REG_TX_REPEAT:       rd_value = tx_repeat;
             REG_TX_RESULT:       rd_value = {24'd0, tx_result};
             REG_TX_SEQ:          rd_value = tx_seq;
             REG_TX_ACTUAL_LO:    rd_value = tx_actual_tick[31:0];

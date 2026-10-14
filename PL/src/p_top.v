@@ -172,6 +172,7 @@ module p_top #(
     wire        tx_doorbell, tx_cancel, rx_doorbell, rx_cancel, clear_fault;
     wire [63:0] tx_target, rx_target;
     wire [31:0] tx_length, rx_length;
+    wire [31:0] tx_repeat;
 
     wire [2:0]  tx_state;
     wire [7:0]  tx_result;
@@ -225,6 +226,7 @@ module p_top #(
         .clear_fault        (clear_fault),
         .tx_target          (tx_target),
         .tx_length          (tx_length),
+        .tx_repeat          (tx_repeat),
         .rx_target          (rx_target),
         .rx_length          (rx_length),
         .pps_config         (pps_config),
@@ -277,6 +279,7 @@ module p_top #(
         .clear_fault   (clear_fault),
         .cmd_target    (tx_target),
         .cmd_length    (tx_length),
+        .cmd_repeat    (tx_repeat),
         .bram_en       (bram_en),
         .bram_we       (bram_we),
         .bram_addr     (bram_addr),

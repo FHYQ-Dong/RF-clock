@@ -103,6 +103,7 @@ class ABI:
     class BUILDVER:
 {indented(build_version, "BUILDVER_")}
 
+    TX_REPEAT_MAX = 0x{values["TX_REPEAT_MAX"]:X}
     RX_RESULT_FLAGS_LSB = 0x{values["RX_RESULT_FLAGS_LSB"]:X}
     FAULT_INFO_COUNT_LSB = 0x{values["FAULT_INFO_COUNT_LSB"]:X}
     DESIGN_ID = 0x{values["P_DESIGN_ID"]:08X}

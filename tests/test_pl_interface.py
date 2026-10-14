@@ -89,10 +89,11 @@ class PLInterfaceTests(unittest.TestCase):
         self.regs.on_write = on_write
         self.client.arm_tx(1000, 2)
         self.assertEqual(
-            [offset for offset, _ in self.regs.write_log[-4:]],
+            [offset for offset, _ in self.regs.write_log[-5:]],
             [abi.ABI.REG.TX_TARGET_LO, abi.ABI.REG.TX_TARGET_HI,
-             abi.ABI.REG.TX_LENGTH, abi.ABI.REG.CONTROL],
+             abi.ABI.REG.TX_LENGTH, abi.ABI.REG.TX_REPEAT, abi.ABI.REG.CONTROL],
         )
+        self.assertEqual(self.regs.values[abi.ABI.REG.TX_REPEAT], 1)  # always written from 1.3
         # Return to an editable state for the buffer test.
         self.regs.values[abi.ABI.REG.STATUS] = status_word(tx=abi.TxState.IDLE)
         memory = MemoryMMIO()
@@ -272,6 +273,23 @@ class PLInterfaceTests(unittest.TestCase):
             self.client.pps_inputs()
         with self.assertRaises(IdentityError):
             self.client.set_pps_config(source_trig=True)
+
+    def test_tx_repeat(self):
+        self._on_tx_doorbell(abi.ResultCode.ARMED)
+        self.client.arm_tx(1000, 2, repeat=10)
+        self.assertEqual(self.regs.values[abi.ABI.REG.TX_REPEAT], 10)
+        with self.assertRaises(ValueError):
+            self.client.arm_tx(1000, 2, repeat=0)
+
+    def test_tx_repeat_not_written_before_abi_1_3(self):
+        self.regs.values[abi.ABI.REG.VERSION] = 0x0001_0002
+        self.client.validate()
+        self._on_tx_doorbell(abi.ResultCode.ARMED)
+        self.client.arm_tx(1000, 2)
+        self.assertNotIn(abi.ABI.REG.TX_REPEAT, [offset for offset, _ in self.regs.write_log])
+        self.regs.values[abi.ABI.REG.STATUS] = status_word()
+        with self.assertRaises(IdentityError):
+            self.client.arm_tx(1000, 2, repeat=2)
 
     def test_build_version_needs_abi_1_2(self):
         self.regs.values[abi.ABI.REG.BUILD_VERSION] = 0x01_02_03_04
