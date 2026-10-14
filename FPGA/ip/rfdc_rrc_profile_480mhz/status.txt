@@ -1,7 +1,0 @@
-data_source=installed_ip_configuration
-deployable=false
-board_access=false
-reference_mhz=480.000
-generated=true
-static_checks=true
-runtime_qualified=false

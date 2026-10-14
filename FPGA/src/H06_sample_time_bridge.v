@@ -1,1 +1,0 @@
-// H06: Bridge between raw tick and sample sequence

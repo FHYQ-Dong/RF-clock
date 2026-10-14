@@ -3,3 +3,6 @@
 *.png filter=lfs diff=lfs merge=lfs -text
 *.jpg filter=lfs diff=lfs merge=lfs -text
 *.db filter=lfs diff=lfs merge=lfs -text
+*.bit filter=lfs diff=lfs merge=lfs -text
+*.xsa filter=lfs diff=lfs merge=lfs -text
+*.hwh filter=lfs diff=lfs merge=lfs -text

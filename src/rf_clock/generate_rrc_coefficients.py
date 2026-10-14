@@ -6,23 +6,17 @@ def generate_rrc_coefficients(
     beta: float,
     span_chips: int,
     samples_per_symbol: int,
-    coeff_bits: int,
-    frac_bits: int,
-) -> list[int]:    
+) -> list[float]:
     if not numpy.isfinite(beta) or not 0.0 <= beta <= 1.0:
         raise ValueError("beta must be in [0, 1]")
     if span_chips % 2 != 0:
         raise ValueError("span_chips must be even")
     if samples_per_symbol <= 0:
         raise ValueError("samples_per_symbol must be positive")
-    if coeff_bits < 2:
-        raise ValueError("coeff_bits must be at least 2")
     if span_chips <= 0 or span_chips % 2 != 0:
         raise ValueError("span_chips must be a positive even number")
 
     half_samples = span_chips * samples_per_symbol // 2
-    
-    qscale = 1 << frac_bits
 
     t = (
         numpy.arange(
@@ -77,28 +71,18 @@ def generate_rrc_coefficients(
     # Unit energy normalization
     h /= numpy.sqrt(numpy.sum(h * h))
 
-    # Limit maximum L1 gain for each phase after zero-padding
+    # Limit maximum L1 gain for each phase after zero-padding, so +/-1 chips
+    # never exceed 0.98 of the output amplitude.
     phase_l1 = max(
         numpy.sum(numpy.abs(h[phase::samples_per_symbol]))
         for phase in range(samples_per_symbol)
     )
     h *= 0.98 / phase_l1
 
-    # Quantize to signed Q1.(coeff_bits-1)
-    qscale = 1 << (coeff_bits - 1)
-    q = numpy.sign(h) * numpy.floor(numpy.abs(h) * qscale + 0.5)
-    q = q.astype(numpy.int64)
-
-    minimum = -(1 << (coeff_bits - 1))
-    maximum = (1 << (coeff_bits - 1)) - 1
-
-    if numpy.any(q < minimum) or numpy.any(q > maximum):
-        raise ValueError("quantized coefficient exceeds signed range")
-
-    if len(q) != span_chips * samples_per_symbol + 1:
+    if len(h) != span_chips * samples_per_symbol + 1:
         raise ValueError("unexpected coefficient count")
 
-    if not numpy.array_equal(q, q[::-1]):
+    if not numpy.allclose(h, h[::-1], rtol=0.0, atol=1e-15):
         raise ValueError("RRC coefficients are not symmetric")
 
-    return [int(value) for value in q]
+    return [float(value) for value in h]

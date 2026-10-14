@@ -2,17 +2,18 @@
 __pycache__/
 
 # Vivado batch build outputs
-FPGA/build/
+PL/build/
 vivado.jou
 vivado.log
-FPGA/ip/*.vivado.log
-FPGA/ip/*/project/
-FPGA/ip/*/metadata/
+PL/ip/*.vivado.log
+PL/ip/*/project/
+PL/ip/*/metadata/
+.Xil/
 
 # Generated H09 simulation reports and waveform data
-FPGA/data/*.html
-FPGA/data/*.csv
-FPGA/data/*.png
+PL/data/*.html
+PL/data/*.csv
+PL/data/*.png
 
 # Syncthing
 .stfolder/
