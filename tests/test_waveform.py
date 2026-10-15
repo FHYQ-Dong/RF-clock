@@ -1,55 +1,59 @@
 from __future__ import annotations
 
-import sqlite3
-
+import numpy as np
 import pytest
 
-from rf_clock.pl.waveform import DEFAULT_CONFIG_ID, WaveformGenerator, load_config
+from rf_clock.pl.waveform import (DEFAULT_CONFIG_ID, WaveformGenerator, rrc_config,
+                                  rrc_config_id)
+
+# Coefficients of the default filter (beta 0.25, span 10, 8 samples/chip) as
+# stored in the former RRC coefficient database; they must not drift.
+GOLDEN_RRC = [
+    -0.0041841625937675386, -0.0060512576712495585, -0.006374663875729477,
+    -0.0048564656437480236, -0.0016357278848564158, 0.0026881872028280316,
+    0.0071402181827947, 0.01055532587546208, 0.011834598974560484,
+    0.010221408903193823, 0.005536800766307449, -0.0016848392744489187,
+    -0.010203775662837202, -0.01824423205057157, -0.023809641997382742,
+    -0.025095023149511883, -0.020920812968837677, -0.011098532964949542,
+    0.0033582774180054994, 0.02024324858838316, 0.036415159287357626,
+    0.04828698805342467, 0.052480583579380825, 0.04654167684468995,
+    0.029586497436401193, 0.0027500803394758682, -0.030670470923014795,
+    -0.06543939306422882, -0.09497368556691249, -0.1122384579139888,
+    -0.11082315479417992, -0.08603423380153949, -0.035824569588526756,
+    0.038605166754717854, 0.13265371969970385, 0.2386685714349705,
+    0.34677165159803625, 0.4460574859335574, 0.525996072799209,
+    0.5778347648126534, 0.5957882380808381, 0.5778347648126534,
+    0.525996072799209, 0.4460574859335574, 0.34677165159803625,
+    0.2386685714349705, 0.13265371969970385, 0.038605166754717854,
+    -0.035824569588526756, -0.08603423380153949, -0.11082315479417992,
+    -0.1122384579139888, -0.09497368556691249, -0.06543939306422882,
+    -0.030670470923014795, 0.0027500803394758682, 0.029586497436401193,
+    0.04654167684468995, 0.052480583579380825, 0.04828698805342467,
+    0.036415159287357626, 0.02024324858838316, 0.0033582774180054994,
+    -0.011098532964949542, -0.020920812968837677, -0.025095023149511883,
+    -0.023809641997382742, -0.01824423205057157, -0.010203775662837202,
+    -0.0016848392744489187, 0.005536800766307449, 0.010221408903193823,
+    0.011834598974560484, 0.01055532587546208, 0.0071402181827947,
+    0.0026881872028280316, -0.0016357278848564158, -0.0048564656437480236,
+    -0.006374663875729477, -0.0060512576712495585, -0.0041841625937675386,
+]
 
 
-def make_rrc_db(path):
-    with sqlite3.connect(path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE RRC_config (
-                RRC_CONFIG_ID INTEGER PRIMARY KEY,
-                RRC_SAMPLES_PER_SYMBOL INTEGER NOT NULL,
-                RRC_SPAN_CHIPS INTEGER NOT NULL,
-                RRC_TAP_COUNT INTEGER NOT NULL,
-                RRC_TAIL_SAMPLES INTEGER NOT NULL,
-                RRC_BETA REAL NOT NULL
-            );
-            CREATE TABLE RRC_coeff (
-                RRC_CONFIG_ID INTEGER NOT NULL,
-                TAP_INDEX INTEGER NOT NULL,
-                COEFFICIENT REAL NOT NULL,
-                PRIMARY KEY (RRC_CONFIG_ID, TAP_INDEX)
-            );
-            INSERT INTO RRC_config VALUES (123, 2, 2, 5, 3, 0.25);
-            """
-        )
-        # A short symmetric filter is enough to exercise the current schema.
-        conn.executemany(
-            "INSERT INTO RRC_coeff VALUES (123, ?, ?)",
-            list(enumerate([-0.1, 0.2, 0.8, 0.2, -0.1])),
-        )
+def test_default_filter_matches_the_reference_coefficients():
+    config, coeffs = rrc_config()
+    assert config["id"] == DEFAULT_CONFIG_ID == 2_134_958_710
+    assert (config["tap_count"], config["tail_samples"]) == (81, 73)
+    # Allow last-bit differences between machines, nothing more.
+    np.testing.assert_allclose(coeffs, GOLDEN_RRC, rtol=0, atol=1e-15)
 
 
-def test_current_rrc_schema(tmp_path):
-    database = tmp_path / "RRC_config.db"
-    make_rrc_db(database)
-    config, coeffs = load_config(database, 123)
-    assert config["id"] == 123
-    assert coeffs == [-0.1, 0.2, 0.8, 0.2, -0.1]
-    generator = WaveformGenerator(database, config_id=123, chip_count=2)
-    assert len(generator.generate()) == 2 * 2 + 3
-
-
-def test_requested_config_id_is_never_substituted(tmp_path):
-    database = tmp_path / "RRC_config.db"
-    make_rrc_db(database)
-    with pytest.raises(ValueError, match="not found"):
-        load_config(database, DEFAULT_CONFIG_ID)
+def test_other_parameters_give_another_filter():
+    generator = WaveformGenerator(span_chips=2, samples_per_symbol=2, chip_count=2)
+    assert generator.tap_count == 5
+    assert len(generator.generate()) == (2 - 1) * 2 + 5
+    assert generator.config_id == rrc_config_id(0.25, 2, 2) != DEFAULT_CONFIG_ID
+    with pytest.raises(ValueError):
+        rrc_config(span_chips=3)  # the filter needs an even span
 
 
 def test_periodic_waveform_repeats_without_a_seam():
