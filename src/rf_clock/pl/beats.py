@@ -202,8 +202,17 @@ class BeatLayout:
         return beat
 
     def pack_samples(self, samples: Iterable[object]) -> list[int]:
-        """Pack a flat sample sequence into beats, zero-padding the tail beat."""
+        """Pack a flat sample sequence into beats, zero-padding the tail beat.
 
+        An integer NumPy array of I samples ``(N,)`` or I/Q rows ``(N, 2)`` is
+        packed with array operations when the layout has 16-bit samples on
+        16-bit boundaries (every RFDC layout); the beats are the same.
+        """
+
+        if getattr(getattr(samples, "dtype", None), "kind", None) in ("i", "u") and (
+            self.sample_bits == 16 and not any(o % 16 for o in (*self._i, *self._q))
+        ):
+            return self._pack_array(samples)
         values = list(samples)
         if not values:
             return []
@@ -214,6 +223,32 @@ class BeatLayout:
             )
             for start in range(0, len(values), self.lane_count)
         ]
+
+    def _pack_array(self, samples) -> list[int]:
+        """:meth:`pack_samples` for an integer array: fill the 16-bit words of
+        all beats at once, then cut the bytes into 256-bit integers."""
+
+        import numpy as np
+
+        values = np.asarray(samples)
+        if values.ndim == 1:
+            values = np.stack([values, np.zeros_like(values)], axis=1)
+        if values.ndim != 2 or values.shape[1] != 2:
+            raise ValueError("a sample array must have shape (N,) or (N, 2)")
+        if values.size and (values.min() < -32768 or values.max() > 32767):
+            raise ValueError("samples are outside the signed 16-bit range")
+
+        count = -(-len(values) // self.lane_count)
+        lanes = np.zeros((count * self.lane_count, 2), dtype=np.int16)
+        lanes[: len(values)] = values
+        lanes = lanes.reshape(count, self.lane_count, 2)
+        physical = [self._physical_lane(lane) for lane in range(self.lane_count)]
+        words = np.zeros((count, self.width_bits // 16), dtype="<i2")
+        words[:, [self._i[p] // 16 for p in physical]] = lanes[:, :, 0]
+        words[:, [self._q[p] // 16 for p in physical]] = lanes[:, :, 1]
+        data = words.tobytes()
+        size = self.beat_bytes
+        return [int.from_bytes(data[k : k + size], "little") for k in range(0, len(data), size)]
 
     def pack_bytes(self, samples: Iterable[object]) -> bytes:
         """Pack samples as the little-endian bytes used by MMIO/DMA buffers."""
