@@ -16,7 +16,7 @@ that delay must not change across restarts.  Each run appends its MTS
 latencies to ``--log`` so restarts (each one rewrites the clocks and redoes
 MTS) can be compared.
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python tests/pl/m2_tx_timing.py 10
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m2_tx_timing 10
 
 The RF output (3.8 GHz and its 5.8 GHz image) is beyond a low-bandwidth
 scope; ``--scope-nco 100`` moves it to 100 MHz for the run.  The NCO phase at
@@ -33,7 +33,7 @@ import argparse
 import sys
 import time
 
-from board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
+from .board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
 from rf_clock.pl import TX_LAYOUT, WaveformGenerator, abi
 from rf_clock.pl.beats import BeatPacker
 from rf_clock.pl.client import TargetMissed

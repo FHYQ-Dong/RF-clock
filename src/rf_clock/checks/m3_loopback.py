@@ -24,7 +24,7 @@ default        Every second: TX the PRN+RRC burst at next PPS + offset and
                copies memory, to test S2MM against DDR contention.  PASS: no
                invalid window.
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python tests/pl/m3_loopback.py 20
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m3_loopback 20
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import time
 
 import numpy as np
 
-from board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
+from .board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
 from rf_clock.correlator import estimate_delay, find_peak
 from rf_clock.pl import PL, TX_LAYOUT, WaveformGenerator, abi
 from rf_clock.pl.beats import BeatPacker

@@ -31,11 +31,10 @@ default-groups = ["dev", "plot"]
 pynqmetadata = { git = "https://github.com/Xilinx/PYNQ-Metadata.git" }
 pynqutils = { git = "https://github.com/Xilinx/PYNQ-Utils.git" }
 
-# Type checking (Pylance/pyright): PL code and the board scripts run on the
-# board's Linux; tests import the board scripts from tests/pl.
+# Type checking (Pylance/pyright): the PL code and the board checks run on the
+# board's Linux.
 [tool.pyright]
 pythonPlatform = "Linux"
-extraPaths = ["tests/pl"]
 
 [project.scripts]
 rf-clock = "rf_clock:main"

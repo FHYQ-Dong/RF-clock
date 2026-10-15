@@ -1,4 +1,4 @@
-"""Software model of the M3 loopback data path (tests/pl/m3_loopback.py).
+"""Software model of the M3 loopback data path (rf_clock.checks.m3_loopback).
 
 TX beats -> samples -> channel (fractional delay, phase, noise) -> int16 ->
 DMA-buffer bytes -> unpack_complex -> correlate.  The model's DAC reads beats
@@ -7,17 +7,13 @@ as TX_LAYOUT and the ADC side delivers RX_LAYOUT, as measured on the board.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 
 from rf_clock.correlator import estimate_delay
 from rf_clock.pl.beats import RX_LAYOUT, TX_LAYOUT, BeatLayout, BeatPacker
 from rf_clock.pl.waveform import WaveformGenerator
 
-sys.path.insert(0, str(Path(__file__).parent / "pl"))
-from m3_loopback import impulse_pattern, locate_impulses  # noqa: E402
+from rf_clock.checks.m3_loopback import impulse_pattern, locate_impulses
 
 
 def channel(tx: np.ndarray, length: int, delay: float, phase: float, noise: float, seed: int = 0):

@@ -1,7 +1,10 @@
-"""在开发机上演示一次 TX 波形写入和定时提交。
+"""One TX waveform load and timed command, on a development machine.
 
-这个例子不需要 PYNQ。FakePL 只模拟 ABI 中与软件顺序有关的寄存器变化；真正的
-板上运行应把 MemoryMMIO 换成 PynqMMIO，并把波形写入 AXI BRAM buffer。
+    python -m rf_clock.examples.pl.01_fake_tx
+
+No PYNQ needed.  FakePL models only the register changes of the ABI that the
+software sequence depends on; on the board, PL.open() provides PynqMMIO
+registers and the on-chip TX buffer instead.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from rf_clock.pl.txbuf import TXBuffer
 
 
 def status_word(tx: abi.TxState = abi.TxState.IDLE) -> int:
-    """构造一个 time_valid/pps_locked 的假 STATUS。"""
+    """A fake STATUS word with time_valid and pps_locked set."""
     return (
         (1 << abi.ABI.STAT.TIME_VALID)
         | (1 << abi.ABI.STAT.CLOCKS_LOCKED)
@@ -23,7 +26,7 @@ def status_word(tx: abi.TxState = abi.TxState.IDLE) -> int:
 
 
 class FakePL:
-    """只模拟 TX doorbell 和完成状态；不模拟 RFDC 数据流。"""
+    """Models the TX doorbell and completion only, not the RFDC data path."""
 
     def __init__(self) -> None:
         self.clock = MemoryMMIO(initial={0: 1})  # GPIO bit0: fabric MMCM locked
@@ -47,12 +50,12 @@ class FakePL:
         elif offset == abi.ABI.REG.TX_TARGET_HI:
             self.tx_target = (self.tx_target & 0xFFFF_FFFF) | (value << 32)
         elif offset == abi.ABI.REG.CONTROL and value == 1 << abi.ABI.CTRL.TX_DOORBELL:
-            # 硬件在 doorbell 后立即返回 ARMED；不能直接返回 DONE。
+            # The PL answers ARMED right after the doorbell, never DONE at once.
             self.regs.values[abi.ABI.REG.TX_RESULT] = int(abi.ResultCode.ARMED)
             self.regs.values[abi.ABI.REG.STATUS] = status_word(abi.TxState.ARMED)
 
     def complete_tx(self) -> None:
-        """模拟 DAC 接收了第 0 拍后的 DONE 状态。"""
+        """The DONE state after the DAC has taken beat 0."""
         self.regs.values[abi.ABI.REG.TX_RESULT] = int(abi.ResultCode.DONE)
         self.regs.values[abi.ABI.REG.TX_ACTUAL_LO] = self.tx_target & 0xFFFF_FFFF
         self.regs.values[abi.ABI.REG.TX_ACTUAL_HI] = self.tx_target >> 32
@@ -62,13 +65,14 @@ class FakePL:
 def main() -> None:
     pl = FakePL()
     client = PLClient(pl.regs, pl.clock)
-    info = client.validate()  # 先检查 ID/VERSION，再使用其余寄存器
+    info = client.validate()  # ID/VERSION first, then the other registers
 
-    # TX buffer 只在 IDLE/DONE 写入；每个 beat 固定 32 字节、按小端 32-bit 写。
+    # Write the TX buffer only in IDLE/DONE; a beat is 32 bytes, written as
+    # little-endian 32-bit words.
     tx_buffer = TXBuffer(MemoryMMIO(), client)
     tx_buffer.write_beat(0, bytes(range(32)))
 
-    # target 必须是未来 tick；PL 还会再次按 MIN_LEAD_TICKS 检查。
+    # The target must be a future tick; the PL checks it against MIN_LEAD_TICKS.
     target = 100_000_100
     client.arm_tx(target, beats=1)  # shadow → doorbell → RESULT == ARMED
     pl.complete_tx()

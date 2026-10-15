@@ -1,6 +1,8 @@
 // Minimal /dev/mem access to the RF-clock PL from C++ (docs/ABI.md appendix A.3).
 //
-//   g++ -O2 -o mmio_demo examples/native/mmio_demo.cpp && sudo ./mmio_demo
+//   g++ -O2 -o mmio_demo mmio_demo.cpp && sudo ./mmio_demo
+//
+// (the source is in the installed package, rf_clock/examples/native/)
 //
 // Needs the rf_clock overlay loaded; checks the clock-status GPIO before
 // touching the fabric-clock registers.  Reads ID, VERSION, TICK and times a

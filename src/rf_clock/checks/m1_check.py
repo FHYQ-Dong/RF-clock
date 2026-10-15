@@ -6,7 +6,7 @@ period is exactly 100,000,000 ticks, PPS_JITTER_CNT and the fault count do
 not move, and pps_locked stays set.  P1 checks every period in hardware, so
 the jitter and fault counters cover the periods between samples too.
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python tests/pl/m1_check.py 600 --no-clocks
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m1_check 600 --no-clocks
 
 Needs a PL ABI 1.1 bitstream (PPS_CONFIG / PPS_INPUTS); add --no-version-check
 for one before 1.2.
@@ -18,7 +18,7 @@ import argparse
 import sys
 import time
 
-from board_common import add_common_args, mark
+from .board_common import add_common_args, mark
 from rf_clock.pl import PL, abi
 from rf_clock.pl.bringup import BringupError, mmio_from_overlay, pynq_pl_reset
 from rf_clock.pl.client import PLClient

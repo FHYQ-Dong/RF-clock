@@ -1,4 +1,8 @@
-"""在开发机上演示一个 RX 窗口：rx_dma 先配 S2MM，再由 ctrl 按 RX doorbell、等待和核对。"""
+"""One RX window on a development machine: rx_dma sets up the S2MM, then ctrl
+rings the RX doorbell, waits and checks the window.
+
+    python -m rf_clock.examples.pl.02_fake_rx
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ class Buffer:
         self.invalidated = False
 
     def invalidate(self) -> None:
-        # PYNQ allocate() 返回的 buffer 需要在 CPU 读取前 invalidate。
+        # A PYNQ allocate() buffer is invalidated before the CPU reads it.
         self.invalidated = True
 
 
@@ -26,7 +30,7 @@ class FakeDMA:
 
     def prepare(self, buffer: Buffer, nbytes: int) -> None:
         self.expected = nbytes
-        # 真实实现这里调用 dma.recvchannel.transfer(buffer)。
+        # The real adapter calls dma.recvchannel.transfer(buffer) here.
 
     def wait(self, timeout=None) -> None:
         self.received = self.expected
@@ -55,7 +59,7 @@ def main() -> None:
 
     def on_write(offset: int, value: int) -> None:
         if offset == abi.ABI.REG.CONTROL and value == 1 << abi.ABI.CTRL.RX_DOORBELL:
-            # doorbell 的即时回读必须是 ARMED；DMA 完成后才改成 DONE。
+            # Read right after the doorbell: ARMED; DONE only once the DMA finished.
             regs.values[abi.ABI.REG.RX_RESULT] = int(abi.ResultCode.ARMED)
             regs.values[abi.ABI.REG.STATUS] = status_word(abi.RxState.ARMED)
 
@@ -79,13 +83,13 @@ def main() -> None:
 
     rx_dma = RXDMA(FakeDMA(regs))
     buffer = Buffer(4 * 32)
-    rx_dma.prepare(4, buffer=buffer)  # S2MM 先就绪，否则 PL 拒绝 RX doorbell（0x14）
+    rx_dma.prepare(4, buffer=buffer)  # S2MM first, or the PL rejects the doorbell (0x14)
     client.arm_rx(2000, beats=4)
-    # 真实 PL 在 DMA 收下窗口最后一个 beat（TLAST）后才报告 RX DONE。
+    # The real PL reports RX DONE once the DMA has taken the last beat (TLAST).
     regs.values[abi.ABI.REG.RX_RESULT] = int(abi.ResultCode.DONE)
     regs.values[abi.ABI.REG.STATUS] = status_word(abi.RxState.DONE)
-    window = client.wait_rx(timeout=0.0, poll_interval=0.0)  # 结果码、标志、RX_ACTUAL == target
-    data = rx_dma.wait(window.beats)                         # 字节数 == RX_BEATS × 32，invalidate
+    window = client.wait_rx(timeout=0.0, poll_interval=0.0)  # result, flags, RX_ACTUAL == target
+    data = rx_dma.wait(window.beats)                         # bytes == RX_BEATS * 32, invalidate
     print(
         f"RX valid: target={window.target}, actual={window.actual}, "
         f"bytes={data.received_bytes}, invalidated={buffer.invalidated}"

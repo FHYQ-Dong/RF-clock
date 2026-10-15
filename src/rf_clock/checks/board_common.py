@@ -1,9 +1,8 @@
-"""Shared steps for the board test scripts in this directory.
+"""Shared steps for the board checks in this package.
 
-These scripts run on the RFSoC 4x2, not under pytest (no ``test_`` prefix).
-Run them as root from the repository root on the board, for example::
+The checks run on the RFSoC 4x2 as root, for example::
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python tests/pl/m1_check.py 60
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m1_check 60
 
 (xrfclk needs ``BOARD``; PYNQ needs ``XILINX_XRT``.)  The overlay is the one
 packaged with rf-clock unless ``--bitstream`` names another.  If the board hangs,
