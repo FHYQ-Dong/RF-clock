@@ -219,8 +219,10 @@ def _set_divider(values: dict[int, int], index: int, divider: int) -> None:
 def make_100mhz_config(base: RegisterFile, *, mode: str) -> LMKConfig:
     """Derive the project's 100/480/5 MHz plan from a known TICS file.
 
-    ``ext10m`` retains the CASPER CLKin0/PLL1 settings and adds nested
-    zero-delay mode with DCLKout8 (PL_CLK) as PLL1 feedback.  ``onboard``
+    ``ext10m`` keeps the base file's CLKin0/PLL1 settings (originally a
+    community external-10-MHz image, now ``LMK04828_100.0.txt`` itself, which
+    regenerates unchanged) and adds nested zero-delay mode with DCLKout8
+    (PL_CLK) as PLL1 feedback.  ``onboard``
     retains the known RFSoC-MTS automatic/on-board reference selection.  Both
     use the board's 160 MHz VCXO and the same PLL2/output plan; only ext10m
     is valid for FS725 measurements.

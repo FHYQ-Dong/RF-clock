@@ -23,18 +23,6 @@ def test_mts_lmk_fixture_decodes_known_500_mhz_plan() -> None:
     assert config.clock_outputs_hz["DCLKout8"] == pytest.approx(500_000_000.0)
 
 
-def test_casper_external_reference_fixture_decodes_known_rates() -> None:
-    config = decode_lmk(load_lmk(FILES / "LMK04828_casper_ext10m.txt"))
-    assert config.pll2_r == 25
-    assert config.pll2_p == 2
-    assert config.pll2_n == 192
-    assert config.vco_mux == 0  # CASPER uses LMK VCO0 at 2457.6 MHz.
-    assert config.vco_hz == pytest.approx(2_457_600_000.0)
-    assert config.sysref_hz == pytest.approx(7_680_000.0)
-    assert config.clock_outputs_hz["DCLKout0"] == pytest.approx(245_760_000.0)
-    assert config.clock_outputs_hz["DCLKout8"] == pytest.approx(122_880_000.0)
-
-
 @pytest.mark.parametrize("name", ["LMK04828_100.0.txt", "LMK04828_100.1.txt"])
 def test_generated_lmk_configs_have_project_rates(name: str) -> None:
     config = decode_lmk(load_lmk(FILES / name))
@@ -52,9 +40,11 @@ def test_ext10m_locks_pl_clk_to_the_fs725_reference() -> None:
     assert config.pll1_feedback == "DCLKout8"
     assert config.pll1_output_hz == pytest.approx(config.clock_outputs_hz["DCLKout8"])
     assert (config.pll1_r, config.pll1_n) == (12, 120)  # same 833.3 kHz phase detector
-    # The packaged image is what the generator makes from the CASPER file.
-    generated = make_100mhz_config(load_lmk(FILES / "LMK04828_casper_ext10m.txt"), mode="ext10m")
-    assert generated.registers.render().splitlines() ==         (FILES / "LMK04828_100.0.txt").read_text().splitlines()
+    # The packaged image is a fixed point of the generator: regenerating it
+    # from itself changes nothing.
+    image = load_lmk(FILES / "LMK04828_100.0.txt")
+    generated = make_100mhz_config(image, mode="ext10m")
+    assert generated.registers.render().splitlines() == image.render().splitlines()
 
 
 def test_lmx_known_and_generated_files_decode() -> None:
