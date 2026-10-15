@@ -1,0 +1,47 @@
+# Push a tag vA.B.C.D (the pyproject.toml version) to publish a GitHub release
+# with the wheel and sdist; the wheel carries the packaged overlay.
+#
+#   git tag -a v1.3.0.0 -m "what changed"   # the message opens the release notes
+#   git push origin v1.3.0.0
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          lfs: true        # the overlay (.bit/.hwh/.xsa) is stored in Git LFS
+          fetch-depth: 0   # previous tag and commits for the notes
+
+      # actions/checkout can leave the pushed tag lightweight
+      # (actions/checkout#290); refetch it so the tag message is there.
+      - name: Fetch the tag message
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - name: Check the tag and write the release notes
+        run: |
+          mkdir -p dist
+          python3 tools/release_notes.py "${GITHUB_REF_NAME}" > dist/NOTES.md
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+
+      - name: Build
+        run: uv build -o dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz \
+            src/rf_clock/overlay/manifest.json \
+            --title "rf-clock ${GITHUB_REF_NAME#v}" --notes-file dist/NOTES.md --verify-tag
