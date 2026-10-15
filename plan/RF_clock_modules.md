@@ -94,7 +94,7 @@ template.
 
 | Parameter | Value | Notes |
 | --- | --- | --- |
-| `RRC_CONFIG_ID` | 2134958710 | identifies the coefficient set stored in `config/RRC_config.db` |
+| `RRC_CONFIG_ID` | 2134958710 | identifies the filter: a hash of the RRC parameters, whose coefficients are computed at run time (`rrc_config()`) |
 | `RRC_SAMPLES_PER_SYMBOL` | 8 | 8 samples per chip |
 | `RRC_SPAN_CHIPS` | 10 | filter span of 10 chips |
 | `RRC_TAP_COUNT` | 81 | = 10 × 8 + 1 |
@@ -371,7 +371,7 @@ external time-interval counter, not the θ̂ reported by the system itself.
 
 ## 10. Open questions
 
-Item-by-item progress and evidence are tracked in `plan/checklist.md` (Chinese).
+Item-by-item progress and evidence are tracked in `plan/checklist.md`.
 
 1. **Board model and external reference input:** can the board clock chain
    take a 10 MHz external reference, and can both RFDC and fabric clocks be

@@ -20,6 +20,8 @@ The current design is in `plan/RF_clock_modules.md` (Chinese: `plan/RF_clock_mod
 
 - **One register map:** `PL/src/p_regs.vh` (addresses, bit fields) and `PL/src/p_defs.vh` (states, result codes, flags) are the RTL source for the ARM-visible interface; `docs/ABI.md` documents it for software. RTL and testbenches use these names, never raw offsets. Any change updates all three and bumps `VERSION` per `docs/ABI.md` §14.
 
+- **English documents are the reference:** each Chinese translation (`*_zh.md`) is updated in the same change; docstrings and code comments are English.
+
 - **The overlay ships with the package:** `src/rf_clock/overlay/` holds `rf_clock.bit`/`.hwh` and `rf_clock_hw.xsa` (Git LFS) and `manifest.json`, copied from a build directory by `tools/package_overlay.py`. The package version is `A.B.C.D`: A.B equals the register map `VERSION`, C counts bitstreams built for it, D counts Python-only releases. The build script writes it into P2 `BUILD_VERSION`, and `PL.open()` refuses a bitstream whose A.B.C differs from the installed package. Bump C (reset D) before building a new bitstream, and A.B together with `VERSION`; Python-only changes bump D (`docs/ABI.md` §14.1).
 
 ## Review rule

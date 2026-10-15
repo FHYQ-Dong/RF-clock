@@ -1,660 +1,733 @@
-# RF-clock PL 编程手册（ABI 1.3）
+# RF-clock PL Programming Manual (ABI 1.3)
 
-本手册说明 ARM 软件如何控制 RF-clock 的 PL：第一部分是寄存器级协议（相当于仪器的
-命令集），第二部分是封装这些协议的 Python 库 `rf_clock.pl`。
+This is the reference version; `docs/ABI_zh.md` is the Chinese translation.
 
-- 协议在 RTL 中的唯一来源：`PL/src/p_regs.vh`（地址、位域）和 `PL/src/p_defs.vh`
-  （状态、返回码、标志位）。Python 的 `rf_clock.pl.abi` 由 `tools/generate_abi.py`
-  从这两个文件生成。三者改动时必须同步修改本文，并按 §14 更新 `VERSION`。
-- 设计背景见 `plan/RF_clock_modules_zh.md`，未确认事项见 `plan/checklist.md`。
+This manual describes how ARM software controls the RF-clock PL. Part I is the
+register-level protocol (the instrument's command set); Part II is the Python
+library `rf_clock.pl` that wraps it.
+
+- The single RTL source of the protocol is `PL/src/p_regs.vh` (addresses, bit
+  fields) and `PL/src/p_defs.vh` (states, result codes, flags). Python's
+  `rf_clock.pl.abi` is generated from these two files by `tools/generate_abi.py`.
+  Any change to the three updates this manual and bumps `VERSION` per §14.
+- Design background: `plan/RF_clock_modules.md`; open items: `plan/checklist.md`.
 
 ---
 
-# 第一部分 协议
+# Part I Protocol
 
-## 1. 概述
+## 1. Overview
 
-### 1.1 通路
+### 1.1 Paths
 
-| 通路      | PL 侧硬件                              | 传什么                       | ARM 怎么访问                       |
-| --------- | -------------------------------------- | ---------------------------- | ---------------------------------- |
-| 控制/状态 | P2，AXI4-Lite 寄存器                   | 命令、时间戳、状态           | 32 位 MMIO 读写（§4.1–§4.6）    |
-| TX 波形   | P3 片上 buffer，经 AXI BRAM Controller | 发射波形（写一次，反复使用） | 按内存写入（§4.5.8）              |
-| RX 样本   | P4 → 异步 FIFO → AXI DMA S2MM → DDR | 每个采集窗口的样本           | DMA buffer + DMA 寄存器（§4.6.9） |
-| 时钟状态  | AXI GPIO（`pl_clk0` 域）             | fabric MMCM 是否锁定         | 32 位 MMIO 读（§4.7）             |
+| Path           | PL hardware                                      | What it carries                          | How the ARM accesses it                      |
+| -------------- | ------------------------------------------------ | ---------------------------------------- | -------------------------------------------- |
+| Control/status | P2, AXI4-Lite registers                          | Commands, timestamps, status             | 32-bit MMIO reads and writes (§4.1–§4.6)     |
+| TX waveform    | P3 on-chip buffer, through an AXI BRAM Controller | The transmit waveform (written once, reused) | Memory writes (§4.5.8)                    |
+| RX samples     | P4 → async FIFO → AXI DMA S2MM → DDR             | The samples of each capture window       | DMA buffer + DMA registers (§4.6.9)          |
+| Clock status   | AXI GPIO (`pl_clk0` domain)                      | Whether the fabric MMCM is locked        | 32-bit MMIO read (§4.7)                      |
 
-### 1.2 地址
+### 1.2 Addresses
 
-基地址在 `PL/bd/create_rf_clock_bd.tcl` 中固定分配。软件应从 HWH（PYNQ
-`overlay.ip_dict` / `overlay.mem_dict`）读取，不要写死。
+The base addresses are fixed in `PL/bd/create_rf_clock_bd.tcl`. Software reads
+them from the HWH (PYNQ `overlay.ip_dict` / `overlay.mem_dict`) rather than
+hard-coding them.
 
-| 地址空间       | HWH 名称                         | 基地址      | 大小                  | 时钟域  |
-| -------------- | -------------------------------- | ----------- | --------------------- | ------- |
-| P2 寄存器      | `p_top_0`                      | 0xA000_0000 | 4 KiB（只用前 256 B） | fabric  |
-| AXI DMA 寄存器 | `rx_dma`                       | 0xA001_0000 | 64 KiB                | pl_clk0 |
-| 时钟状态 GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                 | pl_clk0 |
-| RFDC 寄存器    | `rfdc`                         | 0xA004_0000 | 256 KiB               | pl_clk0 |
-| TX 波形 buffer | `tx_bram_ctrl`（`mem_dict`） | 0xA040_0000 | 4 MiB 窗口，前 69632 beat（2.125 MiB）有存储 | fabric  |
+| Address space      | HWH name                       | Base        | Size                                          | Clock domain |
+| ------------------ | ------------------------------ | ----------- | --------------------------------------------- | ------------ |
+| P2 registers       | `p_top_0`                      | 0xA000_0000 | 4 KiB (first 256 B used)                      | fabric       |
+| AXI DMA registers  | `rx_dma`                       | 0xA001_0000 | 64 KiB                                        | pl_clk0      |
+| Clock-status GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                                         | pl_clk0      |
+| RFDC registers     | `rfdc`                         | 0xA004_0000 | 256 KiB                                       | pl_clk0      |
+| TX waveform buffer | `tx_bram_ctrl` (`mem_dict`)    | 0xA040_0000 | 4 MiB window; the first 69632 beats (2.125 MiB) have storage | fabric |
 
-> **警告：总线卡死。** fabric 时钟由 LMK04828 的 PL_CLK 经 MMCM 产生。fabric 时钟没在
-> 运行时访问 P2 或 TX buffer，AXI 访问永远得不到回应，整个系统卡死，只能重启
-> （远程用 `tools/jtag_reset_board.tcl`）。**每次访问这两个地址空间之前，先确认时钟
-> 状态 GPIO bit0 = 1**（§4.7）。`pl_clk0` 域的地址不受此限制。
+> **Warning: bus hang.** The fabric clock comes from the LMK04828 PL_CLK
+> through an MMCM. An access to P2 or the TX buffer while the fabric clock is
+> not running never completes and hangs the whole system until a reset
+> (remotely: `tools/jtag_reset_board.tcl`). **Before every access to these two
+> address spaces, check that bit 0 of the clock-status GPIO is 1** (§4.7). The
+> `pl_clk0` addresses are not affected.
 
-## 2. 通信约定
+## 2. Conventions
 
-| 项目     | 约定                                                                                                                                                       |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 字节序   | 小端                                                                                                                                                       |
-| 访问宽度 | P2 只接受对齐的 32 位访问，写必须整字（`wstrb = 0xF`）                                                                                                   |
-| 错误响应 | 部分写、写只读寄存器、访问未映射地址返回 SLVERR，寄存器不变。Linux 上可能表现为 Bus error，软件不得依赖它                                                  |
-| 64 位值  | LO 在 +0，HI 在 +4。会变化的值（`TICK`、`PPS_TICK`）**必须先读 LO 再读 HI**：PL会在读 LO 的同一拍锁存 HI，因此两半属于同一时刻，无需担心数据撕裂 |
-| 命令提交 | 先写 shadow 寄存器，再写`CONTROL` 的 doorbell 位，然后读 `*_RESULT` 确认（§5.2）                                                                      |
-| 中断     | 不用，全部轮询                                                                                                                                             |
+| Item             | Convention |
+| ---------------- | ---------- |
+| Byte order       | Little-endian |
+| Access width     | P2 accepts aligned 32-bit accesses only; writes must be whole words (`wstrb = 0xF`) |
+| Error response   | Partial writes, writes to read-only registers and accesses to unmapped addresses return SLVERR and change nothing. Linux may report a bus error; software must not rely on it |
+| 64-bit values    | LO at +0, HI at +4. For values that change (`TICK`, `PPS_TICK`), **read LO before HI**: the PL latches HI in the cycle LO is read, so both halves belong to the same instant and cannot tear |
+| Commands         | Write the shadow registers, then the doorbell bit of `CONTROL`, then read `*_RESULT` to confirm (§5.2) |
+| Interrupts       | None; everything is polled |
 
-**单位**
+**Units**
 
-| 量     | 值                                                       |
-| ------ | -------------------------------------------------------- |
-| tick   | 10 ns（100 MHz fabric 时钟，由本节点 FS725 10 MHz 派生） |
-| beat   | 32 字节 = 256 bit = 8 个复样本                           |
-| 复样本 | 16 bit I + 16 bit Q，800 MS/s，间隔 1.25 ns              |
-| 1 tick | 正好 1 beat = 8 个样本                                   |
+| Quantity       | Value |
+| -------------- | ----- |
+| tick           | 10 ns (100 MHz fabric clock, derived from this node's FS725 10 MHz) |
+| beat           | 32 bytes = 256 bits = 8 complex samples |
+| complex sample | 16-bit I + 16-bit Q, 800 MS/s, 1.25 ns apart |
+| 1 tick         | exactly 1 beat = 8 samples |
 
-**哪些时间可以用来测量。** raw_tick 从 PL 复位开始计数，不回绕，失锁或换 epoch 时也
-不清零。ARM 读一次寄存器的延迟从几百 ns 到毫秒不等，所以读到的 `TICK` 只用来安排未来
-的 target。参与测量的时间一律用 PL 在事件那一拍锁存的值：`PPS_TICK`、`TX_ACTUAL`、
-`RX_ACTUAL`。
+**Which times can be used for measurements.** raw_tick counts from PL reset,
+never wraps, and is not cleared on loss of lock or a new epoch. A register
+read by the ARM takes from a few hundred ns to milliseconds, so a `TICK` read
+by software is only used to schedule future targets. Times used in a
+measurement are always values the PL latched in the cycle of the event:
+`PPS_TICK`, `TX_ACTUAL`, `RX_ACTUAL`.
 
-## 3. 命令条目格式
+## 3. Command entry format
 
-第 4 节每个寄存器（"命令"）按下面的格式给出：
+Each register ("command") in section 4 is described with these fields:
 
-| 字段   | 内容                                                                           |
-| ------ | ------------------------------------------------------------------------------ |
-| 地址   | 相对 P2 基地址的字节偏移；64 位值给出 LO/HI 两个偏移                           |
-| 访问   | RO 只读；RW 读写；WO 只写（读出恒为 0）；shadow 表示写入后要按 doorbell 才生效 |
-| 格式   | u32 / u64 / 位域                                                               |
-| 复位值 | PL 复位后的值；"—" 表示随运行变化                                             |
-| 语法   | 用下面的记法写出的访问序列                                                     |
-| Python | `rf_clock.pl` 中对应的调用（第二部分）                                       |
+| Field   | Content |
+| ------- | ------- |
+| Address | Byte offset from the P2 base; 64-bit values give the LO and HI offsets |
+| Access  | RO read-only; RW read/write; WO write-only (reads as 0); shadow: takes effect at the doorbell |
+| Format  | u32 / u64 / bit field |
+| Reset   | Value after PL reset; "—" means it changes during operation |
+| Syntax  | The access sequence, in the notation below |
+| Python  | The corresponding call in `rf_clock.pl` (Part II) |
 
-语法记法：
+Notation:
 
 ```text
-R32 <off>              读 32 位，返回值写在 → 后
-W32 <off> <value>      写 32 位
-R64 <off>              R32 <off>（LO），再 R32 <off+4>（HI），拼成 (HI << 32) | LO
+R32 <off>              read 32 bits; the value read follows →
+W32 <off> <value>      write 32 bits
+R64 <off>              R32 <off> (LO), then R32 <off+4> (HI); value = (HI << 32) | LO
 ```
 
-## 4. 命令参考
+## 4. Command reference
 
-### 4.1 系统
+### 4.1 System
 
-#### 4.1.1 `ID` — 设计标识
+#### 4.1.1 `ID` — design identifier
 
-| 地址 | 访问 | 格式 | 复位值               |
-| ---- | ---- | ---- | -------------------- |
-| 0x00 | RO   | u32  | 0x52434C4B（"RCLK"） |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x00    | RO     | u32    | 0x52434C4B ("RCLK") |
 
 ```text
 R32 0x00  → 0x52434C4B
 ```
 
-确认加载的是 RF-clock 的 bitstream。值不对就停止，不要继续访问其他寄存器。
-Python：`PLClient.validate()`。
+Confirms that the RF-clock bitstream is loaded. On any other value, stop and do
+not access other registers.
+Python: `PLClient.validate()`.
 
-#### 4.1.2 `VERSION` — 接口版本
+#### 4.1.2 `VERSION` — interface version
 
-| 地址 | 访问 | 格式                        | 复位值            |
-| ---- | ---- | --------------------------- | ----------------- |
-| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00010003（1.3） |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00010003 (1.3) |
 
 ```text
 R32 0x04  → 0x00010003
 ```
 
-major 不等于软件支持的值就拒绝运行；`PPS_INPUTS`、`PPS_CONFIG` 需要 minor ≥ 1，
-`BUILD_VERSION` 需要 minor ≥ 2，`TX_REPEAT` 需要 minor ≥ 3（§14）。
-Python：`PLClient.validate()`、`DeviceInfo.version`。
+Refuse to run when major differs from the one the software supports.
+`PPS_INPUTS` and `PPS_CONFIG` need minor ≥ 1, `BUILD_VERSION` needs minor ≥ 2,
+`TX_REPEAT` needs minor ≥ 3 (§14).
+Python: `PLClient.validate()`, `DeviceInfo.version`.
 
-#### 4.1.3 `CONTROL` — 命令脉冲
+#### 4.1.3 `CONTROL` — command pulses
 
-| 地址 | 访问 | 格式 | 复位值     |
-| ---- | ---- | ---- | ---------- |
-| 0x08 | WO   | 位域 | 读出恒为 0 |
+| Address | Access | Format    | Reset |
+| ------- | ------ | --------- | ----- |
+| 0x08    | WO     | bit field | reads as 0 |
 
 ```text
 W32 0x08 <bits>
 ```
 
-写入的每个为 1 的位产生一个单拍脉冲，可以一次写多位（例如 `0x5` 同时触发 TX 和 RX）。
+Each bit written as 1 makes a one-cycle pulse; several bits may be written at
+once (for example `0x5` starts TX and RX together).
 
-| 位 | 名称            | 作用                                                     | 详见    |
-| -- | --------------- | -------------------------------------------------------- | ------- |
-| 0  | `TX_DOORBELL` | 取走`TX_TARGET`/`TX_LENGTH` 并校验，接受则进入 ARMED | §4.5.3 |
-| 1  | `TX_CANCEL`   | TX 为 ARMED 时取消，回到 IDLE                            | §4.5.4 |
-| 2  | `RX_DOORBELL` | 取走`RX_TARGET`/`RX_LENGTH` 并校验                   | §4.6.3 |
-| 3  | `RX_CANCEL`   | RX 为 ARMED 且还没到开窗那一拍时取消                     | §4.6.4 |
-| 4  | `CLEAR_FAULT` | 清除故障，TX 从 FAULT 回到 IDLE                          | §4.2.4 |
+| Bit | Name          | Effect | See |
+| --- | ------------- | ------ | --- |
+| 0   | `TX_DOORBELL` | Takes `TX_TARGET`/`TX_LENGTH` and checks them; if accepted, TX becomes ARMED | §4.5.3 |
+| 1   | `TX_CANCEL`   | Cancels an ARMED TX, back to IDLE | §4.5.4 |
+| 2   | `RX_DOORBELL` | Takes `RX_TARGET`/`RX_LENGTH` and checks them | §4.6.3 |
+| 3   | `RX_CANCEL`   | Cancels an ARMED RX before its window opens | §4.6.4 |
+| 4   | `CLEAR_FAULT` | Clears faults; TX goes from FAULT back to IDLE | §4.2.4 |
 
-#### 4.1.4 `TIME_EPOCH` — 时间纪元
+#### 4.1.4 `TIME_EPOCH` — time epoch
 
-| 地址 | 访问 | 格式 | 复位值 |
-| ---- | ---- | ---- | ------ |
-| 0x10 | RO   | u32  | 0      |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x10    | RO     | u32    | 0     |
 
 ```text
 R32 0x10  → epoch
 ```
 
-时钟每次重新锁定后加 1；0 表示时间还从未有效过。变化说明中途失锁过，变化前后的时间戳
-不可比，跨 epoch 的测量必须丢弃（§6.4）。
-Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`。
+Incremented each time the clocks lock again; 0 means time has never been
+valid. A change means lock was lost in between: timestamps before and after it
+are not comparable, and measurements spanning epochs are discarded (§6.4).
+Python: `PLClient.time_epoch()`, `remember_epoch()`, `require_same_epoch()`.
 
-#### 4.1.5 构建参数 `TX_DEPTH`、`RX_MAX_BEATS`、`MIN_LEAD_TICKS`
+#### 4.1.5 Build parameters `TX_DEPTH`, `RX_MAX_BEATS`, `MIN_LEAD_TICKS`
 
-| 地址 | 名称               | 访问 | 值      | 含义                                                     |
-| ---- | ------------------ | ---- | ------- | -------------------------------------------------------- |
-| 0x84 | `TX_DEPTH`       | RO   | 69632   | TX buffer 容量（beat）                                   |
-| 0x88 | `RX_MAX_BEATS`   | RO   | 2097151 | 单个 RX 窗口最大长度（beat），受 DMA 26 位长度寄存器限制 |
-| 0x8C | `MIN_LEAD_TICKS` | RO   | 64      | target 至少要比 doorbell 处理时的 tick 晚这么多          |
+| Address | Name             | Access | Value   | Meaning |
+| ------- | ---------------- | ------ | ------- | ------- |
+| 0x84    | `TX_DEPTH`       | RO     | 69632   | TX buffer capacity (beats) |
+| 0x88    | `RX_MAX_BEATS`   | RO     | 2097151 | Longest RX window (beats), limited by the 26-bit DMA length register |
+| 0x8C    | `MIN_LEAD_TICKS` | RO     | 64      | How much later than the tick at the doorbell a target must be |
 
-启动时读一次，之后用它们校验参数。Python：`PLClient.validate()` → `DeviceInfo`。
-`TX_DEPTH` = 69632 = 17 × 4096：65535 码片的突发加 RRC 拖尾是 65545 beat，放得下。
+Read once at start-up and use them to check parameters. Python:
+`PLClient.validate()` → `DeviceInfo`. `TX_DEPTH` = 69632 = 17 × 4096: a
+65535-chip burst with its RRC tails (65545 beats) fits.
 
-#### 4.1.6 `BUILD_VERSION` — 构建时的软件包版本（1.2 起）
+#### 4.1.6 `BUILD_VERSION` — package version at build time (since 1.2)
 
-| 地址 | 访问 | 格式                                    | 复位值                          |
-| ---- | ---- | --------------------------------------- | ------------------------------- |
-| 0x94 | RO   | [31:24] A，[23:16] B，[15:8] C，[7:0] D | 构建时`pyproject.toml` 的版本 |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x94    | RO     | [31:24] A, [23:16] B, [15:8] C, [7:0] D | the `pyproject.toml` version at build time |
 
 ```text
-R32 0x94  → 0x01030000（rf-clock 1.3.0.0）
+R32 0x94  → 0x01030000 (rf-clock 1.3.0.0)
 ```
 
-构建脚本 `PL/bd/create_rf_clock_bd.tcl` 读取 `pyproject.toml` 的 `version = "A.B.C.D"`，写成常量
-`0xAABBCCDD`；A.B 就是 `VERSION`，不相等时构建脚本报错。软件把它和自己安装的 rf-clock 版本比较，
-A.B.C 不同就拒绝运行（§14.1）。
-Python：`PLClient.build_version()` → `"A.B.C.D"`。
+The build script `PL/bd/create_rf_clock_bd.tcl` reads `version = "A.B.C.D"`
+from `pyproject.toml` and makes it the constant `0xAABBCCDD`; A.B is
+`VERSION`, and the build fails if they differ. Software compares it with its
+installed rf-clock version and refuses to run when A.B.C differs (§14.1).
+Python: `PLClient.build_version()` → `"A.B.C.D"`.
 
-### 4.2 状态与故障
+### 4.2 Status and faults
 
-#### 4.2.1 `STATUS` — 状态字
+#### 4.2.1 `STATUS` — status word
 
-| 地址 | 访问 | 格式 | 复位值 |
-| ---- | ---- | ---- | ------ |
-| 0x0C | RO   | 位域 | —     |
+| Address | Access | Format    | Reset |
+| ------- | ------ | --------- | ----- |
+| 0x0C    | RO     | bit field | —     |
 
 ```text
 R32 0x0C  → status
 ```
 
-| 位    | 名称               | 含义                                              |
-| ----- | ------------------ | ------------------------------------------------- |
-| 0     | `time_valid`     | 时钟已锁定并稳定，时间戳有效                      |
-| 1     | `clocks_locked`  | 时钟锁定信号的当前值（未经稳定延时）              |
-| 2     | `pps_locked`     | 已连续收到`PPS_LOCK_COUNT`（4）个周期正确的 PPS |
-| 3     | `tick_exhausted` | raw_tick 已饱和（正常运行不会出现）               |
-| 4     | `any_fault`      | `FAULT_BITS` 非 0                               |
-| 5     | `dma_ready`      | S2MM 正在接收（`tready` 为高）                  |
-| 10:8  | `tx_state`       | TX 状态，编码见 §5.1                             |
-| 14:12 | `rx_state`       | RX 状态，编码见 §5.1                             |
+| Bit   | Name             | Meaning |
+| ----- | ---------------- | ------- |
+| 0     | `time_valid`     | Clocks locked and stable; timestamps are valid |
+| 1     | `clocks_locked`  | The current clock-lock signal (before the stability delay) |
+| 2     | `pps_locked`     | `PPS_LOCK_COUNT` (4) consecutive PPS periods were correct |
+| 3     | `tick_exhausted` | raw_tick has saturated (never in normal operation) |
+| 4     | `any_fault`      | `FAULT_BITS` is not 0 |
+| 5     | `dma_ready`      | The S2MM is accepting data (`tready` high) |
+| 10:8  | `tx_state`       | TX state, encoded as in §5.1 |
+| 14:12 | `rx_state`       | RX state, encoded as in §5.1 |
 
-状态字段是 TX/RX 进度的权威信息（`*_RESULT` 可能被 `REJ_BUSY` 改写，§5.2）。
-Python：`PLClient.status()` → `Status`。
+The state fields are the authority on TX/RX progress (`*_RESULT` can be
+overwritten by `REJ_BUSY`, §5.2).
+Python: `PLClient.status()` → `Status`.
 
-#### 4.2.2 `FAULT_BITS` — 粘滞故障位
+#### 4.2.2 `FAULT_BITS` — sticky fault bits
 
-| 地址 | 访问 | 格式       | 复位值 |
-| ---- | ---- | ---------- | ------ |
-| 0x14 | RO   | [3:0] 位域 | 0      |
+| Address | Access | Format          | Reset |
+| ------- | ------ | --------------- | ----- |
+| 0x14    | RO     | [3:0] bit field | 0     |
 
 ```text
 R32 0x14  → bits
 ```
 
-编码见 §5.4。只能由 `CLEAR_FAULT` 或新的 `TIME_EPOCH` 清除。Python：`abi.FaultBit`。
+Encoding in §5.4. Cleared only by `CLEAR_FAULT` or a new `TIME_EPOCH`.
+Python: `abi.FaultBit`.
 
-#### 4.2.3 `FAULT_INFO` — 故障信息
+#### 4.2.3 `FAULT_INFO` — fault information
 
-| 地址 | 访问 | 格式                                     | 复位值 |
-| ---- | ---- | ---------------------------------------- | ------ |
-| 0x18 | RO   | [3:0] 第一个故障源，[31:16] 故障事件总数 | 0      |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x18    | RO     | [3:0] first fault source, [31:16] total fault events | 0 |
 
 ```text
 R32 0x18  → info
 ```
 
-- [3:0]：清除以来第一个故障的位号 + 1，0 = 无。
-- [31:16]：永不清零的故障事件计数。比较两次轮询的值，就知道中间是否发生过新故障。
+- [3:0]: bit number + 1 of the first fault since the last clear; 0 = none.
+- [31:16]: a count of fault events that is never cleared. Comparing two polls
+  shows whether a new fault happened in between.
 
-#### 4.2.4 `CONTROL.CLEAR_FAULT` — 清除故障
+#### 4.2.4 `CONTROL.CLEAR_FAULT` — clear faults
 
 ```text
 W32 0x08 0x10
 ```
 
-清除 `FAULT_BITS` 和 `FAULT_INFO[3:0]`；TX 若处于 FAULT，回到 IDLE，`TX_RESULT` 变为
-NONE。与清除同一拍发生的新故障会保留。清除前应先读出并记录 `FAULT_BITS`/`FAULT_INFO`。
-Python：`PLClient.clear_fault()`。
+Clears `FAULT_BITS` and `FAULT_INFO[3:0]`; a TX in FAULT returns to IDLE and
+`TX_RESULT` becomes NONE. A new fault in the same cycle as the clear is kept.
+Read and record `FAULT_BITS`/`FAULT_INFO` before clearing.
+Python: `PLClient.clear_fault()`.
 
-### 4.3 时间
+### 4.3 Time
 
-#### 4.3.1 `TICK` — 当前 raw_tick
+#### 4.3.1 `TICK` — current raw_tick
 
-| 地址                   | 访问 | 格式      | 复位值 |
-| ---------------------- | ---- | --------- | ------ |
-| 0x20（LO）、0x24（HI） | RO   | u64，tick | —     |
+| Address            | Access | Format     | Reset |
+| ------------------ | ------ | ---------- | ----- |
+| 0x20 (LO), 0x24 (HI) | RO   | u64, ticks | —     |
 
 ```text
-R64 0x20  → tick          读 LO 时锁存 HI
+R64 0x20  → tick          reading LO latches HI
 ```
 
-只用来安排未来的 target，不用于测量（§2）。Python：`PLClient.read64(ABI.REG.TICK_LO)`。
+Only for scheduling future targets, never for measurements (§2).
+Python: `PLClient.read64(ABI.REG.TICK_LO)`.
 
 ### 4.4 PPS
 
-#### 4.4.1 `PPS_TICK`、`PPS_COUNT` — 最近一次 PPS
+#### 4.4.1 `PPS_TICK`, `PPS_COUNT` — the latest PPS
 
-| 地址                   | 名称          | 访问 | 格式      | 复位值 |
-| ---------------------- | ------------- | ---- | --------- | ------ |
-| 0x28（LO）、0x2C（HI） | `PPS_TICK`  | RO   | u64，tick | 0      |
-| 0x30                   | `PPS_COUNT` | RO   | u32       | 0      |
-
-```text
-R64 0x28  → pps_tick      读 LO 时锁存 PPS_TICK_HI 和 PPS_COUNT
-R32 0x30  → pps_count     与上面的 pps_tick 属于同一个 PPS 沿
-```
-
-`PPS_TICK` 是所选 PPS 信号（§4.4.5）计时沿到达管脚那一拍的 tick，已扣除同步器的固定延迟。要成对使用 tick 和计数，必须先读 `PPS_TICK_LO`。时间语义见 §6.3。
-
-#### 4.4.2 `PPS_LAST_PERIOD` — 最近一个周期
-
-| 地址 | 访问 | 格式      | 复位值 |
-| ---- | ---- | --------- | ------ |
-| 0x34 | RO   | u32，tick | 0      |
+| Address              | Name        | Access | Format     | Reset |
+| -------------------- | ----------- | ------ | ---------- | ----- |
+| 0x28 (LO), 0x2C (HI) | `PPS_TICK`  | RO     | u64, ticks | 0     |
+| 0x30                 | `PPS_COUNT` | RO     | u32        | 0     |
 
 ```text
-R32 0x34  → 100000000     正常值
+R64 0x28  → pps_tick      reading LO latches PPS_TICK_HI and PPS_COUNT
+R32 0x30  → pps_count     belongs to the same PPS edge as pps_tick above
 ```
 
-最近两次 PPS 沿之间的 tick 数。恒为 100000000 说明 fabric 时钟与 FS725 同源。
+`PPS_TICK` is the tick in which the timed edge of the selected PPS signal
+(§4.4.5) reached the pin, with the fixed synchronizer delay removed. To use the
+tick and the count as a pair, read `PPS_TICK_LO` first. Timing semantics in
+§6.3.
 
-#### 4.4.3 `PPS_JITTER_CNT` — 抖动计数
+#### 4.4.2 `PPS_LAST_PERIOD` — the latest period
 
-| 地址 | 访问 | 格式 | 复位值 |
-| ---- | ---- | ---- | ------ |
-| 0x38 | RO   | u32  | 0      |
+| Address | Access | Format     | Reset |
+| ------- | ------ | ---------- | ----- |
+| 0x34    | RO     | u32, ticks | 0     |
 
-周期偏差为 ±1 tick（容差内但不为 0）的次数。P1 在硬件里检查每一个周期，所以它覆盖软件没采样到的周期。持续增长说明 PPS 沿正好落在时钟采样沿附近（§6.3）。
+```text
+R32 0x34  → 100000000     normal value
+```
 
-#### 4.4.4 `PPS_INPUTS` — 板上两路 PPS 探针（1.1 起）
+Ticks between the last two PPS edges. A constant 100000000 shows that the
+fabric clock and the FS725 share their reference.
 
-| 地址 | 访问 | 格式 | 复位值 |
-| ---- | ---- | ---- | ------ |
-| 0x3C | RO   | 位域 | —     |
+#### 4.4.3 `PPS_JITTER_CNT` — jitter count
+
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x38    | RO     | u32    | 0     |
+
+Number of periods off by ±1 tick (within tolerance but not 0). P1 checks every
+period in hardware, so this covers periods software did not sample. A steady
+increase means the PPS edge falls close to the clock sampling edge (§6.3).
+
+#### 4.4.4 `PPS_INPUTS` — the board's two PPS copies (since 1.1)
+
+| Address | Access | Format    | Reset |
+| ------- | ------ | --------- | ----- |
+| 0x3C    | RO     | bit field | —     |
 
 ```text
 R32 0x3C  → inputs
 ```
 
-| 位    | 名称           | 含义                                        |
-| ----- | -------------- | ------------------------------------------- |
-| 0     | `COMP_LEVEL` | `IRIG_COMP_OUT`（比较器）当前电平，已同步 |
-| 1     | `TRIG_LEVEL` | `IRIG_TRIG_OUT`（施密特触发器）当前电平   |
-| 15:8  | `COMP_EDGES` | `IRIG_COMP_OUT` 上升沿计数，8 位回绕      |
-| 23:16 | `TRIG_EDGES` | `IRIG_TRIG_OUT` 上升沿计数，8 位回绕      |
+| Bit   | Name         | Meaning |
+| ----- | ------------ | ------- |
+| 0     | `COMP_LEVEL` | Current level of `IRIG_COMP_OUT` (comparator), synchronized |
+| 1     | `TRIG_LEVEL` | Current level of `IRIG_TRIG_OUT` (Schmitt trigger) |
+| 15:8  | `COMP_EDGES` | Rising edges on `IRIG_COMP_OUT`, 8 bits, wraps |
+| 23:16 | `TRIG_EDGES` | Rising edges on `IRIG_TRIG_OUT`, 8 bits, wraps |
 
-不需要示波器就能判断 PPS 是否到达、极性如何：PPS 脉宽只有 10–30 µs，读到的电平几乎
-总是空闲电平；空闲为 0 说明是正脉冲，空闲为 1 说明是负脉冲（需 `INVERT = 1`）。隔几秒
-读两次，计数应每秒加 1；两路都不动说明 PPS 没进到板上的 PPS 口（J7）。
-Python：`PLClient.pps_inputs()` → `PPSInputs`。
+Shows without a scope whether the PPS arrives and its polarity: a PPS pulse is
+only 10–30 µs wide, so the level read is almost always the idle level. Idle 0
+means positive pulses; idle 1 means negative pulses (needs `INVERT = 1`). Read
+twice a few seconds apart: the counts advance by one per second; if neither
+moves, the PPS does not reach the board's PPS connector (J7).
+Python: `PLClient.pps_inputs()` → `PPSInputs`.
 
-#### 4.4.5 `PPS_CONFIG` — PPS 来源和极性（1.1 起）
+#### 4.4.5 `PPS_CONFIG` — PPS source and polarity (since 1.1)
 
-| 地址 | 访问 | 格式                                   | 复位值 |
-| ---- | ---- | -------------------------------------- | ------ |
-| 0x90 | RW   | [1:0] 位域，其余位写入被忽略、读出为 0 | 0      |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x90    | RW     | [1:0] bit field; other bits are ignored on write and read as 0 | 0 |
 
 ```text
 W32 0x90 <cfg>
 R32 0x90  → cfg
 ```
 
-| 位 | 名称         | 含义                                                              |
-| -- | ------------ | ----------------------------------------------------------------- |
-| 0  | `SRC_TRIG` | 0 =`IRIG_COMP_OUT`（AJ13，默认），1 = `IRIG_TRIG_OUT`（AH13） |
-| 1  | `INVERT`   | 1 = 对所选信号的下降沿计时                                        |
+| Bit | Name       | Meaning |
+| --- | ---------- | ------- |
+| 0   | `SRC_TRIG` | 0 = `IRIG_COMP_OUT` (AJ13, default), 1 = `IRIG_TRIG_OUT` (AH13) |
+| 1   | `INVERT`   | 1 = time the falling edge of the selected signal |
 
-板上电路：PPS SMA（J7）有 49.9 Ω 对地终端，经 100 Ω 和 10 nF 交流耦合到偏置在 1.65 V
-的节点，再进比较器（LMV7235，约 ±0.17 V 迟滞）和施密特触发器（SN74AUP1G17），两路经
-NVT2008 转到 1.8 V（FPGA 侧用内部上拉）。FS725 的正脉冲在两路上都是上升沿，用默认值 0。
+Board circuit: the PPS SMA (J7) has a 49.9 Ω termination to ground and is
+AC-coupled through 100 Ω and 10 nF to a node biased at 1.65 V, which feeds a
+comparator (LMV7235, about ±0.17 V hysteresis) and a Schmitt trigger
+(SN74AUP1G17). Both copies reach 1.8 V through an NVT2008 (the FPGA's internal
+pull-up is used). A positive FS725 pulse is a rising edge on both copies; use
+the default 0.
 
-写入不同的值会让 P1 重新开始 PPS 捕获：`pps_locked` 清 0，之后要再收到一个参考沿和
-4 个正确周期才重新锁定，不记故障。只在启动时设置。
-Python：`PLClient.set_pps_config(source_trig=..., invert=...)`。
+Writing a different value restarts PPS capture in P1: `pps_locked` clears and
+lock returns after one reference edge and 4 correct periods; no fault is
+recorded. Set it only at start-up.
+Python: `PLClient.set_pps_config(source_trig=..., invert=...)`.
 
-### 4.5 TX（发射）
+### 4.5 TX (transmit)
 
-#### 4.5.1 `TX_TARGET` — 开始时刻（shadow）
+#### 4.5.1 `TX_TARGET` — start time (shadow)
 
-| 地址                   | 访问      | 格式      | 复位值 |
-| ---------------------- | --------- | --------- | ------ |
-| 0x40（LO）、0x44（HI） | RW shadow | u64，tick | 0      |
+| Address              | Access    | Format     | Reset |
+| -------------------- | --------- | ---------- | ----- |
+| 0x40 (LO), 0x44 (HI) | RW shadow | u64, ticks | 0     |
 
 ```text
 W32 0x40 <target[31:0]>
 W32 0x44 <target[63:32]>
 ```
 
-第 0 个 beat 被 DAC 接收的那一拍（§6.1）。按 doorbell 时必须满足
-`target ≥ 当时的 tick + MIN_LEAD_TICKS`，否则拒绝为 `REJ_STALE`。
+The tick in which the DAC accepts beat 0 (§6.1). At the doorbell,
+`target ≥ tick at that moment + MIN_LEAD_TICKS`, or the command is rejected
+with `REJ_STALE`.
 
-#### 4.5.2 `TX_LENGTH` — 突发长度（shadow）
+#### 4.5.2 `TX_LENGTH` — burst length (shadow)
 
-| 地址 | 访问      | 格式      | 复位值 |
-| ---- | --------- | --------- | ------ |
-| 0x48 | RW shadow | u32，beat | 0      |
+| Address | Access    | Format     | Reset |
+| ------- | --------- | ---------- | ----- |
+| 0x48    | RW shadow | u32, beats | 0     |
 
 ```text
 W32 0x48 <beats>          1 … TX_DEPTH
 ```
 
-从 buffer 的第 0 个 beat 开始连续发出这么多 beat。0 或超过 `TX_DEPTH` 拒绝为 `REJ_LENGTH`。
-重复播放见 `TX_REPEAT`（§4.5.9）。
+Sends this many beats in a row, starting from beat 0 of the buffer. 0 or more
+than `TX_DEPTH` is rejected with `REJ_LENGTH`. Repeated playback: `TX_REPEAT`
+(§4.5.9).
 
-#### 4.5.3 `CONTROL.TX_DOORBELL` — 提交 TX 命令
+#### 4.5.3 `CONTROL.TX_DOORBELL` — submit a TX command
 
 ```text
 W32 0x40 <target_lo>
 W32 0x44 <target_hi>
 W32 0x48 <beats>
-W32 0x5C <passes>         1.3 起；不写则沿用上次的值（复位为 1）
+W32 0x5C <passes>         since 1.3; if not written, the previous value is used (reset 1)
 W32 0x08 0x01
-R32 0x4C  → 0x01 (ARMED)  否则见 §5.2
+R32 0x4C  → 0x01 (ARMED)  otherwise see §5.2
 ```
 
-只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条
-不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改
-shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING
-甚至 DONE（看 `TX_SEQ` 是否增加来区分）。
-Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
+Handled only when the TX state is IDLE or DONE. Checks, in order: `time_valid`
+→ length and repeat count → stale target. The first failing check gives its
+reject code and the state does not change. Only the shadow values at the
+doorbell cycle count; changing the shadows afterwards does not affect an
+accepted command. With a near target, the command may already be RUNNING or
+even DONE when `TX_RESULT` is read (tell by whether `TX_SEQ` advanced).
+Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
 
-#### 4.5.4 `CONTROL.TX_CANCEL` — 取消
+#### 4.5.4 `CONTROL.TX_CANCEL` — cancel
 
 ```text
 W32 0x08 0x02
 ```
 
-只在 ARMED 时有效：回到 IDLE，`TX_RESULT = CANCELLED`。进入 RUNNING 后不能取消，只能
-正常结束或进入 FAULT。Python：`PLClient.cancel_tx()`。
+Only in ARMED: back to IDLE, `TX_RESULT = CANCELLED`. Once RUNNING, a burst
+cannot be cancelled; it finishes or enters FAULT.
+Python: `PLClient.cancel_tx()`.
 
-#### 4.5.5 `TX_RESULT` — 返回码
+#### 4.5.5 `TX_RESULT` — result code
 
-| 地址 | 访问 | 格式         | 复位值 |
-| ---- | ---- | ------------ | ------ |
-| 0x4C | RO   | [7:0] 返回码 | 0      |
+| Address | Access | Format             | Reset |
+| ------- | ------ | ------------------ | ----- |
+| 0x4C    | RO     | [7:0] result code  | 0     |
 
-编码见 §5.2。
+Encoding in §5.2.
 
-#### 4.5.6 `TX_SEQ` — 完成计数
+#### 4.5.6 `TX_SEQ` — completion count
 
-| 地址 | 访问 | 格式 | 复位值 |
-| ---- | ---- | ---- | ------ |
-| 0x50 | RO   | u32  | 0      |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x50    | RO     | u32    | 0     |
 
-成功完成（DONE）的突发数。提交前后比较它，可以确认结果属于本次命令。
+Number of bursts that completed (DONE). Compare it before and after a submit
+to know that a result belongs to that command.
 
-#### 4.5.7 `TX_ACTUAL` — 实际开始时刻
+#### 4.5.7 `TX_ACTUAL` — actual start time
 
-| 地址                   | 访问 | 格式      | 复位值 |
-| ---------------------- | ---- | --------- | ------ |
-| 0x54（LO）、0x58（HI） | RO   | u64，tick | 0      |
+| Address              | Access | Format     | Reset |
+| -------------------- | ------ | ---------- | ----- |
+| 0x54 (LO), 0x58 (HI) | RO     | u64, ticks | 0     |
 
 ```text
-R64 0x54  → actual        只在 tx_state = DONE 后读
+R64 0x54  → actual        read only after tx_state = DONE
 ```
 
-第 0 个 beat 被 DAC 接收那一拍的 tick。正常情况下等于 target，软件应校验。
-Python：`PLClient.tx_actual()`。
+The tick in which the DAC accepted beat 0. Normally equal to the target;
+software checks it.
+Python: `PLClient.tx_actual()`.
 
-#### 4.5.8 TX 波形 buffer（存储空间）
+#### 4.5.8 TX waveform buffer (memory)
 
-| 地址                              | 访问 | 格式                        |
-| --------------------------------- | ---- | --------------------------- |
-| `tx_bram_ctrl` 基地址 + i × 32 | 写   | 第 i 个 beat，32 字节，小端 |
+| Address                          | Access | Format |
+| -------------------------------- | ------ | ------ |
+| `tx_bram_ctrl` base + i × 32     | write  | beat i, 32 bytes, little-endian |
 
 ```text
-W32 base+i*32+0  <beat i, 字节 0..3>
+W32 base+i*32+0  <beat i, bytes 0..3>
 ...
-W32 base+i*32+28 <beat i, 字节 28..31>
+W32 base+i*32+28 <beat i, bytes 28..31>
 ```
 
-- buffer 在 UltraRAM 里，分成 17 个 4096 beat 的 bank，容量 `TX_DEPTH` = 69632 beat。地址窗口是 4 MiB（2^17 beat），
-  `TX_DEPTH` 及以上的写入被丢弃，读出无意义。
-- PL 把每个 beat 原样交给 RFDC DAC。DAC 按 **I/Q 逐字交错**读取：第 n 个样本（n = 0…7，
-  先发的在前）占第 n 个 32 位字，`I = [32n+15:32n]`，`Q = [32n+31:32n+16]`（`TX_LAYOUT`）。
-  依据：M3 lane check（2026-10-14，见 §13）；按平面格式打包时第 k 条 lane 的冲激延迟变为
-  D − ⌈k/2⌉，正是 DAC 交错读取的结果。冲激只放在 I 上，所以一对 16 位里哪个是 I、哪个是 Q
-  尚未单独验证（对 BPSK 实信号无影响）。
-- 波形不变时只写一次，之后每次发射只提交 TX 命令。
-- TX 为 ARMED 或 RUNNING 时**不得**写 buffer，否则 TX 进入 FAULT，返回码 `FAULT_BUF_WRITE`。
+- The buffer is in UltraRAM, in 17 banks of 4096 beats; capacity `TX_DEPTH` =
+  69632 beats. The address window is 4 MiB (2^17 beats); writes at or above
+  `TX_DEPTH` are dropped and reads there are meaningless.
+- The PL passes each beat unchanged to the RFDC DAC. The DAC reads **I and Q
+  interleaved per word**: sample n (n = 0…7, earliest first) is 32-bit word n,
+  `I = [32n+15:32n]`, `Q = [32n+31:32n+16]` (`TX_LAYOUT`). Evidence: the M3
+  lane check (2026-10-14, §13); with planar packing the impulse delay of lane
+  k became D − ⌈k/2⌉, which is exactly what interleaved reading gives. The
+  impulses were on I only, so which of the two 16-bit halves is I and which is
+  Q is not verified separately (no effect on real BPSK signals).
+- Write a waveform once while it does not change; each burst then only needs a
+  TX command.
+- **Do not** write the buffer while TX is ARMED or RUNNING; TX would enter
+  FAULT with `FAULT_BUF_WRITE`.
+- Fabric clock domain: check the clock-status GPIO before writing (§1.2).
 
-#### 4.5.9 `TX_REPEAT` — 重复播放（shadow，1.3 起）
+Python: `TXBuffer.write_beats(beats)`.
 
-| 地址 | 访问      | 格式            | 复位值 |
-| ---- | --------- | --------------- | ------ |
-| 0x5C | RW shadow | u32，1 … 65535 | 1      |
+#### 4.5.9 `TX_REPEAT` — repeated playback (shadow, since 1.3)
+
+| Address | Access    | Format          | Reset |
+| ------- | --------- | --------------- | ----- |
+| 0x5C    | RW shadow | u32, 1 … 65535 | 1     |
 
 ```text
 W32 0x5C <passes>         1 … TX_REPEAT_MAX (65535)
 ```
 
-一条 TX 命令把 buffer 的第 0 … `TX_LENGTH`−1 个 beat 连续播放 `TX_REPEAT` 遍：每一遍最后一个
-beat 的下一拍就是下一遍的第 0 个 beat，中间没有空拍。`TX_ACTUAL` 是第一遍的开始时刻；全部播完
-才进入 DONE，`TX_SEQ` 只加 1。0 或大于 65535 时 doorbell 拒绝为 `REJ_LENGTH`。总时长
-`TX_LENGTH × TX_REPEAT` 拍，最长约 45 s；RUNNING 中不能取消。
+One TX command plays buffer beats 0 … `TX_LENGTH`−1 `TX_REPEAT` times back to
+back: beat 0 of each pass follows the last beat of the previous pass in the
+next cycle, with no gap. `TX_ACTUAL` is the start of the first pass; DONE comes
+after the last pass and `TX_SEQ` advances by one. 0 or more than 65535 is
+rejected with `REJ_LENGTH`. The total is `TX_LENGTH × TX_REPEAT` cycles, at
+most about 45 s; a RUNNING burst cannot be cancelled.
 
-shadow 在 doorbell 时才被取用，不写就沿用上次的值。`PLClient.arm_tx` 在 1.3 起的 bitstream 上
-每次都写它（默认 1）；在更早的 bitstream 上这个地址不存在（写入返回 SLVERR），所以不写，
-`repeat` 不为 1 时抛 `IdentityError`。
+The shadow is taken at the doorbell; if not written, the previous value is
+used. `PLClient.arm_tx` writes it on every command on 1.3 and later bitstreams
+(default 1); on older bitstreams this address does not exist (writes return
+SLVERR), so it is not written and `repeat` other than 1 raises
+`IdentityError`.
 
-首尾相接的波形要用周期波形（`WaveformGenerator(periodic=True)`，§11.9）：普通突发两端各有
-RRC 拖尾，直接重复会在接缝处不连续。
-Python：`PLClient.arm_tx(target, beats, repeat=n)`。
-- 属于 fabric 时钟域，写之前确认时钟状态 GPIO（§1.2）。
+Seamless repetition needs a periodic waveform (`WaveformGenerator(periodic=True)`,
+§11.9): an ordinary burst has an RRC tail at each end and would not join up.
+Python: `PLClient.arm_tx(target, beats, repeat=n)`.
 
-Python：`TXBuffer.write_beats(beats)`。
+### 4.6 RX (receive)
 
-### 4.6 RX（接收）
+> The RX path is verified on the board (2026-10-14): timed windows, DMA
+> writes, `RX_ACTUAL` and byte-count checks; 64 MB (20 ms) windows did not
+> overflow under about 4 GB/s of ARM memory traffic
+> (`rf_clock.checks.m3_loopback --stress`).
 
-> RX 通路已上板验证（2026-10-14）：定时开窗、DMA 写入、`RX_ACTUAL` 和字节数校验正常；
-> 64 MB（20 ms）窗口在 ARM 约 4 GB/s 内存流量下没有溢出（`tests/pl/m3_loopback.py --stress`）。
+#### 4.6.1 `RX_TARGET` — window start (shadow)
 
-#### 4.6.1 `RX_TARGET` — 开窗时刻（shadow）
+| Address              | Access    | Format     | Reset |
+| -------------------- | --------- | ---------- | ----- |
+| 0x60 (LO), 0x64 (HI) | RW shadow | u64, ticks | 0     |
 
-| 地址                   | 访问      | 格式      | 复位值 |
-| ---------------------- | --------- | --------- | ------ |
-| 0x60（LO）、0x64（HI） | RW shadow | u64，tick | 0      |
+Beat 0 of the window is the data on the ADC bus in the cycle where
+`raw_tick == RX_TARGET` (§6.2). Stale targets are rejected as for TX.
 
-窗口第 0 个 beat 是 `raw_tick == RX_TARGET` 那一拍 ADC 总线上的数据（§6.2）。过期规则同 TX。
+#### 4.6.2 `RX_LENGTH` — window length (shadow)
 
-#### 4.6.2 `RX_LENGTH` — 窗口长度（shadow）
+| Address | Access    | Format     | Reset |
+| ------- | --------- | ---------- | ----- |
+| 0x68    | RW shadow | u32, beats | 0     |
 
-| 地址 | 访问      | 格式      | 复位值 |
-| ---- | --------- | --------- | ------ |
-| 0x68 | RW shadow | u32，beat | 0      |
+1 … `RX_MAX_BEATS`; otherwise rejected with `REJ_LENGTH`.
 
-1 … `RX_MAX_BEATS`；否则拒绝为 `REJ_LENGTH`。
-
-#### 4.6.3 `CONTROL.RX_DOORBELL` — 提交 RX 命令
+#### 4.6.3 `CONTROL.RX_DOORBELL` — submit an RX command
 
 ```text
-（先配置 S2MM，§4.6.9）
+(set up the S2MM first, §4.6.9)
 W32 0x60 <target_lo>
 W32 0x64 <target_hi>
 W32 0x68 <beats>
 W32 0x08 0x04
-R32 0x6C  → 0x01 (ARMED)  0x14 表示 S2MM 还没就绪
+R32 0x6C  → 0x01 (ARMED)  0x14 means the S2MM is not ready yet
 ```
 
-只在 RX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期 → DMA 就绪。
-Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`（§11.8）。
+Handled only when the RX state is IDLE or DONE. Checks, in order: `time_valid`
+→ length → stale target → DMA ready.
+Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.8).
 
-#### 4.6.4 `CONTROL.RX_CANCEL` — 取消
+#### 4.6.4 `CONTROL.RX_CANCEL` — cancel
 
 ```text
 W32 0x08 0x08
 ```
 
-只在 ARMED 且还没到开窗那一拍时有效：回到 IDLE，`RX_RESULT = CANCELLED`。已经启动的
-S2MM 传输不会自己结束，需要复位 DMA（`PynqS2MMDMA.abort()`）。Python：`PLClient.cancel_rx()`。
+Only while ARMED and before the window opens: back to IDLE,
+`RX_RESULT = CANCELLED`. An S2MM transfer already started does not end by
+itself; reset the DMA (`PynqS2MMDMA.abort()`).
+Python: `PLClient.cancel_rx()`.
 
-#### 4.6.5 `RX_RESULT` — 返回码和窗口标志
+#### 4.6.5 `RX_RESULT` — result code and window flags
 
-| 地址 | 访问 | 格式                          | 复位值 |
-| ---- | ---- | ----------------------------- | ------ |
-| 0x6C | RO   | [7:0] 返回码，[11:8] 窗口标志 | 0      |
+| Address | Access | Format | Reset |
+| ------- | ------ | ------ | ----- |
+| 0x6C    | RO     | [7:0] result code, [11:8] window flags | 0 |
 
-返回码见 §5.2，标志见 §5.3。窗口结束时 `DONE` 才有效；`RX_INVALID` 表示本次测量必须丢弃。
-Python：`PLClient.rx_result()` → `(ResultCode, RxFlag)`。
+Result codes in §5.2, flags in §5.3. A window is valid only if it ends with
+`DONE`; `RX_INVALID` means this measurement must be discarded.
+Python: `PLClient.rx_result()` → `(ResultCode, RxFlag)`.
 
-#### 4.6.6 `RX_SEQ`、`RX_INVALID_CNT` — 计数
+#### 4.6.6 `RX_SEQ`, `RX_INVALID_CNT` — counters
 
-| 地址 | 名称               | 访问 | 格式 | 含义                           |
-| ---- | ------------------ | ---- | ---- | ------------------------------ |
-| 0x70 | `RX_SEQ`         | RO   | u32  | 结束的窗口数（有效和作废都计） |
-| 0x80 | `RX_INVALID_CNT` | RO   | u32  | 作废窗口总数                   |
+| Address | Name             | Access | Format | Meaning |
+| ------- | ---------------- | ------ | ------ | ------- |
+| 0x70    | `RX_SEQ`         | RO     | u32    | Windows ended (valid and invalid) |
+| 0x80    | `RX_INVALID_CNT` | RO     | u32    | Invalid windows in total |
 
-#### 4.6.7 `RX_BEATS` — 送进 DMA 的 beat 数
+#### 4.6.7 `RX_BEATS` — beats sent to the DMA
 
-| 地址 | 访问 | 格式      | 复位值 |
-| ---- | ---- | --------- | ------ |
-| 0x74 | RO   | u32，beat | 0      |
+| Address | Access | Format     | Reset |
+| ------- | ------ | ---------- | ----- |
+| 0x74    | RO     | u32, beats | 0     |
 
-本窗口送进 DMA 流的 beat 数，含作废窗口补发的尾拍。有效窗口应等于 `RX_LENGTH`，并且
-S2MM 实际收到的字节数应为 `RX_BEATS × 32`。Python：`PLClient.rx_beats()`。
+Beats of this window sent into the DMA stream, including the tail beat added
+to an invalid window. A valid window has `RX_BEATS = RX_LENGTH`, and the S2MM
+has received exactly `RX_BEATS × 32` bytes.
+Python: `PLClient.rx_beats()`.
 
-#### 4.6.8 `RX_ACTUAL` — 实际开窗时刻
+#### 4.6.8 `RX_ACTUAL` — actual window start
 
-| 地址                   | 访问 | 格式      | 复位值 |
-| ---------------------- | ---- | --------- | ------ |
-| 0x78（LO）、0x7C（HI） | RO   | u64，tick | 0      |
+| Address              | Access | Format     | Reset |
+| -------------------- | ------ | ---------- | ----- |
+| 0x78 (LO), 0x7C (HI) | RO     | u64, ticks | 0     |
 
-窗口第 0 拍在 ADC 总线上时的 tick，只在 `rx_state = DONE` 后读，应等于 target。
-Python：`PLClient.rx_actual()`。
+The tick in which beat 0 of the window was on the ADC bus; read only after
+`rx_state = DONE`; equal to the target.
+Python: `PLClient.rx_actual()`.
 
-#### 4.6.9 RX 样本 buffer 和 AXI DMA S2MM
+#### 4.6.9 RX sample buffer and AXI DMA S2MM
 
-样本 buffer 在 DDR 中：
+The sample buffer is in DDR:
 
-- 软件分配物理连续、可被 DMA 访问的 buffer（PYNQ `allocate`），至少 `RX_LENGTH × 32` 字节。
-- 第 n 个 beat 位于 buffer + n × 32。beat 内是**平面**格式：低 128 位是 8 个 I，高 128 位
-  是 8 个 Q，lane 0（先采的样本）在各自的最低 16 位（`RX_LAYOUT`，由 BD 中 I/Q 两路流拼接
-  而成）。lane 顺序由 M3 lane check 确认；I/Q 归属同 §4.5.8 尚未单独验证。
-- 作废窗口可能缺 beat，最后可能多一个全 0 尾拍（用来带上 TLAST），内容不得使用。
-- DMA 写入不经过 CPU cache，读之前必须 invalidate（PYNQ `buffer.invalidate()`）。
+- Software allocates a physically contiguous, DMA-accessible buffer (PYNQ
+  `allocate`) of at least `RX_LENGTH × 32` bytes.
+- Beat n is at buffer + n × 32. Within a beat the layout is **planar**: the
+  low 128 bits are 8 I samples and the high 128 bits 8 Q samples, lane 0 (the
+  earliest sample) in the lowest 16 bits of each (`RX_LAYOUT`, formed in the
+  block design by concatenating the I and Q streams). The lane order is
+  confirmed by the M3 lane check; which half is I and which Q is, as in
+  §4.5.8, not verified separately.
+- An invalid window may miss beats and may end with an extra all-zero beat
+  (which carries TLAST); its contents must not be used.
+- DMA writes bypass the CPU cache; invalidate before reading (PYNQ
+  `buffer.invalidate()`).
 
-DMA 是 Xilinx AXI DMA（simple 模式），偏移以 AMD PG021 为准，地址空间 `rx_dma`：
+The DMA is a Xilinx AXI DMA in simple mode; offsets per AMD PG021, address
+space `rx_dma`:
 
-| 偏移 | 名称            | 用法                                                       |
-| ---- | --------------- | ---------------------------------------------------------- |
-| 0x30 | `S2MM_DMACR`  | bit0 = RS（运行），初始化时置 1；bit2 = 软复位（自动清零） |
-| 0x34 | `S2MM_DMASR`  | bit1 = Idle；bit12 = IOC（完成）；bit4–6 = 错误           |
-| 0x48 | `S2MM_DA`     | 目标物理地址低 32 位                                       |
-| 0x4C | `S2MM_DA_MSB` | 目标物理地址高 32 位                                       |
-| 0x58 | `S2MM_LENGTH` | 写入即开始传输；完成后读出的是实际收到的字节数（26 位）    |
+| Offset | Name          | Use |
+| ------ | ------------- | --- |
+| 0x30   | `S2MM_DMACR`  | bit 0 = RS (run), set at initialization; bit 2 = soft reset (self-clearing) |
+| 0x34   | `S2MM_DMASR`  | bit 1 = Idle; bit 12 = IOC (complete); bits 4–6 = errors |
+| 0x48   | `S2MM_DA`     | Destination physical address, low 32 bits |
+| 0x4C   | `S2MM_DA_MSB` | Destination physical address, high 32 bits |
+| 0x58   | `S2MM_LENGTH` | Writing it starts the transfer; afterwards it reads the bytes actually received (26 bits) |
 
-### 4.7 时钟状态 GPIO
+### 4.7 Clock-status GPIO
 
-| 地址                                       | 访问 | 格式 |
-| ------------------------------------------ | ---- | ---- |
-| `clk_status_gpio` + 0x0（`GPIO_DATA`） | RO   | bit0 |
-
-```text
-R32 0xA002_0000  → 1     fabric MMCM 已锁定，可以访问 P2 和 TX buffer
-```
-
-Xilinx AXI GPIO（全输入，1 位），在 `pl_clk0` 域，任何时候都可以读。bit0 = 1 说明 PL_CLK
-存在且 MMCM 已锁定，**不说明 LMK04828 锁到了 FS725**：LMK 没有外部参考时会靠板上 VCXO
-继续输出。LMK 锁到 FS725 的证据是 `PPS_LAST_PERIOD` 恒为 100000000；板上 PLL1/PLL2 LED
-（本项目的 LMK 文件把 Status_LD1/2 设为锁定指示）只作现场参考，LMK 没有配置 SPI 读回。
-Python：`PLClient.fabric_clock_locked()`、`require_fabric_clock()`。
-
-## 5. 状态与错误报告
-
-### 5.1 TX/RX 状态（`STATUS[10:8]`、`STATUS[14:12]`）
-
-| 值 | 名称    | TX                      | RX                              |
-| -- | ------- | ----------------------- | ------------------------------- |
-| 0  | IDLE    | 空闲                    | 空闲                            |
-| 1  | ARMED   | 已接受，等待 target     | 已接受，等待 target             |
-| 2  | RUNNING | 正在发射                | 窗口打开                        |
-| 3  | DRAIN   | —                      | 窗口已关闭，等待 DMA 收到 TLAST |
-| 4  | DONE    | 完成，可提交下一条      | 结束，看`RX_RESULT` 是否有效  |
-| 5  | FAULT   | 故障，需`CLEAR_FAULT` | —（RX 不进入 FAULT）           |
+| Address                                 | Access | Format |
+| --------------------------------------- | ------ | ------ |
+| `clk_status_gpio` + 0x0 (`GPIO_DATA`)   | RO     | bit 0  |
 
 ```text
-TX:  IDLE/DONE ─doorbell(接受)→ ARMED ─target→ RUNNING ─最后一拍→ DONE
-                               ARMED ─cancel→ IDLE
-                     ARMED/RUNNING ─故障→ FAULT ─CLEAR_FAULT→ IDLE
-RX:  IDLE/DONE ─doorbell(接受)→ ARMED ─target→ RUNNING ─最后一拍→ DRAIN ─TLAST→ DONE
-                               ARMED ─cancel（开窗前）→ IDLE
+R32 0xA002_0000  → 1     fabric MMCM locked; P2 and the TX buffer may be accessed
 ```
 
-TX 和 RX 相互独立，可以同时 ARMED，也可以用同一次 `CONTROL` 写触发。
+A Xilinx AXI GPIO (one input bit) in the `pl_clk0` domain, readable at any
+time. Bit 0 = 1 means PL_CLK is present and the MMCM is locked; it **does not
+mean that the LMK04828 is locked to the FS725**: without its external
+reference the LMK keeps running from the on-board VCXO. The evidence that the
+LMK follows the FS725 is `PPS_LAST_PERIOD` staying at 100000000; the PLL1/PLL2
+LEDs on the board (this project's LMK file makes Status_LD1/2 lock indicators)
+are only a visual hint, and the LMK is not read back over SPI.
+Python: `PLClient.fabric_clock_locked()`, `require_fabric_clock()`.
 
-### 5.2 返回码（`TX_RESULT` / `RX_RESULT` [7:0]）
+## 5. Status and error reporting
 
-| 值   | 名称              | 类别 | 含义                                          |
-| ---- | ----------------- | ---- | --------------------------------------------- |
-| 0x00 | NONE              | 状态 | 复位后或`CLEAR_FAULT` 后                    |
-| 0x01 | ARMED             | 状态 | 命令已接受                                    |
-| 0x02 | RUNNING           | 状态 | 已开始                                        |
-| 0x03 | DONE              | 状态 | 成功完成                                      |
-| 0x04 | CANCELLED         | 状态 | 在 ARMED 时被取消                             |
-| 0x10 | REJ_BUSY          | 拒绝 | 状态不是 IDLE/DONE 时按了 doorbell            |
-| 0x11 | REJ_STALE         | 拒绝 | target < 当前 tick +`MIN_LEAD_TICKS`        |
-| 0x12 | REJ_LENGTH        | 拒绝 | 长度为 0 或超过上限                           |
-| 0x13 | REJ_TIME_INVALID  | 拒绝 | `time_valid = 0`                            |
-| 0x14 | REJ_DMA_NOT_READY | 拒绝 | RX：S2MM 未就绪（先配置 DMA 再按 doorbell）   |
-| 0x20 | FAULT_TREADY      | 故障 | TX：发射中 DAC`tready` 为 0，波形出现空洞   |
-| 0x21 | FAULT_BUF_WRITE   | 故障 | TX：ARMED/RUNNING 期间写了 TX buffer          |
-| 0x22 | FAULT_TIME        | 故障 | TX：ARMED/RUNNING 期间`time_valid` 变为 0   |
-| 0x30 | RX_INVALID        | 结果 | RX：窗口结束但有标志位（§5.3），测量必须丢弃 |
+### 5.1 TX/RX states (`STATUS[10:8]`, `STATUS[14:12]`)
 
-拒绝不改变状态，正在进行的命令不受影响。但 ARMED/RUNNING 期间被拒绝的 doorbell（`REJ_BUSY`）
-会改写 `*_RESULT` 的显示值，直到下一次状态转换再写入新的返回码。所以判断进度看
-`STATUS` 的状态字段，判断某次提交是否被接受，看提交后立即读到的 `*_RESULT`。
+| Value | Name    | TX | RX |
+| ----- | ------- | -- | -- |
+| 0     | IDLE    | idle | idle |
+| 1     | ARMED   | accepted, waiting for the target | accepted, waiting for the target |
+| 2     | RUNNING | transmitting | window open |
+| 3     | DRAIN   | — | window closed, waiting for the DMA to take TLAST |
+| 4     | DONE    | finished; the next command can be submitted | ended; check `RX_RESULT` for validity |
+| 5     | FAULT   | fault; needs `CLEAR_FAULT` | — (RX never enters FAULT) |
 
-### 5.3 RX 窗口标志（`RX_RESULT[11:8]`）
+```text
+TX:  IDLE/DONE ─doorbell (accepted)→ ARMED ─target→ RUNNING ─last beat→ DONE
+                                     ARMED ─cancel→ IDLE
+                           ARMED/RUNNING ─fault→ FAULT ─CLEAR_FAULT→ IDLE
+RX:  IDLE/DONE ─doorbell (accepted)→ ARMED ─target→ RUNNING ─last beat→ DRAIN ─TLAST→ DONE
+                                     ARMED ─cancel (before the window)→ IDLE
+```
 
-任何一位为 1，窗口结果就是 `RX_INVALID`；只作废这一次测量，系统继续运行。
+TX and RX are independent: both can be ARMED at once, and one `CONTROL` write
+can start both.
 
-| 位 | 名称      | 含义                                        |
-| -- | --------- | ------------------------------------------- |
-| 8  | OVERFLOW  | 窗口内 FIFO 满，丢了 beat（DDR 写入跟不上） |
-| 9  | GAP       | 窗口内 ADC`tvalid` 为 0                   |
-| 10 | TIME      | ARMED 或窗口期间`time_valid` 为 0         |
-| 11 | OVERRANGE | 窗口内 ADC 过量程                           |
+### 5.2 Result codes (`TX_RESULT` / `RX_RESULT` [7:0])
 
-### 5.4 故障位（`FAULT_BITS`）
+| Value | Name              | Class  | Meaning |
+| ----- | ----------------- | ------ | ------- |
+| 0x00  | NONE              | state  | after reset or `CLEAR_FAULT` |
+| 0x01  | ARMED             | state  | command accepted |
+| 0x02  | RUNNING           | state  | started |
+| 0x03  | DONE              | state  | completed successfully |
+| 0x04  | CANCELLED         | state  | cancelled while ARMED |
+| 0x10  | REJ_BUSY          | reject | doorbell while the state is not IDLE/DONE |
+| 0x11  | REJ_STALE         | reject | target < current tick + `MIN_LEAD_TICKS` |
+| 0x12  | REJ_LENGTH        | reject | length 0 or above the limit |
+| 0x13  | REJ_TIME_INVALID  | reject | `time_valid = 0` |
+| 0x14  | REJ_DMA_NOT_READY | reject | RX: S2MM not ready (set up the DMA before the doorbell) |
+| 0x20  | FAULT_TREADY      | fault  | TX: DAC `tready` low during a burst; the waveform has a hole |
+| 0x21  | FAULT_BUF_WRITE   | fault  | TX: TX buffer written while ARMED/RUNNING |
+| 0x22  | FAULT_TIME        | fault  | TX: `time_valid` dropped while ARMED/RUNNING |
+| 0x30  | RX_INVALID        | result | RX: the window ended with a flag set (§5.3); discard the measurement |
 
-| 位 | 名称           | 含义                                                     |
-| -- | -------------- | -------------------------------------------------------- |
-| 0  | LOCK_LOST      | 时钟失锁（`time_valid` 1→0）                          |
-| 1  | PPS            | PPS 周期超出容差，或 PPS 丢失（同时`pps_locked` 清 0） |
-| 2  | TICK_EXHAUSTED | raw_tick 饱和                                            |
-| 3  | TX             | TX 进入 FAULT                                            |
+A rejection does not change the state and does not affect the command in
+progress. But a doorbell rejected while ARMED/RUNNING (`REJ_BUSY`) overwrites
+the value shown in `*_RESULT` until the next state change writes a new code.
+So track progress with the state fields of `STATUS`, and judge whether a
+submit was accepted from the `*_RESULT` read right after it.
 
-## 6. 时间语义
+### 5.3 RX window flags (`RX_RESULT[11:8]`)
+
+Any flag set makes the window `RX_INVALID`; only that measurement is lost and
+the system keeps running.
+
+| Bit | Name      | Meaning |
+| --- | --------- | ------- |
+| 8   | OVERFLOW  | The FIFO was full inside the window and beats were lost (DDR writes could not keep up) |
+| 9   | GAP       | ADC `tvalid` was 0 inside the window |
+| 10  | TIME      | `time_valid` was 0 while ARMED or during the window |
+| 11  | OVERRANGE | The ADC went over range inside the window |
+
+### 5.4 Fault bits (`FAULT_BITS`)
+
+| Bit | Name           | Meaning |
+| --- | -------------- | ------- |
+| 0   | LOCK_LOST      | Clock lock lost (`time_valid` 1→0) |
+| 1   | PPS            | A PPS period out of tolerance, or the PPS missing (`pps_locked` clears as well) |
+| 2   | TICK_EXHAUSTED | raw_tick saturated |
+| 3   | TX             | TX entered FAULT |
+
+## 6. Timing semantics
 
 ### 6.1 TX
 
-第 0 个 beat 被 DAC AXIS 接收的那一拍 `raw_tick == TX_TARGET`，此后每拍一个 beat，中间没有
-空隙（`TX_REPEAT` > 1 时遍与遍之间也没有）；突发以外 DAC 输入为 0。突发中的第 n 个样本
-（重复播放时 n 从第一遍起连续计数）：
+The DAC AXIS accepts beat 0 in the cycle where `raw_tick == TX_TARGET`, then
+one beat per cycle with no gap (also between passes when `TX_REPEAT` > 1);
+outside a burst the DAC input is 0. Sample n of the burst (with repetition, n
+counts on from the first pass):
 
 ```text
 t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
@@ -662,212 +735,282 @@ t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
 
 ### 6.2 RX
 
-窗口第 0 个 beat 是 `raw_tick == RX_TARGET` 那一拍 ADC AXIS 上的数据，覆盖连续 `RX_LENGTH`
-拍。窗口中的第 n 个样本：
+Beat 0 of the window is the data on the ADC AXIS in the cycle where
+`raw_tick == RX_TARGET`; the window covers `RX_LENGTH` consecutive cycles.
+Sample n of the window:
 
 ```text
 t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
 ```
 
-以上都是 **RFDC 数字接口处的时间**。DAC/ADC 内部数据通路的延时由 MTS 固定（§7.1 步骤 7），
-线缆、放大器、天线的延时不包含在内，需要按计划 §8 标定。未接环回线时，板上 DAC tile 2 到
-ADC tile 2 的串扰测得两个数字接口之间的延时约 226.0 个样本（282.5 ns，2026-10-14）。这是 MTS
-目标延时固定（§7.1 步骤 7）时的值，run4 和 run6 相同；不固定目标时它随 bitstream 变（212.07、
-214.08）。
+Both are **times at the RFDC digital interfaces**. The delays of the DAC/ADC
+internal data paths are fixed by MTS (§7.1 step 7); cables, amplifiers and
+antennas are not included and are calibrated as in section 8 of the plan.
+Without a loopback cable, the crosstalk from DAC tile 2 to ADC tile 2 on the
+board gives about 226.0 samples (282.5 ns, 2026-10-14) between the two
+digital interfaces. That is the value with the MTS target latencies fixed
+(§7.1 step 7), the same on run4 and run6; without fixed targets it changes
+with the bitstream (212.07, 214.08).
 
 ### 6.3 PPS
 
-`PPS_TICK` 的量化粒度是 10 ns。`PPS_LAST_PERIOD` 恒为 100000000 说明 fabric 时钟与 FS725
-同源；LMK 靠板上 VCXO 运行时每秒会偏差几十到上百 tick，PPS 锁不上。P1 的判断：
+`PPS_TICK` is quantized to 10 ns. `PPS_LAST_PERIOD` staying at 100000000 shows
+that the fabric clock and the FS725 share their reference; when the LMK runs
+from the on-board VCXO, a second is off by tens to hundreds of ticks and PPS
+does not lock. P1 decides:
 
-| 周期与 100000000 之差        | 处理                                    |
-| ---------------------------- | --------------------------------------- |
-| 0                            | 正确周期；连续 4 个后`pps_locked = 1` |
-| ±1                          | 计入`PPS_JITTER_CNT`，锁定保持        |
-| 更大，或超过一个周期没有 PPS | `FAULT_BITS.PPS`，`pps_locked` 清 0 |
+| Period minus 100000000              | Action |
+| ----------------------------------- | ------ |
+| 0                                   | correct period; after 4 in a row `pps_locked = 1` |
+| ±1                                  | counted in `PPS_JITTER_CNT`; lock kept |
+| larger, or no PPS for over a period | `FAULT_BITS.PPS`; `pps_locked` cleared |
 
-`PPS_JITTER_CNT` 持续增长说明 PPS 沿贴着采样沿，需要调整 PL 输入延时。PPS 沿相对 tick
-的亚 tick 相位每次上电后都需要标定。
+A steadily increasing `PPS_JITTER_CNT` means the PPS edge sits on the sampling
+edge, and the PL input delay needs adjusting. The sub-tick phase of the PPS
+edge relative to the tick is calibrated after each power-up.
 
-### 6.4 epoch
+### 6.4 Epoch
 
-`TIME_EPOCH` 变化说明时钟中途失锁又重新锁定。raw_tick 不清零，但变化前后的时间戳和测量
-不可比，跨 epoch 的数据必须丢弃。
+A change of `TIME_EPOCH` means the clocks lost lock and locked again. raw_tick
+is not cleared, but timestamps and measurements before and after the change
+are not comparable; data spanning epochs is discarded.
 
-## 7. 编程流程
+## 7. Programming sequences
 
-### 7.1 上电与启动
+### 7.1 Power-up and start
 
-顺序不能调换：
+The order matters:
 
-- PYNQ 开机会加载自带的 base overlay，它的一部分逻辑也用 LMK 的时钟。先用本设计替换它，
-  再改时钟（板上实测：先改时钟时出现过整机卡死）。
-- 时钟一变，fabric MMCM 的输入就变了，要用 `pl_resetn0` 复位让它重新锁定（板上实测：
-  不复位时首次加载后 MMCM 可能不锁）。
-- RFDC tile 启动需要 LMX 已经输出参考时钟；P2 和 TX buffer 需要 fabric 时钟已经运行。
+- At boot PYNQ loads its base overlay, part of which also runs on LMK clocks.
+  Replace it with this design first, then change the clocks (seen on the
+  board: changing the clocks first once hung the whole system).
+- When the clocks change, the fabric MMCM input changes; reset it with
+  `pl_resetn0` so that it locks again (seen on the board: without the reset
+  the MMCM may not lock after the first load).
+- RFDC tile start-up needs the LMX references running; P2 and the TX buffer
+  need the fabric clock running.
 
 ```text
-加载 overlay
- 0. 开机后先等系统启动完成（systemctl is-system-running --wait）：PYNQ 的 bootpy.service
-    约在内核启动 1 分钟后加载 base overlay，会覆盖此前加载的设计
- 1. 加载 rf_clock.bit + rf_clock.hwh（PYNQ Overlay）；此时不访问 P2 和 TX buffer。
-    随包的 overlay 加载前先核对 manifest.json（§14.1）
-时钟
- 2. 用 xrfclk 把本项目的 LMK04828 / LMX2594 寄存器文件（`rf_clock/clocks/files/`）写入时钟芯片。
-    LMK 用嵌套零延时模式（PLL1 反馈取 DCLKout8 = PL_CLK），使 100 MHz tick 相对 FS725 10 MHz/PPS
-    的相位每次上电都相同
-    （lmk_freq = 100.0，lmx_freq = 480.0）
- 3. 现场可看：PLL1、PLL2 和两个 LMX（ADC/DAC）LED 都亮
- 4. 拉低 pl_resetn0（EMIO GPIO 95）约 10 ms 再释放：复位 fabric MMCM 和各 proc_sys_reset
- 5. 轮询时钟状态 GPIO bit0，1 s 内变为 1；为 0 时不得访问 P2 和 TX buffer
+Overlay
+ 0. After boot, wait for the system to finish starting (systemctl is-system-running --wait):
+    PYNQ's bootpy.service loads the base overlay about a minute after the kernel starts and
+    would replace a design loaded earlier
+ 1. Load rf_clock.bit + rf_clock.hwh (PYNQ Overlay); do not touch P2 or the TX buffer yet.
+    For the packaged overlay, check manifest.json first (§14.1)
+Clocks
+ 2. Write this project's LMK04828 / LMX2594 register files (rf_clock/clocks/files/) to the
+    clock chips through xrfclk (lmk_freq = 100.0, lmx_freq = 480.0). The LMK runs in nested
+    zero-delay mode (PLL1 feedback from DCLKout8 = PL_CLK), so the 100 MHz tick has the same
+    phase to the FS725 10 MHz and PPS after every power-up
+ 3. On site: the PLL1, PLL2 and both LMX (ADC/DAC) LEDs are lit
+ 4. Hold pl_resetn0 (EMIO GPIO 95) low for about 10 ms and release it: resets the fabric MMCM
+    and every proc_sys_reset
+ 5. Poll bit 0 of the clock-status GPIO; it becomes 1 within 1 s. While it is 0, do not touch
+    P2 or the TX buffer
 RFDC
- 6. 等 ADC、DAC 的 tile 0 和 tile 2 都进入启动完成状态（TileState 0xF）；pl_resetn0 之后
-    IP 会自行重新启动，超时才调用 StartUp
- 7. 先 DAC、后 ADC 执行 MTS（tile 0、2），目标延时固定为 DAC 1896、ADC 1296，使数据通路
-    延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止
+ 6. Wait until ADC and DAC tiles 0 and 2 are started (TileState 0xF); after pl_resetn0 the IP
+    restarts by itself, and StartUp is called only on a timeout
+ 7. MTS on DAC, then ADC (tiles 0 and 2) with fixed target latencies DAC 1896 and ADC 1296, so
+    the data-path delay does not depend on the bitstream; stop if the status is not OK or a
+    tile does not land on the target
 PL
- 8. 读 ID == 0x52434C4B，VERSION 的 major == 1；BUILD_VERSION 的 A.B.C 与
-    安装的 rf-clock 相同（§14.1）
- 9. 读 TX_DEPTH、RX_MAX_BEATS、MIN_LEAD_TICKS
-10. 写 PPS_CONFIG（本板用默认值 0）
-11. 等 STATUS.time_valid = 1 和 STATUS.pps_locked = 1（约 5 s）；记下 TIME_EPOCH。
-    pps_locked 不来时读 PPS_INPUTS 判断 PPS 是否到达
-12. 若 STATUS.any_fault：读 FAULT_BITS/FAULT_INFO 并记录，写 CONTROL.CLEAR_FAULT
-13. 生成波形，写入 TX buffer
-14. 分配 RX DDR buffer；S2MM_DMACR.RS = 1
+ 8. Read ID == 0x52434C4B and VERSION major == 1; BUILD_VERSION A.B.C equals the installed
+    rf-clock (§14.1)
+ 9. Read TX_DEPTH, RX_MAX_BEATS, MIN_LEAD_TICKS
+10. Write PPS_CONFIG (default 0 on this board)
+11. Wait for STATUS.time_valid = 1 and STATUS.pps_locked = 1 (about 5 s); record TIME_EPOCH.
+    If pps_locked does not come, read PPS_INPUTS to see whether the PPS arrives
+12. If STATUS.any_fault: read and record FAULT_BITS/FAULT_INFO, write CONTROL.CLEAR_FAULT
+13. Generate the waveform and write it to the TX buffer
+14. Allocate the RX DDR buffer; S2MM_DMACR.RS = 1
 ```
 
-### 7.2 安排一次 TX
+### 7.2 Scheduling a TX
 
 ```text
-1. 确认 tx_state 为 IDLE 或 DONE
-2. R64 0x28 → pps_tick（最近一次 PPS）
-3. target = pps_tick + 100000000 + 时隙偏移；下一个 PPS 之后，必然 ≥ 当前 tick + MIN_LEAD_TICKS
-4. W32 0x40 / 0x44 / 0x48（1.3 起再写 0x5C 重复次数），再 W32 0x08 0x01
-5. R32 0x4C，确认为 0x01（ARMED）
-6. 轮询 STATUS 直到 tx_state = DONE 或 FAULT
-7. DONE：R64 0x54，校验 TX_ACTUAL == target
+1. Check that tx_state is IDLE or DONE
+2. R64 0x28 → pps_tick (the latest PPS)
+3. target = pps_tick + 100000000 + slot offset; after the next PPS, so certainly
+   ≥ current tick + MIN_LEAD_TICKS
+4. W32 0x40 / 0x44 / 0x48 (from 1.3 also 0x5C, the repeat count), then W32 0x08 0x01
+5. R32 0x4C and check 0x01 (ARMED)
+6. Poll STATUS until tx_state = DONE or FAULT
+7. DONE: R64 0x54 and check TX_ACTUAL == target
 ```
 
-### 7.3 安排一次 RX
+### 7.3 Scheduling an RX
 
 ```text
-1. 确认 rx_state 为 IDLE 或 DONE
-2. 配置 S2MM：写 S2MM_DA / S2MM_DA_MSB，再写 S2MM_LENGTH = RX_LENGTH × 32
-3. W32 0x60 / 0x64 / 0x68，再 W32 0x08 0x04
-4. R32 0x6C，确认为 0x01；为 0x14 说明 S2MM 还没就绪；被拒绝时复位 DMA
-5. 等 S2MM 完成，再轮询直到 rx_state = DONE
-6. RX_RESULT[7:0] == 0x03 才有效；0x30 时丢弃本次测量，记录 [11:8] 标志
-7. 校验 RX_ACTUAL == target，S2MM_LENGTH（实际字节数）== RX_BEATS × 32
-8. invalidate buffer，读样本
+1. Check that rx_state is IDLE or DONE
+2. Set up the S2MM: write S2MM_DA / S2MM_DA_MSB, then S2MM_LENGTH = RX_LENGTH × 32
+3. W32 0x60 / 0x64 / 0x68, then W32 0x08 0x04
+4. R32 0x6C and check 0x01; 0x14 means the S2MM is not ready; on a rejection, reset the DMA
+5. Wait for the S2MM to finish, then poll until rx_state = DONE
+6. Valid only if RX_RESULT[7:0] == 0x03; on 0x30 discard the measurement and record the
+   [11:8] flags
+7. Check RX_ACTUAL == target and S2MM_LENGTH (bytes received) == RX_BEATS × 32
+8. Invalidate the buffer and read the samples
 ```
 
-### 7.4 运行中的监视
+### 7.4 Monitoring during operation
 
-每个测量周期都要确认：时钟状态 GPIO bit0 仍为 1、`TIME_EPOCH` 未变、`STATUS.pps_locked`
-仍为 1（LMK 失去 FS725 参考后 PPS 周期会漂出容差）。任何一项不满足，丢弃这段时间的测量。
+In each measurement cycle check that bit 0 of the clock-status GPIO is still 1,
+`TIME_EPOCH` has not changed and `STATUS.pps_locked` is still 1 (when the LMK
+loses the FS725 reference, the PPS period drifts out of tolerance). If any of
+them fails, discard the measurements of that interval.
 
-## 8. 寄存器速查表
+## 8. Register summary
 
-偏移相对 P2 基地址。
+Offsets from the P2 base.
 
-| 偏移 | 名称                | 访问 | 复位值     | 含义                                                | 详见    |
-| ---- | ------------------- | ---- | ---------- | --------------------------------------------------- | ------- |
-| 0x00 | `ID`              | RO   | 0x52434C4B | 设计标识 "RCLK"                                     | §4.1.1 |
-| 0x04 | `VERSION`         | RO   | 0x00010003 | [31:16] major，[15:0] minor                         | §4.1.2 |
-| 0x08 | `CONTROL`         | WO   | —         | 命令脉冲                                            | §4.1.3 |
-| 0x0C | `STATUS`          | RO   | —         | 状态字                                              | §4.2.1 |
-| 0x10 | `TIME_EPOCH`      | RO   | 0          | 时钟重新锁定次数                                    | §4.1.4 |
-| 0x14 | `FAULT_BITS`      | RO   | 0          | 粘滞故障位                                          | §4.2.2 |
-| 0x18 | `FAULT_INFO`      | RO   | 0          | 第一个故障源、故障事件总数                          | §4.2.3 |
-| 0x20 | `TICK_LO`         | RO   | —         | 当前 raw_tick 低 32 位；读它时锁存 HI               | §4.3.1 |
-| 0x24 | `TICK_HI`         | RO   | —         | 锁存的高 32 位                                      | §4.3.1 |
-| 0x28 | `PPS_TICK_LO`     | RO   | 0          | 最近一次 PPS 的 tick；读它时锁存 HI 和`PPS_COUNT` | §4.4.1 |
-| 0x2C | `PPS_TICK_HI`     | RO   | 0          | 锁存的高 32 位                                      | §4.4.1 |
-| 0x30 | `PPS_COUNT`       | RO   | 0          | 锁存的 PPS 沿计数                                   | §4.4.1 |
-| 0x34 | `PPS_LAST_PERIOD` | RO   | 0          | 最近一个 PPS 周期（tick）                           | §4.4.2 |
-| 0x38 | `PPS_JITTER_CNT`  | RO   | 0          | ±1 tick 周期的次数                                 | §4.4.3 |
-| 0x3C | `PPS_INPUTS`      | RO   | —         | 两路 PPS 的电平和沿计数（1.1）                      | §4.4.4 |
-| 0x40 | `TX_TARGET_LO`    | RW   | 0          | TX 开始 tick 低 32 位（shadow）                     | §4.5.1 |
-| 0x44 | `TX_TARGET_HI`    | RW   | 0          | TX 开始 tick 高 32 位（shadow）                     | §4.5.1 |
-| 0x48 | `TX_LENGTH`       | RW   | 0          | TX 长度（beat，shadow）                             | §4.5.2 |
-| 0x4C | `TX_RESULT`       | RO   | 0          | TX 返回码                                           | §4.5.5 |
-| 0x50 | `TX_SEQ`          | RO   | 0          | 完成的 TX 突发数                                    | §4.5.6 |
-| 0x54 | `TX_ACTUAL_LO`    | RO   | 0          | 实际开始 tick 低 32 位                              | §4.5.7 |
-| 0x58 | `TX_ACTUAL_HI`    | RO   | 0          | 实际开始 tick 高 32 位                              | §4.5.7 |
-| 0x5C | `TX_REPEAT`       | RW   | 1          | 重复播放遍数（shadow，1.3）                         | §4.5.9 |
-| 0x60 | `RX_TARGET_LO`    | RW   | 0          | RX 开窗 tick 低 32 位（shadow）                     | §4.6.1 |
-| 0x64 | `RX_TARGET_HI`    | RW   | 0          | RX 开窗 tick 高 32 位（shadow）                     | §4.6.1 |
-| 0x68 | `RX_LENGTH`       | RW   | 0          | RX 窗口长度（beat，shadow）                         | §4.6.2 |
-| 0x6C | `RX_RESULT`       | RO   | 0          | [7:0] 返回码，[11:8] 窗口标志                       | §4.6.5 |
-| 0x70 | `RX_SEQ`          | RO   | 0          | 结束的窗口数                                        | §4.6.6 |
-| 0x74 | `RX_BEATS`        | RO   | 0          | 送进 DMA 的 beat 数                                 | §4.6.7 |
-| 0x78 | `RX_ACTUAL_LO`    | RO   | 0          | 实际开窗 tick 低 32 位                              | §4.6.8 |
-| 0x7C | `RX_ACTUAL_HI`    | RO   | 0          | 实际开窗 tick 高 32 位                              | §4.6.8 |
-| 0x80 | `RX_INVALID_CNT`  | RO   | 0          | 作废窗口总数                                        | §4.6.6 |
-| 0x84 | `TX_DEPTH`        | RO   | 69632      | TX buffer 容量（beat）                              | §4.1.5 |
-| 0x88 | `RX_MAX_BEATS`    | RO   | 2097151    | RX 窗口上限（beat）                                 | §4.1.5 |
-| 0x8C | `MIN_LEAD_TICKS`  | RO   | 64         | target 最小提前量（tick）                           | §4.1.5 |
-| 0x90 | `PPS_CONFIG`      | RW   | 0          | PPS 来源和极性（1.1）                               | §4.4.5 |
-| 0x94 | `BUILD_VERSION`   | RO   | 构建时定   | 构建时的 rf-clock 版本 0xAABBCCDD（1.2）            | §4.1.6 |
+| Offset | Name              | Access | Reset      | Meaning | See |
+| ------ | ----------------- | ------ | ---------- | ------- | --- |
+| 0x00   | `ID`              | RO     | 0x52434C4B | design identifier "RCLK" | §4.1.1 |
+| 0x04   | `VERSION`         | RO     | 0x00010003 | [31:16] major, [15:0] minor | §4.1.2 |
+| 0x08   | `CONTROL`         | WO     | —          | command pulses | §4.1.3 |
+| 0x0C   | `STATUS`          | RO     | —          | status word | §4.2.1 |
+| 0x10   | `TIME_EPOCH`      | RO     | 0          | number of clock relocks | §4.1.4 |
+| 0x14   | `FAULT_BITS`      | RO     | 0          | sticky fault bits | §4.2.2 |
+| 0x18   | `FAULT_INFO`      | RO     | 0          | first fault source, total fault events | §4.2.3 |
+| 0x20   | `TICK_LO`         | RO     | —          | current raw_tick, low 32 bits; reading it latches HI | §4.3.1 |
+| 0x24   | `TICK_HI`         | RO     | —          | latched high 32 bits | §4.3.1 |
+| 0x28   | `PPS_TICK_LO`     | RO     | 0          | tick of the latest PPS; reading it latches HI and `PPS_COUNT` | §4.4.1 |
+| 0x2C   | `PPS_TICK_HI`     | RO     | 0          | latched high 32 bits | §4.4.1 |
+| 0x30   | `PPS_COUNT`       | RO     | 0          | latched PPS edge count | §4.4.1 |
+| 0x34   | `PPS_LAST_PERIOD` | RO     | 0          | latest PPS period (ticks) | §4.4.2 |
+| 0x38   | `PPS_JITTER_CNT`  | RO     | 0          | periods off by ±1 tick | §4.4.3 |
+| 0x3C   | `PPS_INPUTS`      | RO     | —          | levels and edge counts of the two PPS copies (1.1) | §4.4.4 |
+| 0x40   | `TX_TARGET_LO`    | RW     | 0          | TX start tick, low 32 bits (shadow) | §4.5.1 |
+| 0x44   | `TX_TARGET_HI`    | RW     | 0          | TX start tick, high 32 bits (shadow) | §4.5.1 |
+| 0x48   | `TX_LENGTH`       | RW     | 0          | TX length (beats, shadow) | §4.5.2 |
+| 0x4C   | `TX_RESULT`       | RO     | 0          | TX result code | §4.5.5 |
+| 0x50   | `TX_SEQ`          | RO     | 0          | TX bursts completed | §4.5.6 |
+| 0x54   | `TX_ACTUAL_LO`    | RO     | 0          | actual start tick, low 32 bits | §4.5.7 |
+| 0x58   | `TX_ACTUAL_HI`    | RO     | 0          | actual start tick, high 32 bits | §4.5.7 |
+| 0x5C   | `TX_REPEAT`       | RW     | 1          | passes over the burst (shadow, 1.3) | §4.5.9 |
+| 0x60   | `RX_TARGET_LO`    | RW     | 0          | RX window tick, low 32 bits (shadow) | §4.6.1 |
+| 0x64   | `RX_TARGET_HI`    | RW     | 0          | RX window tick, high 32 bits (shadow) | §4.6.1 |
+| 0x68   | `RX_LENGTH`       | RW     | 0          | RX window length (beats, shadow) | §4.6.2 |
+| 0x6C   | `RX_RESULT`       | RO     | 0          | [7:0] result code, [11:8] window flags | §4.6.5 |
+| 0x70   | `RX_SEQ`          | RO     | 0          | windows ended | §4.6.6 |
+| 0x74   | `RX_BEATS`        | RO     | 0          | beats sent to the DMA | §4.6.7 |
+| 0x78   | `RX_ACTUAL_LO`    | RO     | 0          | actual window tick, low 32 bits | §4.6.8 |
+| 0x7C   | `RX_ACTUAL_HI`    | RO     | 0          | actual window tick, high 32 bits | §4.6.8 |
+| 0x80   | `RX_INVALID_CNT`  | RO     | 0          | invalid windows in total | §4.6.6 |
+| 0x84   | `TX_DEPTH`        | RO     | 69632      | TX buffer capacity (beats) | §4.1.5 |
+| 0x88   | `RX_MAX_BEATS`    | RO     | 2097151    | RX window limit (beats) | §4.1.5 |
+| 0x8C   | `MIN_LEAD_TICKS`  | RO     | 64         | minimum target lead (ticks) | §4.1.5 |
+| 0x90   | `PPS_CONFIG`      | RW     | 0          | PPS source and polarity (1.1) | §4.4.5 |
+| 0x94   | `BUILD_VERSION`   | RO     | set at build | rf-clock version at build time, 0xAABBCCDD (1.2) | §4.1.6 |
 
 ---
 
-# 第二部分 Python 库 `rf_clock.pl`
+# Part II Python library `rf_clock.pl`
 
-## 9. 环境
+## 9. Environment
 
-| 场合               | 怎么用                                                                                                                                                                                             |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 板上（PYNQ 3.1.1） | 项目环境`~/RF-clock/.venv`，以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python <脚本>`。`xrfclk` 需要 `BOARD`，PYNQ 需要 `XILINX_XRT`                               |
-| 开发机             | 用`MemoryMMIO` 作假寄存器测试协议逻辑（`tests/`）。`uv sync` 会装与板子同版本的 `pynq==3.1.1`（dev 依赖），只用于 IDE 补全和离线读 HWH，不能控制硬件；它不是运行依赖，板上用系统自带的那份 |
+| Where | How |
+| ----- | --- |
+| Board (PYNQ 3.1.1) | Project environment `~/RF-clock/.venv` (§9.1), run as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m <module>`. `xrfclk` needs `BOARD`, PYNQ needs `XILINX_XRT` |
+| Development machine | Test the protocol logic against fake registers (`MemoryMMIO`, `tests/`). `uv sync` installs the board's `pynq==3.1.1` as a dev dependency, for IDE completion and offline HWH parsing only; it cannot drive hardware and is not a runtime dependency (the board uses its own copy) |
 
-模块一览：
+### 9.1 Board environment
 
-| 模块                     | 内容                                                                      |
-| ------------------------ | ------------------------------------------------------------------------- |
-| `rf_clock.pl.board`    | `PL`：上电，并持有各硬件部件（ctrl、tx_buffer、rx_dma、rfdc、clock_gpio） |
-| `rf_clock.pl.abi`      | 由 RTL 生成的地址、位号和编码                                             |
-| `rf_clock.pl.overlay`  | 随包的 overlay 路径、manifest 和版本检查（§14.1）                        |
-| `rf_clock.pl.mmio`     | MMIO 接口和实现（PYNQ / 内存假件）                                        |
-| `rf_clock.pl.client`   | `PLClient`：P2 寄存器的全部协议                                         |
-| `rf_clock.pl.bringup`  | `Bringup`：§7.1 的上电流程，以及 PYNQ 辅助函数                         |
-| `rf_clock.pl.rfdc`     | RFDC tile 启动和 MTS                                                      |
-| `rf_clock.pl.txbuf`    | `TXBuffer`：写 TX 波形 buffer                                           |
-| `rf_clock.pl.rxdma`    | `RXDMA`：RX 窗口的 S2MM 一侧（buffer、DMA 配置和完成检查）              |
-| `rf_clock.pl.waveform` | `WaveformGenerator`：PRN + RRC 发射波形                                 |
-| `rf_clock.pl.beats`    | 256 bit beat 的打包和解包                                                 |
-| `rf_clock.correlator`  | 互相关时延估计（不依赖 PL）                                               |
+The board has no internet access. PYNQ's own environment
+`/usr/local/share/pynq-venv` (Python 3.10, pynq 3.1.1, numpy 1.21.5) is left
+untouched; the project uses a separate venv that sees PYNQ's packages read-only
+through a `.pth` file, so packages are found in the order venv → PYNQ
+environment → system, the same order PYNQ itself uses.
 
-## 10. 快速上手
+Create the environment (on the board, in the project directory, with
+`~/.local/bin/uv`):
 
-板上：上电，按 PPS 发一个突发，同拍收一个窗口（`examples/pl/03_pynq_bringup.py`，2026-10-14
-板上运行通过）。
+```bash
+uv venv --offline --python /usr/bin/python3.10 --system-site-packages .venv
+NEW_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_venv.pth"
+```
+
+Install rf-clock, one of:
+
+- from a released wheel (§14.1): `uv pip install --python .venv/bin/python --no-deps rf_clock-<version>-py3-none-any.whl`
+- from the repository (development, editable): `uv pip install --python .venv/bin/python --no-deps -e .`
+
+Notes:
+
+- Use `--no-deps`: numpy comes from PYNQ (1.21.5, as in `pyproject.toml`) and
+  must not be installed a second time into the venv; the board is offline as
+  well. Do not run `uv sync` on the board either: it syncs the whole
+  environment to the lock file.
+- An editable install records the version at install time; reinstall after
+  changing `pyproject.toml` (§14.1).
+- The clock register files are inside the package (`rf_clock/clocks/files/`);
+  `PL.open()` hands them to xrfclk, so nothing is copied into xrfclk's
+  directory.
+- The `BOARD` variable (`RFSoC4x2`) is set by `/etc/profile.d/boardname.sh`, in
+  login shells only, and `xrfclk` reads it at import. `/dev/mem`, bitstream
+  download and the SPI clock chips need root, and `sudo` clears the
+  environment, hence `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`.
+- Jupyter (PYNQ's, running as root):
+  `sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`.
+- After a PYNQ image upgrade the `.pth` follows the new environment.
+- Remote recovery: an access to the fabric domain while its clock is not
+  running hangs the AXI bus and the board stops answering ping. Reset it from
+  the machine at the other end of the JTAG cable:
+  `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`;
+  ssh is back after about 40 s, with PYNQ's base overlay in the PL.
+
+Modules:
+
+| Module                 | Content |
+| ---------------------- | ------- |
+| `rf_clock.pl.board`    | `PL`: power-up, and the hardware blocks (ctrl, tx_buffer, rx_dma, rfdc, clock_gpio) |
+| `rf_clock.pl.abi`      | addresses, bit numbers and codes generated from the RTL |
+| `rf_clock.pl.overlay`  | path of the packaged overlay, its manifest and the version checks (§14.1) |
+| `rf_clock.pl.mmio`     | MMIO protocol and implementations (PYNQ / in-memory fake) |
+| `rf_clock.pl.client`   | `PLClient`: the whole P2 register protocol |
+| `rf_clock.pl.bringup`  | `Bringup`: the power-up sequence of §7.1, and PYNQ helpers |
+| `rf_clock.pl.rfdc`     | RFDC tile start-up and MTS |
+| `rf_clock.pl.txbuf`    | `TXBuffer`: writes the TX waveform buffer |
+| `rf_clock.pl.rxdma`    | `RXDMA`: the S2MM side of an RX window (buffer, DMA set-up and completion checks) |
+| `rf_clock.pl.waveform` | `WaveformGenerator`: PRN + RRC transmit waveform |
+| `rf_clock.pl.beats`    | packing and unpacking of 256-bit beats |
+| `rf_clock.correlator`  | cross-correlation delay estimation (independent of the PL) |
+| `rf_clock.checks`      | board checks for milestones M1–M3 (§13) |
+| `rf_clock.examples`    | annotated examples |
+
+## 10. Quick start
+
+On the board: power up, send one burst after a PPS, capture a window from the
+same tick (`python -m rf_clock.examples.pl.03_pynq_bringup`, run on the board
+2026-10-14).
 
 ```python
 from rf_clock.pl import PL, WaveformGenerator
 
-pl = PL.open()                                 # §7.1 全部上电步骤，默认用随包的 overlay
+pl = PL.open()                                 # every step of §7.1; the packaged overlay
 
 beats = WaveformGenerator().generate_beats()   # TX_LAYOUT
 rx_beats = len(beats) + 1250
-pl.tx_buffer.write_beats(beats)                # TX buffer（片上 BRAM）
-pl.rx_dma.prepare(rx_beats)                    # S2MM：buffer 地址和长度，先于 RX doorbell
+pl.tx_buffer.write_beats(beats)                # on-chip TX buffer
+pl.rx_dma.prepare(rx_beats)                    # S2MM address and length, before the RX doorbell
 
-_, pps = pl.ctrl.wait_next_pps()               # 刚过一个 PPS
-target = pps + 100_000_000 + 100_000           # 下一个 PPS 之后 1 ms
-pl.ctrl.arm_tx(target, len(beats))             # TX_TARGET、TX_LENGTH、doorbell
-pl.ctrl.arm_rx(target, rx_beats)               # RX_TARGET、RX_LENGTH、doorbell
-t_tx = pl.ctrl.wait_tx(timeout=2.5)            # TX_ACTUAL（已核对 == target）
-window = pl.ctrl.wait_rx(timeout=2.5)          # RX_ACTUAL（已核对）、RX_BEATS、窗口标志
+_, pps = pl.ctrl.wait_next_pps()               # just after a PPS
+target = pps + 100_000_000 + 100_000           # 1 ms after the next PPS
+pl.ctrl.arm_tx(target, len(beats))             # TX_TARGET, TX_LENGTH, doorbell
+pl.ctrl.arm_rx(target, rx_beats)               # RX_TARGET, RX_LENGTH, doorbell
+t_tx = pl.ctrl.wait_tx(timeout=2.5)            # TX_ACTUAL, checked == target
+window = pl.ctrl.wait_rx(timeout=2.5)          # RX_ACTUAL (checked), RX_BEATS, window flags
 
-x = pl.rx_dma.wait(window.beats).samples       # complex64，800 MS/s，从 window.actual 开始
+x = pl.rx_dma.wait(window.beats).samples       # complex64, 800 MS/s, from window.actual
 ```
 
-命令、时间戳和状态都在 `pl.ctrl`；`tx_buffer`、`rx_dma` 只管数据通路（写波形、配 DMA）。
-两次 wait 的先后不影响数据：开窗之后 P4 → FIFO → DMA → DDR 由硬件搬运。
+Commands, timestamps and status are all in `pl.ctrl`; `tx_buffer` and `rx_dma`
+only handle the data paths (writing the waveform, setting up the DMA). The
+order of the two waits does not affect the data: once the window opens, the
+hardware moves it P4 → FIFO → DMA → DDR.
 
-开发机：用假寄存器验证协议逻辑。
+On a development machine: check the protocol logic against fake registers.
 
 ```python
 from rf_clock.pl import abi
@@ -876,512 +1019,608 @@ from rf_clock.pl.mmio import MemoryMMIO
 
 regs = MemoryMMIO(initial={abi.ABI.REG.ID: abi.ABI.DESIGN_ID,
                            abi.ABI.REG.VERSION: abi.ABI.VERSION})
-client = PLClient(regs, MemoryMMIO(initial={0: 1}))     # GPIO bit0 = 1
+client = PLClient(regs, MemoryMMIO(initial={0: 1}))     # GPIO bit 0 = 1
 client.validate()
 ```
 
-## 11. API 参考
+## 11. API reference
 
-### 11.1 `rf_clock.pl.PL`（上电和硬件部件）
+### 11.1 `rf_clock.pl.PL` (power-up and hardware blocks)
 
-`PL.open()` 完成上电，返回的对象只负责持有各硬件部件，一个部件对应 §1.1 的一个地址空间，
-操作都通过部件自己的方法：
+`PL.open()` powers up; the object it returns only holds the hardware blocks,
+one per address space of §1.1, and work is done through each block's methods:
 
-| 属性           | 类型                    | 对应的硬件                                                                                                                         |
-| -------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `ctrl`       | `PLClient`（§11.4）  | P2 寄存器：全部命令（arm、wait、cancel）、时间戳、PPS、状态                                                                        |
-| `tx_buffer`  | `TXBuffer`（§11.7）  | 片上 TX 波形 buffer（AXI BRAM）                                                                                                    |
-| `rx_dma`     | `RXDMA`（§11.8）     | AXI DMA S2MM：RX 窗口写入 DDR，buffer 自动分配并复用                                                                               |
-| `rfdc`       | `RFDC`                | `rfdc.driver`：xrfdc 驱动（`driver.dac_tiles[2].blocks[0]` 等）；`rfdc.mts`：MTS 结果（§11.6），`mts=False` 时访问抛 `RuntimeError` |
-| `clock_gpio` | MMIO                    | 时钟状态 GPIO（`pl_clk0`），bit0 = fabric MMCM 已锁定                                                                            |
-| `overlay`    | PYNQ`Overlay`         |                                                                                                                                    |
-| `bringup`    | `BringupResult`       | 上电时发现并清除的故障（`initial_fault_bits`、`initial_fault_info`）                                                           |
+| Attribute    | Type                 | Hardware |
+| ------------ | -------------------- | -------- |
+| `ctrl`       | `PLClient` (§11.4)   | P2 registers: every command (arm, wait, cancel), timestamps, PPS, status |
+| `tx_buffer`  | `TXBuffer` (§11.7)   | on-chip TX waveform buffer |
+| `rx_dma`     | `RXDMA` (§11.8)      | AXI DMA S2MM: RX windows into DDR; the buffer is allocated and reused automatically |
+| `rfdc`       | `RFDC`               | `rfdc.driver`: the xrfdc driver (`driver.dac_tiles[2].blocks[0]` and so on); `rfdc.mts`: the MTS result (§11.6), raises `RuntimeError` after `mts=False` |
+| `clock_gpio` | MMIO                 | clock-status GPIO (`pl_clk0`), bit 0 = fabric MMCM locked |
+| `overlay`    | PYNQ `Overlay`       | |
+| `bringup`    | `BringupResult`      | faults found and cleared at power-up (`initial_fault_bits`, `initial_fault_info`) |
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, progress=None)`
 
-按 §7.1 完成全部上电步骤。固定的硬件选择都是默认值：overlay 为随包的 `rf_clock/overlay/rf_clock.bit`（§14.1）；
-时钟用包里 `rf_clock/clocks/files/` 的 `LMK04828_100.0.txt` 和 `LMX2594_480.0.txt`（经 xrfclk 写入，板上不必把文件拷进 xrfclk 目录）；`pl_resetn0` 复位；RFDC tile 0、2 启动和 MTS。
+Runs every power-up step of §7.1. The fixed hardware choices are defaults: the
+packaged overlay `rf_clock/overlay/rf_clock.bit` (§14.1); the clock files
+`LMK04828_100.0.txt` and `LMX2594_480.0.txt` from `rf_clock/clocks/files/`,
+written through xrfclk (no copies in xrfclk's directory needed); `pl_resetn0`;
+RFDC tiles 0 and 2 started and synchronized.
 
-| 参数                                | 用途                                                                     |
-| ----------------------------------- | ------------------------------------------------------------------------ |
-| `write_clocks=False`              | 开机后已写过 LMK/LMX 时跳过                                              |
-| `mts=False`                       | 不做 RFDC 启动和 MTS（只用时间基准时，如 M1）                            |
-| `pps_source_trig`、`pps_invert` | 写入`PPS_CONFIG`（§4.4.5）                                            |
-| `ref_tile`、`*_target_latency`  | MTS 参数（§11.6）；目标延时默认 DAC 1896、ADC 1296（§7.1），-1 为对齐到实测最大值 |
-| `check_version=False`             | 不做 §14.1 的 manifest 和`BUILD_VERSION` 检查（1.2 之前的 bitstream） |
-| `progress`                        | 每一步回调一行文字，如`print`                                          |
+| Parameter                         | Use |
+| --------------------------------- | --- |
+| `write_clocks=False`              | skip LMK/LMX when they were written since boot |
+| `mts=False`                       | no RFDC start-up and MTS (time base only, as for M1) |
+| `pps_source_trig`, `pps_invert`   | written to `PPS_CONFIG` (§4.4.5) |
+| `ref_tile`, `*_target_latency`    | MTS parameters (§11.6); targets default to DAC 1896 and ADC 1296 (§7.1); -1 aligns to the largest measured latency |
+| `check_version=False`             | skip the manifest and `BUILD_VERSION` checks of §14.1 (bitstreams before 1.2) |
+| `progress`                        | called with one line per step, for example `print` |
 
-失败时抛出原异常（`BringupError`、`RFDCError`、`VersionMismatch` 等），异常上带 `.overlay`，MTS 跑过时还带 `.mts`。
-开发机上可以直接 `PL(ctrl=..., tx_buffer=..., ...)` 用假件构造。
+On failure the original exception (`BringupError`, `RFDCError`,
+`VersionMismatch`, ...) propagates, carrying `.overlay` and, once MTS ran,
+`.mts`. On a development machine, `PL(ctrl=..., tx_buffer=..., ...)` builds one
+from fakes.
 
 ### 11.2 `rf_clock.pl.abi`
 
-由 `python tools/generate_abi.py --write` 从 `p_regs.vh`、`p_defs.vh` 生成，不要手改；
-`--check` 检查是否过期（`tests/test_abi_sync.py`）。
+Generated by `python tools/generate_abi.py --write` from `p_regs.vh` and
+`p_defs.vh`; never edit it by hand. `--check` reports whether it is stale
+(`tests/test_abi_sync.py`).
 
-| 名称                               | 内容                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `ABI.REG.<名称>`                 | 寄存器偏移，如`ABI.REG.PPS_TICK_LO == 0x28`                                                     |
-| `ABI.CTRL.<名称>`                | `CONTROL` 位号：`TX_DOORBELL`、`TX_CANCEL`、`RX_DOORBELL`、`RX_CANCEL`、`CLEAR_FAULT` |
-| `ABI.STAT.<名称>`                | `STATUS` 位号                                                                                   |
-| `ABI.PPSCFG`、`ABI.PPSIN`      | `PPS_CONFIG`、`PPS_INPUTS` 的位号                                                             |
-| `ABI.DESIGN_ID`、`ABI.VERSION` | 期望的`ID` 和本库对应的 `VERSION`                                                             |
-| `TxState`、`RxState`           | §5.1 的状态（IntEnum，二者相同）                                                                 |
-| `ResultCode`                     | §5.2 的返回码（IntEnum）                                                                         |
-| `RxFlag`                         | §5.3 的窗口标志（IntFlag）                                                                       |
-| `FaultBit`                       | §5.4 的故障位（IntFlag）                                                                         |
+| Name                         | Content |
+| ---------------------------- | ------- |
+| `ABI.REG.<name>`             | register offsets, for example `ABI.REG.PPS_TICK_LO == 0x28` |
+| `ABI.CTRL.<name>`            | `CONTROL` bit numbers: `TX_DOORBELL`, `TX_CANCEL`, `RX_DOORBELL`, `RX_CANCEL`, `CLEAR_FAULT` |
+| `ABI.STAT.<name>`            | `STATUS` bit numbers |
+| `ABI.PPSCFG`, `ABI.PPSIN`    | `PPS_CONFIG` and `PPS_INPUTS` bit numbers |
+| `ABI.DESIGN_ID`, `ABI.VERSION` | the expected `ID` and the `VERSION` this library implements |
+| `TxState`, `RxState`         | the states of §5.1 (IntEnum; identical) |
+| `ResultCode`                 | the result codes of §5.2 (IntEnum) |
+| `RxFlag`                     | the window flags of §5.3 (IntFlag) |
+| `FaultBit`                   | the fault bits of §5.4 (IntFlag) |
 
 ### 11.3 `rf_clock.pl.mmio`
 
-| 名称                                        | 说明                                                                                                           |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `RegisterIO`                              | 协议：`read(offset) -> int`、`write(offset, value)`，32 位、偏移按字对齐                                   |
-| `PynqMMIO(base, length=0x1000)`           | 板上实现，包装`pynq.MMIO`                                                                                    |
-| `MemoryMMIO(initial=None, on_write=None)` | 内存假件：`values` 字典、`read_log`、`write_log`；`on_write(offset, value)` 用来模拟 doorbell 等副作用 |
+| Name                                       | Description |
+| ------------------------------------------ | ----------- |
+| `RegisterIO`                               | protocol: `read(offset) -> int`, `write(offset, value)`; 32 bits, word-aligned offsets |
+| `PynqMMIO(base, length=0x1000)`            | board implementation, wraps `pynq.MMIO` |
+| `MemoryMMIO(initial=None, on_write=None)`  | in-memory fake: `values` dict, `read_log`, `write_log`; `on_write(offset, value)` models side effects such as doorbells |
 
 ### 11.4 `rf_clock.pl.client`
 
 #### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=1)`
 
-P2 寄存器协议的唯一入口。构造时不访问任何寄存器。**每次访问 P2 之前都先读时钟状态
-GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
+The only entry to the P2 register protocol. The constructor touches no
+register. **Every P2 access first reads the clock-status GPIO** and raises
+`ClockUnavailable` if the clock is not locked, so the bus never hangs.
 
-| 方法                                                   | 对应协议                                                                                  | 返回 / 异常                                                            |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `validate()`                                         | 读`ID`、`VERSION`、`TX_DEPTH`、`RX_MAX_BEATS`、`MIN_LEAD_TICKS`、`TIME_EPOCH` | `DeviceInfo`，之后也可用 `info` 属性取（`validate()` 之前访问抛 `IdentityError`）；`IdentityError`（ID 不对或 major 不符） |
-| `status()`                                           | R32`STATUS`                                                                             | `Status`                                                             |
-| `read32(off)` / `write32(off, v)`                  | R32 / W32                                                                                 | 原始访问                                                               |
-| `read64(lo_off)`                                     | R64（先 LO 后 HI）                                                                        | int                                                                    |
-| `fabric_clock_locked()`                              | 读 GPIO bit0                                                                              | bool                                                                   |
-| `require_fabric_clock()`                             | 同上                                                                                      | 未锁定时`ClockUnavailable`                                           |
-| `time_epoch()`                                       | R32`TIME_EPOCH`                                                                         | int                                                                    |
-| `remember_epoch()`                                   | 记下当前 epoch                                                                            | int                                                                    |
-| `require_same_epoch(expected=None)`                  | 与记下的 epoch 比较                                                                       | 变化时`EpochChanged`                                                 |
-| `arm_tx(target, beats, *, repeat=1)`                 | §4.5.3、§4.5.9                                                                           | 接受则返回；拒绝抛`CommandRejected`；立即 FAULT 抛 `PLClientError` |
-| `arm_rx(target, beats)`                              | §4.6.3                                                                                   | 同上                                                                   |
-| `wait_tx(timeout=1.0, poll_interval=0.001)`          | 轮询到`tx_state = DONE`，读 `TX_ACTUAL`                                                 | `TX_ACTUAL`；≠ target 抛 `TargetMissed`；FAULT 抛 `PLClientError`；超时 `WaitTimeout` |
-| `wait_rx(timeout=1.0, poll_interval=0.001)`          | 轮询到`rx_state = DONE`，读 `RX_RESULT`、`RX_ACTUAL`、`RX_BEATS`（§7.3 第 5–7 步）    | `RXWindow(target, actual, beats)`；作废抛 `RXWindowInvalid`；≠ target 抛 `TargetMissed`；超时 `WaitTimeout` |
-| `tx_actual()` / `rx_actual()`                      | R64`TX_ACTUAL` / `RX_ACTUAL`                                                          | int                                                                    |
-| `rx_beats()`                                         | R32`RX_BEATS`                                                                           | int                                                                    |
-| `rx_result()`                                        | R32`RX_RESULT`                                                                          | `(ResultCode, RxFlag)`                                               |
-| `cancel_tx()` / `cancel_rx()`                      | W32`CONTROL`                                                                            | —                                                                     |
-| `clear_fault()`                                      | W32`CONTROL` 0x10                                                                       | —                                                                     |
-| `latest_pps()`                                       | R64`PPS_TICK`，再 R32 `PPS_COUNT`                                                     | `(count, tick)`，同一个沿                                            |
-| `wait_next_pps(timeout=2.5, poll_interval=0.005)`    | 轮询到`PPS_COUNT` 变化                                                                  | 新沿的`(count, tick)`；超时 `WaitTimeout`                          |
-| `pps_inputs()`                                       | R32`PPS_INPUTS`                                                                         | `PPSInputs`；ABI minor < 1 时 `IdentityError`                      |
-| `set_pps_config(*, source_trig=False, invert=False)` | W32`PPS_CONFIG`                                                                         | 同上                                                                   |
-| `build_version()`                                    | R32`BUILD_VERSION`                                                                      | `"A.B.C.D"`；ABI minor < 2 时 `IdentityError`                      |
+| Method | Protocol | Returns / raises |
+| ------ | -------- | ---------------- |
+| `validate()` | reads `ID`, `VERSION`, `TX_DEPTH`, `RX_MAX_BEATS`, `MIN_LEAD_TICKS`, `TIME_EPOCH` | `DeviceInfo`, afterwards also the `info` property (before `validate()` it raises `IdentityError`); `IdentityError` on a wrong ID or major |
+| `status()` | R32 `STATUS` | `Status` |
+| `read32(off)` / `write32(off, v)` | R32 / W32 | raw access |
+| `read64(lo_off)` | R64 (LO before HI) | int |
+| `fabric_clock_locked()` | reads GPIO bit 0 | bool |
+| `require_fabric_clock()` | same | `ClockUnavailable` if not locked |
+| `time_epoch()` | R32 `TIME_EPOCH` | int |
+| `remember_epoch()` | records the current epoch | int |
+| `require_same_epoch(expected=None)` | compares with the recorded epoch | `EpochChanged` on a change |
+| `arm_tx(target, beats, *, repeat=1)` | §4.5.3, §4.5.9 | returns when accepted; `CommandRejected` on a rejection; `PLClientError` on an immediate FAULT |
+| `arm_rx(target, beats)` | §4.6.3 | same |
+| `wait_tx(timeout=1.0, poll_interval=0.001)` | polls until `tx_state = DONE`, reads `TX_ACTUAL` | `TX_ACTUAL`; `TargetMissed` if ≠ target; `PLClientError` on FAULT; `WaitTimeout` |
+| `wait_rx(timeout=1.0, poll_interval=0.001)` | polls until `rx_state = DONE`, reads `RX_RESULT`, `RX_ACTUAL`, `RX_BEATS` (§7.3 steps 5–7) | `RXWindow(target, actual, beats)`; `RXWindowInvalid` for an invalid window; `TargetMissed` if ≠ target; `WaitTimeout` |
+| `tx_actual()` / `rx_actual()` | R64 `TX_ACTUAL` / `RX_ACTUAL` | int |
+| `rx_beats()` | R32 `RX_BEATS` | int |
+| `rx_result()` | R32 `RX_RESULT` | `(ResultCode, RxFlag)` |
+| `cancel_tx()` / `cancel_rx()` | W32 `CONTROL` | — |
+| `clear_fault()` | W32 `CONTROL` 0x10 | — |
+| `latest_pps()` | R64 `PPS_TICK`, then R32 `PPS_COUNT` | `(count, tick)` of the same edge |
+| `wait_next_pps(timeout=2.5, poll_interval=0.005)` | polls until `PPS_COUNT` changes | `(count, tick)` of the new edge; `WaitTimeout` |
+| `pps_inputs()` | R32 `PPS_INPUTS` | `PPSInputs`; `IdentityError` if ABI minor < 1 |
+| `set_pps_config(*, source_trig=False, invert=False)` | W32 `PPS_CONFIG` | same |
+| `build_version()` | R32 `BUILD_VERSION` | `"A.B.C.D"`; `IdentityError` if ABI minor < 2 |
 
-`arm_tx`/`arm_rx` 的接受判断：提交后读到 ARMED 或 RUNNING 算接受；读到 DONE（RX 还有
-RX_INVALID）时，只有 `*_SEQ` 比提交前增加才算接受，避免把上一条命令的结果当成这一条的。
-提交前若记下过 epoch，会先检查 epoch 未变。
+How `arm_tx`/`arm_rx` decide that a command was accepted: ARMED or RUNNING read
+after the submit means accepted; DONE (and for RX also RX_INVALID) counts only
+if `*_SEQ` advanced since before the submit, so the previous command's result
+is never taken for this one. If an epoch was recorded, it is checked before
+the submit.
 
-数据类：
+Data classes:
 
-| 类             | 字段                                                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `Status`     | `raw`、`time_valid`、`clocks_locked`、`pps_locked`、`tick_exhausted`、`any_fault`、`dma_ready`、`tx_state`、`rx_state` |
-| `DeviceInfo` | `design_id`、`version`、`tx_depth`、`rx_max_beats`、`min_lead_ticks`                                                           |
-| `PPSInputs`  | `comp_level`、`trig_level`、`comp_edges`、`trig_edges`                                                                           |
+| Class        | Fields |
+| ------------ | ------ |
+| `Status`     | `raw`, `time_valid`, `clocks_locked`, `pps_locked`, `tick_exhausted`, `any_fault`, `dma_ready`, `tx_state`, `rx_state` |
+| `DeviceInfo` | `design_id`, `version`, `tx_depth`, `rx_max_beats`, `min_lead_ticks` |
+| `PPSInputs`  | `comp_level`, `trig_level`, `comp_edges`, `trig_edges` |
 
-按 PPS 安排时隙的常用写法：
+Scheduling a slot after a PPS:
 
 ```python
-count, pps_tick = client.wait_next_pps()            # 刚过一个 PPS，离下一个还有约 1 s
-target = pps_tick + 100_000_000 + offset_ticks      # 下一个 PPS 之后 offset
+count, pps_tick = client.wait_next_pps()            # just after a PPS; about 1 s to the next
+target = pps_tick + 100_000_000 + offset_ticks      # offset after the next PPS
 ```
 
 ### 11.5 `rf_clock.pl.bringup`
 
 #### `Bringup(*, overlay_loader, clock_setup, register_factory, clock_status_factory, rfdc_setup=None, pl_reset=None, pps_source_trig=False, pps_invert=False, package_version=None, fabric_lock_timeout=1.0, time_valid_timeout=1.0, pps_lock_timeout=10.0, poll_interval=0.1)`
 
-按 §7.1 的固定顺序调用注入的板上操作。`run(bitstream)` 依次执行：
+Calls the injected board operations in the fixed order of §7.1. `run(bitstream)`:
 
-| 步骤 | 调用                                                                         | 失败时                                              |
-| ---- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
-| 1    | `overlay_loader(path)` → overlay                                          | 原样抛出                                            |
-| 2    | `clock_setup()`                                                            | 原样抛出                                            |
-| 3    | `pl_reset()`（给了才调）                                                   | 原样抛出                                            |
-| 4    | 轮询`clock_status_factory(overlay)` bit0                                   | `fabric_lock_timeout` 秒内不锁抛 `BringupError` |
-| 5    | `rfdc_setup(overlay)`（给了才调）                                          | 原样抛出（如`RFDCError`）                         |
-| 6    | `PLClient.validate()`；给了 `package_version` 时比较 `build_version()` | `IdentityError`；A.B.C 不同抛 `VersionMismatch` |
-| 7    | `set_pps_config(pps_source_trig, pps_invert)`                              | —                                                  |
-| 8    | 等`time_valid`、`pps_locked`                                             | 超时抛`BringupError`                              |
-| 9    | 有故障时先读`FAULT_BITS`/`FAULT_INFO`，再 `clear_fault()`；记下 epoch  | —                                                  |
+| Step | Call | On failure |
+| ---- | ---- | ---------- |
+| 1 | `overlay_loader(path)` → overlay | propagates |
+| 2 | `clock_setup()` | propagates |
+| 3 | `pl_reset()` (if given) | propagates |
+| 4 | poll `clock_status_factory(overlay)` bit 0 | `BringupError` if not locked within `fabric_lock_timeout` s |
+| 5 | `rfdc_setup(overlay)` (if given) | propagates (for example `RFDCError`) |
+| 6 | `PLClient.validate()`; with `package_version`, compares `build_version()` | `IdentityError`; `VersionMismatch` if A.B.C differs |
+| 7 | `set_pps_config(pps_source_trig, pps_invert)` | — |
+| 8 | waits for `time_valid` and `pps_locked` | `BringupError` on a timeout |
+| 9 | on a fault, reads `FAULT_BITS`/`FAULT_INFO`, then `clear_fault()`; records the epoch | — |
 
-返回 `BringupResult(overlay, client, info, initial_fault_bits, initial_fault_info)`。
+Returns `BringupResult(overlay, client, info, initial_fault_bits, initial_fault_info)`.
 
-辅助函数：
+Helpers:
 
-| 函数                                                                                 | 说明                                                                                 |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `wait_for_boot(timeout=300.0)`                                                     | 等`systemctl is-system-running --wait`，返回最终状态（PYNQ 上通常是 `degraded`） |
-| `pynq_pl_reset(*, emio_index=95, pulse=0.01)`                                      | 拉低`pl_resetn0` 约 10 ms 再释放                                                   |
-| `pynq_register_factories(*, p2_ip_name="p_top_0", gpio_ip_name="clk_status_gpio")` | 返回`(registers, clock_status)` 两个工厂，供 `Bringup` 使用                      |
-| `mmio_from_overlay(overlay, name, *, default_length=0x1000)`                       | 按 HWH 名称建`PynqMMIO`；同时查 `ip_dict` 和 `mem_dict`                        |
-| `overlay_address(overlay, name, *, default_length=0x1000)`                         | 返回`(base, length)`                                                               |
+| Function | Description |
+| -------- | ----------- |
+| `wait_for_boot(timeout=300.0)` | waits for `systemctl is-system-running --wait` and returns the final state (`degraded` on PYNQ, usually) |
+| `pynq_pl_reset(*, emio_index=95, pulse=0.01)` | holds `pl_resetn0` low for about 10 ms |
+| `pynq_register_factories(*, p2_ip_name="p_top_0", gpio_ip_name="clk_status_gpio")` | returns the `(registers, clock_status)` factories used by `Bringup` |
+| `mmio_from_overlay(overlay, name, *, default_length=0x1000)` | a `PynqMMIO` for an HWH name, looked up in `ip_dict` and `mem_dict` |
+| `overlay_address(overlay, name, *, default_length=0x1000)` | returns `(base, length)` |
 
 ### 11.6 `rf_clock.pl.rfdc`
 
-PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.2` 的 `xrfdc_mts.h`
-用 cffi 直接调用 `libxrfdc.so`。声明必须与该版本一致（新版的 `XRFdc_MultiConverter_Init`
-多一个参数）。
+PYNQ 3.1.1's `xrfdc` does not wrap MTS. This module calls `libxrfdc.so`
+directly through cffi, with declarations from `xrfdc_mts.h` of embeddedsw
+`xilinx-v2020.2`; they must match that version (later versions of
+`XRFdc_MultiConverter_Init` take one more argument).
 
 #### `setup_rfdc_and_mts(overlay, *, rfdc_name="rfdc", tiles=(0, 2), signal_tile=2, ref_tile=0, dac_target_latency=-1, adc_target_latency=-1)`
 
-§7.1 的步骤 6–7：等 tile 启动，先 DAC、后 ADC 做 MTS，读回信号 tile 的混频器设置。可直接
-作为 `Bringup` 的 `rfdc_setup`。
+Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC,
+and reads back the mixer settings of the signal tile. Usable directly as the
+`rfdc_setup` of `Bringup`.
 
-- 返回 `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`。
-- 任一 MTS 状态非 OK 时抛 `RFDCError`，异常的 `.result` 属性仍带着结果，便于记录延时。
-- `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传
-  固定值 `board.DAC_TARGET_LATENCY` = 1896、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个
-  tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
+- Returns `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`.
+- Raises `RFDCError` if either MTS status is not OK; its `.result` still holds
+  the result, so the latencies can be logged.
+- `*_target_latency = -1` aligns to the largest measured latency, which
+  changes with the bitstream; `PL.open()` passes the fixed
+  `board.DAC_TARGET_LATENCY` = 1896 and `board.ADC_TARGET_LATENCY` = 1296. A
+  target below a tile's measured latency makes MTS report `TARGET_LOW`; then
+  raise the target and recalibrate the loopback delay.
 
-| 其他函数                                                                | 说明                                                                          |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `run_mts(rfdc, kind, tiles=(0, 2), *, ref_tile=0, target_latency=-1)` | `kind` 为 `"DAC"` 或 `"ADC"`，返回 `MTSResult`                        |
-| `start_tiles(rfdc, tiles=(0, 2), *, settle=1.0, timeout=5.0)`         | 等 TileState 0xF；`settle` 秒后仍未启动就调 StartUp。返回是否调用过 StartUp |
-| `tile_states(rfdc)`                                                   | `{"ADC": [4 个 TileState], "DAC": [...]}`                                   |
-| `rfdc_driver(overlay, name="rfdc")`                                   | 取`xrfdc.RFdc` 驱动；overlay 加载前没导入 `xrfdc` 时，按 HWH 描述自己构造 |
-| `decode_mts_status(status)`                                           | 把 MTS 状态码拆成名称列表，如`["TARGET_LOW"]`                               |
+| Other functions | Description |
+| --------------- | ----------- |
+| `run_mts(rfdc, kind, tiles=(0, 2), *, ref_tile=0, target_latency=-1)` | `kind` is `"DAC"` or `"ADC"`; returns `MTSResult` |
+| `start_tiles(rfdc, tiles=(0, 2), *, settle=1.0, timeout=5.0)` | waits for TileState 0xF; calls StartUp if not started after `settle` s; returns whether StartUp was called |
+| `tile_states(rfdc)` | `{"ADC": [4 TileStates], "DAC": [...]}` |
+| `rfdc_driver(overlay, name="rfdc")` | the `xrfdc.RFdc` driver; built from the HWH if `xrfdc` was not imported before the overlay loaded |
+| `decode_mts_status(status)` | splits an MTS status into names, for example `["TARGET_LOW"]` |
 
-`MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile
-0–3）、`offset`（tile 0–3）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在
-目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点
-而不报错。
+`MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`,
+`latency` (tiles 0–3), `offset` (tiles 0–3); `describe()` gives one line. `ok`
+requires status 0 and every tile on the target (`on_target`): the driver adds
+delay in whole steps (6 for both DAC and ADC), so a target that is not a whole
+number of steps away would miss without an error.
 
-板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），
-同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为
-226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。
+Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have
+latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts
+of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback
+delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within
+the standard deviation (0.13–0.16 samples).
 
 ### 11.7 `rf_clock.pl.txbuf`
 
 #### `TXBuffer(memory, client)`
 
-`memory` 是 `tx_bram_ctrl` 的 `RegisterIO`（`mmio_from_overlay(overlay, "tx_bram_ctrl")`）。
+`memory` is the `RegisterIO` of `tx_bram_ctrl` (`mmio_from_overlay(overlay, "tx_bram_ctrl")`).
 
-| 方法                        | 说明                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------ |
-| `write_beats(beats)`      | 从第 0 个 beat 起写入，返回 beat 数。一次整块拷贝（附录 A.2），整批只检查一次 TX 状态和时钟 GPIO |
-| `write_beat(index, beat)` | 写单个 beat                                                                                      |
+| Method | Description |
+| ------ | ----------- |
+| `write_beats(beats)` | writes from beat 0 and returns the number of beats; one block copy (appendix A.2), with one check of the TX state and the clock GPIO for the whole load |
+| `write_beat(index, beat)` | writes one beat |
 
-beat 可以是小于 2^256 的 int，或 32 字节的 bytes。超过 `TX_DEPTH`，或 TX 为 ARMED/RUNNING 时
-抛 `TXBufferError`（不会去写，避免触发 `FAULT_BUF_WRITE`）。4106 个 beat 的默认波形加载约
-17 ms（其中拷贝约 0.5 ms），逐字写入时约 0.3–0.5 s。
+A beat is an int below 2^256 or 32 bytes. Beyond `TX_DEPTH`, or while TX is
+ARMED/RUNNING, `TXBufferError` is raised and nothing is written (so
+`FAULT_BUF_WRITE` cannot happen). Loading the default 4106-beat waveform takes
+about 17 ms (about 0.5 ms of it the copy); word by word it would take
+0.3–0.5 s.
 
 ### 11.8 `rf_clock.pl.rxdma`
 
-> RX 通路已上板验证（2026-10-14，`tests/pl/m3_loopback.py`，当时是合在一起的 `RXCapture`）；
-> 拆成 `ctrl` + `rx_dma` 之后的版本待上板复测；`PynqS2MMDMA.abort()` 尚未在板上触发过。
+> Verified on the board (2026-10-14, `rf_clock.checks.m3_loopback`, including
+> the 64 MB stress windows); `PynqS2MMDMA.abort()` has not been exercised on
+> the board yet.
 
 #### `RXDMA(dma, *, buffer_factory=None)`
 
-`pl.rx_dma`：RX 窗口的 S2MM 一侧。命令和窗口校验在 `pl.ctrl`（§11.4），一个窗口按 §7.3：
+`pl.rx_dma`: the S2MM side of an RX window. Commands and window checks are in
+`pl.ctrl` (§11.4); one window, following §7.3:
 
 ```python
-pl.rx_dma.prepare(n)                     # 1. S2MM：buffer 地址和长度
-pl.ctrl.arm_rx(target, n)                # 2. RX_TARGET、RX_LENGTH、doorbell
-window = pl.ctrl.wait_rx(timeout=2.5)    # 3. DONE、标志、RX_ACTUAL == target
-data = pl.rx_dma.wait(window.beats)      # 4. S2MM 完成、字节数 == RX_BEATS × 32、invalidate
-x = data.samples                         # complex64，从 window.actual 开始
+pl.rx_dma.prepare(n)                     # 1. S2MM: buffer address and length
+pl.ctrl.arm_rx(target, n)                # 2. RX_TARGET, RX_LENGTH, doorbell
+window = pl.ctrl.wait_rx(timeout=2.5)    # 3. DONE, flags, RX_ACTUAL == target
+data = pl.rx_dma.wait(window.beats)      # 4. S2MM done, bytes == RX_BEATS * 32, invalidate
+x = data.samples                         # complex64, from window.actual
 ```
 
-| 方法                                  | 作用                                                                                       |
-| ------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `prepare(beats, *, buffer=None)`      | 启动 S2MM，返回 buffer。不传 `buffer` 时由 `buffer_factory` 分配，并在后续窗口中复用（窗口变大时才重新分配） |
-| `wait(beats, *, timeout=1.0)`         | `beats` 取 `RXWindow.beats`；返回 `RXData(buffer, beats, received_bytes)`                  |
-| `abort()`                             | 放弃已启动的传输                                                                           |
+| Method | Effect |
+| ------ | ------ |
+| `prepare(beats, *, buffer=None)` | starts the S2MM and returns the buffer. Without `buffer`, `buffer_factory` allocates one, reused by later windows (reallocated only when a window is larger) |
+| `wait(beats, *, timeout=1.0)` | `beats` from `RXWindow.beats`; returns `RXData(buffer, beats, received_bytes)` |
+| `abort()` | drops a started transfer |
 
-`RXData.samples` 在第一次访问时把窗口按 `RX_LAYOUT` 解码成 complex64。buffer 会被下一个窗口
-复用，所以下一次 `prepare` 之前先取走 `samples`。
+`RXData.samples` decodes the window with `RX_LAYOUT` into complex64 on first
+access. The next window reuses the buffer, so take the `samples` before the
+next `prepare`.
 
-`prepare` 必须在 RX doorbell 之前：S2MM 没就绪时 PL 拒绝 doorbell（0x14）。doorbell 被拒绝或
-窗口被取消时，已启动的传输等不到 TLAST；下一次 `prepare` 发现通道不空闲会先复位 DMA，也可以
-立即 `abort()`。窗口作废（`RXWindowInvalid`）时 DMA 照常结束（P4 在 DMA 收下 TLAST 后才报告
-DONE），不需要处理。
+`prepare` comes before the RX doorbell: the PL rejects the doorbell (0x14)
+while the S2MM is not ready. If the doorbell is rejected or the window
+cancelled, the started transfer never sees TLAST; the next `prepare` finds the
+channel busy and resets the DMA first, or call `abort()` at once. An invalid
+window (`RXWindowInvalid`) still ends the DMA normally (P4 reports DONE only
+after the DMA took TLAST), so nothing needs doing.
 
-| 异常              | 时机                                    |
-| ----------------- | --------------------------------------- |
-| `RXDMAError`      | DMA 字节数 ≠ `RX_BEATS × 32`；没有 `prepare` 就 `wait` |
+| Exception    | When |
+| ------------ | ---- |
+| `RXDMAError` | DMA bytes ≠ `RX_BEATS × 32`; `wait` without `prepare` |
 
-`PynqS2MMDMA(dma, *, length_reader=None)` 把 PYNQ 的 `DMA` 对象适配成 `RXDMA` 需要的
-`prepare`/`wait`/`abort`/`received_bytes`。`prepare` 只按窗口字节数启动传输，所以一块大
-buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复位位清掉一次不会结束的传输。
-`pynq_rx_dma(overlay, name="rx_dma")` 返回板上的适配器：overlay 加载前没导入 `pynq.lib.dma`
-时，按 HWH 描述自己构造驱动。
+`PynqS2MMDMA(dma, *, length_reader=None)` adapts a PYNQ `DMA` object to the
+`prepare`/`wait`/`abort`/`received_bytes` that `RXDMA` needs. `prepare` starts
+a transfer of exactly the window's bytes, so one large buffer can serve shorter
+windows. `abort()` clears a transfer that will never end with the soft-reset
+bit of `S2MM_DMACR`. `pynq_rx_dma(overlay, name="rx_dma")` returns the board
+adapter, building the driver from the HWH if `pynq.lib.dma` was not imported
+before the overlay loaded.
 
 ### 11.9 `rf_clock.pl.waveform`
 
-#### `WaveformGenerator(database_path=DEFAULT_DATABASE, config_id=DEFAULT_CONFIG_ID, amplitude=512, chip_count=4096, lfsr_seed=0xACE1, periodic=False)`
+#### `WaveformGenerator(amplitude=512, chip_count=4096, lfsr_seed=0xACE1, periodic=False, beta=0.25, span_chips=10, samples_per_symbol=8)`
 
-从 `config/RRC_config.db` 读 RRC 系数，在 ARM 上生成 BPSK PRN 波形（Q = 0）。
+Generates the BPSK PRN waveform on the ARM (Q = 0). The RRC coefficients are
+computed from `beta`, `span_chips` and `samples_per_symbol` (`rrc_config()`,
+about 2 ms on the board); no data file is stored.
 
-| 成员                                                                               | 说明                                                         |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `generate_beats(chips=None, *, count=None, seed=None, layout=None)`              | 按`TX_LAYOUT` 打包好的 TX beat 列表，可直接给 `TXBuffer` |
-| `generate(...)`                                                                  | int16 实数样本                                               |
-| `generate_iq(...)`                                                               | `(N, 2)` int16，I/Q 两列                                   |
-| `chips(count=None, seed=None)`                                                   | PRN 码片                                                     |
-| `samples_per_symbol`、`tap_count`、`tail_samples`、`expected_sample_count` | 配置派生量                                                   |
+| Member | Description |
+| ------ | ----------- |
+| `generate_beats(chips=None, *, count=None, seed=None, layout=None)` | TX beats packed with `TX_LAYOUT`, ready for `TXBuffer` |
+| `generate(...)` | int16 real samples |
+| `generate_iq(...)` | `(N, 2)` int16, I and Q columns |
+| `chips(count=None, seed=None)` | PRN chips |
+| `tap_count`, `tail_samples`, `expected_sample_count`, `config_id` | derived values |
 
-默认配置：8 个样本/码片，4096 个码片，32841 个样本，4106 个 beat（约 41 µs）。`config_id`
-找不到时直接报错，收发两端靠它确认用的是同一组系数。`load_config(database_path, config_id)`
-返回 `(配置字典, 系数列表)`。
+Defaults: β = 0.25, a span of 10 chips, 8 samples per chip (81 taps), 4096
+chips, 32841 samples, 4106 beats (about 41 µs). `config_id` is a hash of the
+RRC parameters (2134958710 for the defaults), recorded with each measurement so
+that both ends can confirm they use the same filter; `tests/test_waveform.py`
+holds golden coefficients against implementation drift.
+`rrc_config(beta, span_chips, samples_per_symbol)` returns
+`(config dict, coefficient list)`.
 
-`periodic=True` 生成的是码序列无限重复时的一个周期：RRC 拖尾绕回到开头（循环卷积，
-`simulate_periodic_convolution`），长度正好 `chip_count × 8` 个样本 = `chip_count` 个 beat，
-没有拖尾。用 `arm_tx(..., repeat=n)` 重复播放时得到一段连续信号；65535 码片的 m 序列一个周期
-65535 beat，放得下。
+On the board `generate_beats()` takes about 50 ms for 4096 chips and about
+0.7 s for 65535 chips, mostly computing the samples; the packing works on the
+whole array at once.
+
+`periodic=True` gives one period of the chip sequence repeated forever: the
+RRC tail wraps onto the start (circular convolution,
+`simulate_periodic_convolution`), exactly `chip_count × 8` samples =
+`chip_count` beats, with no tails. Played with `arm_tx(..., repeat=n)` it gives
+one continuous signal; one period of a 65535-chip m-sequence is 65535 beats and
+fits.
 
 ```python
 gen = WaveformGenerator(chip_count=65535, periodic=True)
-beats = gen.generate_beats()                  # 65535 beat
+beats = gen.generate_beats()                  # 65535 beats
 pl.tx_buffer.write_beats(beats)
-pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
+pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 passes back to back, 6.55 ms
 ```
 
 ### 11.10 `rf_clock.pl.beats`
 
-| 名称                                           | 说明                                                                                                                                                                                                       |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TX_LAYOUT`                                  | DAC 格式：I/Q 逐字交错（§4.5.8）                                                                                                                                                                          |
-| `RX_LAYOUT`                                  | ADC 格式：平面`{Q[255:128], I[127:0]}`（§4.6.9），也是 `BeatLayout()` 的默认值                                                                                                                        |
-| `BeatLayout(...)`                            | 一个 beat 内各样本的位位置；可用`lane_order`、`i_offsets`、`q_offsets` 描述其他格式                                                                                                                  |
-| `BeatPacker(layout=None)`                    | `pack_beat`、`pack_samples`、`pack_bytes`；`unpack_beat`、`unpack_beats`、`unpack_bytes`、`unpack_numpy`、`unpack_complex`。不给 layout 时是 `RX_LAYOUT`，打包 TX 要显式传 `TX_LAYOUT` |
-| `unpack_complex(data, *, sample_count=None)` | 向量化解码 DMA buffer，返回 complex64`I + jQ`；大窗口用它                                                                                                                                                |
-| `pack_tx_beats(samples, layout=None)`        | 样本 → beat 列表，默认`TX_LAYOUT`                                                                                                                                                                       |
-| `unpack_rx_beats(...)`                       | beat → 样本，默认`RX_LAYOUT`                                                                                                                                                                            |
+| Name | Description |
+| ---- | ----------- |
+| `TX_LAYOUT` | DAC format: I and Q interleaved per word (§4.5.8) |
+| `RX_LAYOUT` | ADC format: planar `{Q[255:128], I[127:0]}` (§4.6.9); also the default of `BeatLayout()` |
+| `BeatLayout(...)` | bit positions of the samples in a beat; `lane_order`, `i_offsets` and `q_offsets` describe other formats |
+| `BeatPacker(layout=None)` | `pack_beat`, `pack_samples`, `pack_bytes`; `unpack_beat`, `unpack_beats`, `unpack_bytes`, `unpack_numpy`, `unpack_complex`. Without a layout it uses `RX_LAYOUT`; pass `TX_LAYOUT` to pack TX beats. `pack_samples` packs an integer NumPy array (`(N,)` I or `(N, 2)` I/Q) with array operations, giving the same beats as a list |
+| `unpack_complex(data, *, sample_count=None)` | vectorized decoding of a DMA buffer into complex64 `I + jQ`; use it for large windows |
+| `pack_tx_beats(samples, layout=None)` | samples → beats, default `TX_LAYOUT` |
+| `unpack_rx_beats(...)` | beats → samples, default `RX_LAYOUT` |
 
 ### 11.11 `rf_clock.correlator`
 
-非相干时延估计（计划 §7 `correlator`），纯 NumPy，不依赖板子。
+Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy,
+independent of the board.
 
-| 函数                                     | 说明                                                                                       |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `correlate(rx, ref)`                   | 复互相关`c[k] = Σ rx[k+n]·conj(ref[n])`，k = 0 … len(rx) − len(ref)，用补零 FFT 计算 |
-| `find_peak(corr, *, guard=16)`         | 取幅度最大处，三点抛物线插值得到分数位置；峰两侧`guard` 个样本算主瓣，之外找最大旁瓣     |
-| `estimate_delay(rx, ref, *, guard=16)` | 上面两步合起来，返回`Peak`                                                               |
+| Function | Description |
+| -------- | ----------- |
+| `correlate(rx, ref)` | complex cross-correlation `c[k] = Σ rx[k+n]·conj(ref[n])`, k = 0 … len(rx) − len(ref), by zero-padded FFT |
+| `find_peak(corr, *, guard=16)` | the largest magnitude, refined by a three-point parabola to a fractional position; `guard` samples on each side count as the main lobe, the largest value outside is the sidelobe |
+| `estimate_delay(rx, ref, *, guard=16)` | both steps; returns `Peak` |
 
-`Peak` 字段：`index`（分数样本，参考波形在 rx 中的起点）、`integer_index`、`magnitude`、
-`peak_to_sidelobe`（及 `peak_to_sidelobe_db`）、`phase`。对默认 RRC 波形，抛物线插值的偏差
-在整个分数范围内不超过 0.002 个样本（无噪声仿真）。
+`Peak` fields: `index` (fractional samples; where the reference starts in rx),
+`integer_index`, `magnitude`, `peak_to_sidelobe` (and `peak_to_sidelobe_db`),
+`phase`. For the default RRC waveform the parabolic bias stays below 0.002
+samples over the whole fractional range (noise-free simulation).
 
-## 12. 异常与返回码
+## 12. Exceptions and result codes
 
-| 异常                                     | 基类              | 来源                                                                                       |
-| ---------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------ |
-| `PLClientError`                        | `RuntimeError`  | `client` 里所有协议错误的基类                                                            |
-| `ClockUnavailable`                     | `PLClientError` | 时钟状态 GPIO bit0 = 0，拒绝访问 P2                                                        |
-| `IdentityError`                        | `PLClientError` | `ID` 不对、major 不符，或 minor 太低                                                     |
-| `EpochChanged`                         | `PLClientError` | `TIME_EPOCH` 变了                                                                        |
-| `CommandRejected`                      | `PLClientError` | doorbell 被拒绝；`.operation`、`.result`（§5.2 的 0x1x 码）                           |
-| `WaitTimeout`                          | `PLClientError` | 等 DONE 超时                                                                               |
-| `TXBufferError`                        | `PLClientError` | 写 buffer 越界或时机不对                                                                   |
-| `RXWindowInvalid`                      | `PLClientError` | `wait_rx`：窗口作废（`.flags`、`.result`），丢弃这次测量                                    |
-| `TargetMissed`                         | `PLClientError` | `wait_tx`/`wait_rx`：`*_ACTUAL` ≠ target（`.target`、`.actual`）                            |
-| `RXDMAError`                           | `RuntimeError`  | DMA 字节数 ≠ `RX_BEATS × 32`                                                                |
-| `BringupError`                         | `RuntimeError`  | 上电流程某一步超时                                                                         |
-| `RFDCError`                            | `RuntimeError`  | tile 未启动或 MTS 状态非 OK                                                                |
-| `VersionMismatch`                      | `RuntimeError`  | overlay 或`BUILD_VERSION` 与安装的 rf-clock A.B.C 不同，或文件与 manifest 不符（§14.1） |
+| Exception | Base | Raised by |
+| --------- | ---- | --------- |
+| `PLClientError` | `RuntimeError` | base of every protocol error in `client` |
+| `ClockUnavailable` | `PLClientError` | clock-status GPIO bit 0 = 0; P2 access refused |
+| `IdentityError` | `PLClientError` | wrong `ID`, wrong major, or minor too low |
+| `EpochChanged` | `PLClientError` | `TIME_EPOCH` changed |
+| `CommandRejected` | `PLClientError` | doorbell rejected; `.operation`, `.result` (the 0x1x codes of §5.2) |
+| `WaitTimeout` | `PLClientError` | waiting for DONE timed out |
+| `TXBufferError` | `PLClientError` | buffer write out of range or at the wrong time |
+| `RXWindowInvalid` | `PLClientError` | `wait_rx`: invalid window (`.flags`, `.result`); discard the measurement |
+| `TargetMissed` | `PLClientError` | `wait_tx`/`wait_rx`: `*_ACTUAL` ≠ target (`.target`, `.actual`) |
+| `RXDMAError` | `RuntimeError` | DMA bytes ≠ `RX_BEATS × 32` |
+| `BringupError` | `RuntimeError` | a power-up step timed out |
+| `RFDCError` | `RuntimeError` | a tile did not start, or an MTS status is not OK |
+| `VersionMismatch` | `RuntimeError` | overlay or `BUILD_VERSION` A.B.C differs from the installed rf-clock, or a file does not match the manifest (§14.1) |
 
-| 返回码（§5.2）  | Python 表现                                                                                  |
-| ---------------- | -------------------------------------------------------------------------------------------- |
-| ARMED、RUNNING   | `arm_*` 正常返回                                                                           |
-| DONE、RX_INVALID | `arm_*` 正常返回（`*_SEQ` 已增加时）；`wait_rx` 对 RX_INVALID 抛 `RXWindowInvalid`  |
-| REJ_*            | `CommandRejected`                                                                          |
-| FAULT_*          | `arm_tx` 或 `wait_tx` 抛 `PLClientError`                                               |
+| Result code (§5.2) | In Python |
+| ------------------ | --------- |
+| ARMED, RUNNING     | `arm_*` returns |
+| DONE, RX_INVALID   | `arm_*` returns (when `*_SEQ` advanced); `wait_rx` raises `RXWindowInvalid` for RX_INVALID |
+| REJ_*              | `CommandRejected` |
+| FAULT_*            | `arm_tx` or `wait_tx` raises `PLClientError` |
 
-## 13. 板上测试脚本
+## 13. Board checks (`rf_clock.checks`)
 
-在板上 `~/RF-clock` 下以 root 运行，参数 `--help` 查看全部选项。卡死时从 RF-clock-ai
-用 `xsdb tools/jtag_reset_board.tcl 887329260072A` 远程复位。
+Installed with the package; run on the board as root:
+`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<module> ...`;
+`--help` lists every option. Records are appended to `m2_runs.jsonl` and
+`m3_runs.jsonl` in the current directory. If the board hangs, reset it remotely
+with `tools/jtag_reset_board.tcl` (§9.1).
 
-| 脚本                         | 里程碑             | 用法                                                                                                                                                                         |
-| ---------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/pl/m1_check.py`     | M1：tick 与 PPS    | `m1_check.py [秒数] [--no-clocks]`；每秒一行，结束时 PASS/FAIL                                                                                                             |
-| `tests/pl/m2_tx_timing.py` | M2：MTS 与定时 TX  | `m2_tx_timing.py [突发数] [--offset-ticks N] [--amplitude A]`；每次运行的 MTS 延时追加到 `m2_runs.jsonl`                                                                 |
-| `tests/pl/m3_loopback.py`  | M3：环回、RX、相关 | `m3_loopback.py [次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl` |
+| Module         | Milestone | Usage |
+| -------------- | --------- | ----- |
+| `m1_check`     | M1: tick and PPS | `[seconds] [--no-clocks]`; one line per second, PASS/FAIL at the end |
+| `m2_tx_timing` | M2: MTS and timed TX | `[bursts] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`; one burst after every PPS; the MTS latencies of each run go to `m2_runs.jsonl` |
+| `m3_loopback`  | M3: loopback, RX, correlation | `[captures]` measures the loopback delay; `--lane-check` locates single-lane impulses to verify the beat layout; `--stress [--stress-beats N]` tests long windows under DDR load; results go to `m3_runs.jsonl` |
 
-三个脚本共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的
-bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
+All three take `--bitstream PATH` (default: the packaged overlay),
+`--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks
+when they were written since boot), `--pps-trig` and `--pps-invert`.
+
+For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`:
+the DAC is switched to IMR low-pass in Nyquist zone 1 for the run;
+`--scope-nco 100` moves the output to 100 MHz and `--scope-nco 0` bypasses the
+mixer so the DAC outputs the I samples; the settings are restored at the end.
+To measure PPS → burst start, use `--scope-nco 0 --waveform square
+--offset-ticks 0`: the first edge of the square wave does not depend on any
+NCO phase (180.00 ns on 2026-10-14, unchanged over five restarts; DAC_A is
+inverted relative to I, so the first edge falls).
 
 ---
 
-# 第三部分 版本与待定事项
+# Part III Versions and open items
 
-## 14. 版本规则
+## 14. Version rules
 
-- `VERSION` 的 minor 加 1：只增加寄存器或位，原有偏移和含义不变，旧软件仍可用。
-- `VERSION` 的 major 加 1：任何改变原有偏移、位域、编码或时间语义的修改。
-- 软件启动时检查 major，不匹配就拒绝运行；用到 1.x 新增功能的调用检查 minor。
+- `VERSION` minor + 1: registers or bits added only; existing offsets and
+  meanings unchanged, so older software still works.
+- `VERSION` major + 1: any change to existing offsets, bit fields, encodings or
+  timing semantics.
+- Software checks the major at start-up and refuses to run on a mismatch;
+  calls that use a 1.x addition check the minor.
 
-| 版本 | 变化                                               |
-| ---- | -------------------------------------------------- |
-| 1.0  | 初版                                               |
-| 1.1  | 新增`PPS_INPUTS`（0x3C）、`PPS_CONFIG`（0x90） |
-| 1.2  | 新增`BUILD_VERSION`（0x94）                      |
-| 1.3  | 新增`TX_REPEAT`（0x5C）                          |
+| Version | Change |
+| ------- | ------ |
+| 1.0     | first version |
+| 1.1     | added `PPS_INPUTS` (0x3C), `PPS_CONFIG` (0x90) |
+| 1.2     | added `BUILD_VERSION` (0x94) |
+| 1.3     | added `TX_REPEAT` (0x5C) |
 
-### 14.1 软件包与 overlay
+### 14.1 Package and overlay
 
-overlay 随 Python 包一起发布，放在 `src/rf_clock/overlay/`，由 `tools/package_overlay.py`
-从构建目录复制过来：
+The overlay ships with the Python package in `src/rf_clock/overlay/`, copied
+from a build directory by `tools/package_overlay.py`:
 
-| 文件                               | 内容                                                                                       |
-| ---------------------------------- | ------------------------------------------------------------------------------------------ |
-| `rf_clock.bit`、`rf_clock.hwh` | PYNQ 加载用                                                                                |
-| `rf_clock_hw.xsa`                | Vitis/PetaLinux 用的硬件平台（含 bitstream）。不能叫 `rf_clock.xsa`：PYNQ 3.1 看到同名 `.xsa` 会改走 XSA 分支，加载 `.bit` 失败 |
-| `manifest.json`                  | `build_version`、构建目录、`build_status`（status.txt，含 WNS/WHS）、三个文件的 sha256 |
+| File | Content |
+| ---- | ------- |
+| `rf_clock.bit`, `rf_clock.hwh` | for PYNQ |
+| `rf_clock_hw.xsa` | the hardware platform for Vitis/PetaLinux (includes the bitstream). Not named `rf_clock.xsa`: with an `.xsa` of the same name next to the `.bit`, PYNQ 3.1 takes its XSA branch and fails to load the `.bit` |
+| `manifest.json` | `build_version`, the build directory, `build_status` (status.txt, with WNS/WHS), and the sha256 of the three files |
 
-三个二进制文件用 Git LFS 保存（`.gitattributes`）。克隆后要先 `git lfs install`、`git lfs pull`，
-否则拿到的是指针文件，`PL.open()` 的 sha256 校验会拒绝它。
+The three binaries are stored with Git LFS (`.gitattributes`). After cloning,
+run `git lfs install` and `git lfs pull`; otherwise they are pointer files,
+which the sha256 check of `PL.open()` refuses.
 
-rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手改 `pyproject.toml`：
+The rf-clock version has four fields, `A.B.C.D` (PEP 440 allows any number),
+edited by hand in `pyproject.toml`:
 
-| 段  | 含义                           | 什么时候加 1                              |
-| --- | ------------------------------ | ----------------------------------------- |
-| A.B | 寄存器协议，等于`VERSION`    | 按 §14 改`VERSION` 时同步改，C、D 清零 |
-| C   | 这一版协议下的第几个 bitstream | 重新出 bitstream（寄存器不变），D 清零    |
-| D   | 只改 Python                    | 不重新构建                                |
+| Field | Meaning | Incremented when |
+| ----- | ------- | ---------------- |
+| A.B   | the register protocol, equal to `VERSION` | `VERSION` changes per §14; reset C and D |
+| C     | which bitstream for this protocol | a new bitstream with the same registers; reset D |
+| D     | Python-only changes | no rebuild |
 
-先改版本号再构建，构建脚本把它写进 `BUILD_VERSION`。A.B 与 `P_VERSION` 不一致时构建脚本报错，
-`tests/test_abi_sync.py` 也检查这一点。
+Change the version before building; the build script writes it into
+`BUILD_VERSION`. If A.B differs from `P_VERSION` the build script fails, and
+`tests/test_abi_sync.py` checks it too.
 
-`PL.open()` 检查两次，不一致时抛 `VersionMismatch`（`check_version=False` 关闭）：
+`PL.open()` checks twice and raises `VersionMismatch` on a mismatch
+(`check_version=False` turns this off):
 
-1. 加载前：bitstream 同目录有 `manifest.json` 时，它的 `build_version` 与
-   `importlib.metadata.version("rf-clock")` 的 A.B.C 必须相同，`.bit`、`.hwh` 的 sha256
-   必须与 manifest 一致。直接从构建目录加载（没有 manifest）时跳过这一步。
-2. 加载后：`BUILD_VERSION` 与安装的 rf-clock 的 A.B.C 相同。
+1. Before loading: if a `manifest.json` sits next to the bitstream, its
+   `build_version` must have the A.B.C of `importlib.metadata.version("rf-clock")`,
+   and the sha256 of the `.bit` and `.hwh` must match the manifest. Loading
+   straight from a build directory (no manifest) skips this.
+2. After loading: `BUILD_VERSION` has the A.B.C of the installed rf-clock.
 
-只有 D 可以不同：只改 Python 的发布继续用原来的 bitstream。
+Only D may differ: a Python-only release keeps using the existing bitstream.
 
-可编辑安装记录的是安装那一刻的版本，改了 `pyproject.toml` 要重新安装（板上
-`uv pip install --no-deps -e .`；开发机上 `uv run` 会自动重装）。
+An editable install records the version at install time; reinstall after
+changing `pyproject.toml` (on the board `uv pip install --no-deps -e .`; on the
+development machine `uv run` reinstalls by itself).
 
-发布一个新 bitstream：
+Releasing a new bitstream:
 
 ```text
-1. pyproject.toml：version 的 C 加 1、D 清零（改了寄存器则按上表改 A.B）
-2. RF-clock-ai：vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
-       -tclargs ~/build/<新目录> ~/ref/RFSoC4x2-BSP/board_files impl
-3. python3 tools/package_overlay.py ~/build/<新目录>
-   （要求 impl 完成、时序满足、status.txt 的 build_version 与 pyproject.toml 相同）
-4. 板上同步 src/，再 uv pip install --no-deps -e .
+1. pyproject.toml: increment C of the version and reset D (change A.B as in the table
+   if the registers changed)
+2. RF-clock-ai: vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
+       -tclargs ~/build/<new directory> ~/ref/RFSoC4x2-BSP/board_files impl
+3. python3 tools/package_overlay.py ~/build/<new directory>
+   (requires impl complete, timing met, and the status.txt build_version equal to
+   pyproject.toml)
+4. Commit, then tag and push (below); on the board install the new wheel, or sync src/ and
+   uv pip install --no-deps -e .
 ```
 
-## 15. 尚未确定
+Release: pushing a tag `vA.B.C.D` runs the GitHub Action
+`.github/workflows/release.yml`. It checks with `tools/release_notes.py` (the
+tag is `v` + the `pyproject.toml` version; the overlay files are not LFS
+pointers, match the manifest and have the same A.B.C), runs `uv build`, and
+creates a GitHub Release with the wheel, the sdist and `manifest.json`. The
+release notes hold the tag message, the overlay build record, the commits since
+the previous tag and the install steps.
 
-统一记录在 `plan/checklist.md`，确认后回填本文。主要有：
+```text
+git tag -a v1.3.0.1 -m "what changed"
+git push origin v1.3.0.1
+```
 
-- beat 内一对 16 位里哪个是 I、哪个是 Q（lane 顺序已确认，§4.5.8、§4.6.9），以及接收基带
-  是否是发射基带的共轭；BPSK 实信号不受影响。
-- 接上环回线（DAC → 衰减器 → ADC）后的环回延时标准差和重启一致性（M3 验收）；
-  `PynqS2MMDMA.abort()` 在板上的行为。
-- MTS 延时的标定目标值，以及 PPS 沿相对 tick 的亚 tick 相位。
+The wheel contains the library, the packaged overlay, the clock register files,
+`rf_clock.examples` and `rf_clock.checks`; installed on the board (§9.1) it
+works without the repository.
+
+## 15. Open items
+
+Tracked in `plan/checklist.md` and copied here once settled. The main ones:
+
+- Which of the two 16-bit halves of a beat word is I and which Q (the lane
+  order is confirmed, §4.5.8, §4.6.9), and whether the received baseband is the
+  conjugate of the transmitted one; real BPSK signals are not affected.
+- With a loopback cable (DAC → attenuator → ADC): the standard deviation of the
+  loopback delay and its consistency over restarts (M3 acceptance); the
+  behaviour of `PynqS2MMDMA.abort()` on the board.
+- Calibrated MTS target latencies, and the sub-tick phase of the PPS edge
+  relative to the tick.
 
 ---
 
-# 附录 A 底层访问：不用 `rf_clock.pl` 时怎么做
+# Appendix A Low-level access without `rf_clock.pl`
 
-本附录说明第一部分的三种访问方式在 Linux 上是怎么实现的，以及只用 PYNQ 原生接口或 C++
-时的写法。示例在 `examples/native/`，2026-10-14 在板上运行通过（以 root 运行，overlay 已加载、
-fabric 时钟在运行）。
+This appendix explains how the three access paths of Part I work on Linux, and
+how to use them with PYNQ's own API or C++. The examples are in
+`rf_clock/examples/native/` and ran on the board on 2026-10-14 (as root, with
+the overlay loaded and the fabric clock running).
 
-## A.1 原理
+## A.1 How it works
 
-每个 IP 在 PS 的物理地址空间里占一段（§1.2）。CPU 对这段地址的读写，经 PS 的 `M_AXI_HPM0_FPD`
-端口和 SmartConnect 变成发给该 IP 的 AXI 读写事务。Linux 用户进程不能直接用物理地址，要先把
-`/dev/mem` 的这一段 `mmap` 进进程（需要 root）；以 `O_SYNC` 打开时得到的是不经 CPU cache 的
-设备内存映射，此后每一次 32 位读或写就是总线上一次 AXI 事务。PYNQ 的 `MMIO` 就是这样实现的
-（`/dev/mem` + `mmap` + numpy uint32 视图）。
+Each IP occupies a range of the PS physical address space (§1.2). CPU reads and
+writes to that range become AXI transactions to the IP through the PS
+`M_AXI_HPM0_FPD` port and the SmartConnect. A Linux user process cannot use
+physical addresses directly; it first `mmap`s that range of `/dev/mem` (needs
+root). Opened with `O_SYNC`, this gives an uncached device mapping, and each
+32-bit read or write is one AXI transaction on the bus. PYNQ's `MMIO` is
+implemented this way (`/dev/mem` + `mmap` + a numpy uint32 view).
 
-| 通路                                                   | 对面是什么                                      | 怎么访问                                                                           |
-| ------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
-| 32 位 MMIO 读写（P2、时钟状态 GPIO、DMA 寄存器、RFDC） | 寄存器，读写有副作用（doorbell、读 LO 锁存 HI） | 一次一个对齐的 32 位字，按协议顺序；不能缓存或合并                                 |
-| 按内存写入（TX buffer）                                | AXI BRAM 控制器后面的一块 RAM                   | 同样的映射，但没有副作用，可以整块写                                               |
-| DMA buffer + DMA 寄存器（RX）                          | PL 的 S2MM 作为总线主机，经 HP0 端口直接写 DDR  | 分配物理连续的 DDR buffer → 用 MMIO 写 DMA 寄存器启动 → 处理 cache → 读普通内存 |
+| Path | What is on the other side | How to access it |
+| ---- | ------------------------- | ---------------- |
+| 32-bit MMIO (P2, clock-status GPIO, DMA registers, RFDC) | registers whose accesses have side effects (doorbells, reading LO latches HI) | one aligned 32-bit word at a time, in protocol order; never cached or merged |
+| Memory writes (TX buffer) | a RAM behind an AXI BRAM controller | the same kind of mapping, but without side effects; can be written as a block |
+| DMA buffer + DMA registers (RX) | the PL's S2MM as a bus master, writing DDR through the HP0 port | allocate a physically contiguous DDR buffer → start the DMA by writing its registers through MMIO → handle the cache → read ordinary memory |
 
-PYNQ 的 `allocate()` 经 XRT/zocl 从 CMA 分配物理连续内存，返回带 `.physical_address` 的 numpy 数组；
-默认不经 CPU cache，`cacheable=True` 时读得更快，但每次读之前必须 `invalidate()`。
+PYNQ's `allocate()` gets physically contiguous memory from CMA through
+XRT/zocl and returns a numpy array with `.physical_address`. It is uncached by
+default; with `cacheable=True` reads are faster, but each read needs an
+`invalidate()` first.
 
-板上实测（2026-10-14）：
+Measured on the board (2026-10-14):
 
-| 操作                                      | 耗时                                                 |
-| ----------------------------------------- | ---------------------------------------------------- |
-| C++ 读一个 P2 寄存器                      | 约 0.54 µs（一次 AXI 往返，含 SmartConnect 跨时钟） |
-| PYNQ`MMIO.read()`                       | 约 7.7 µs（多出来的是 Python 开销）                 |
-| 写 128 KB TX buffer：逐字`MMIO.write()` | 0.31 s                                               |
-| 写 128 KB TX buffer：numpy 切片整块赋值   | 0.5 ms，回读一致                                     |
+| Operation | Time |
+| --------- | ---- |
+| C++ read of one P2 register | about 0.54 µs (one AXI round trip, including the SmartConnect clock crossing) |
+| PYNQ `MMIO.read()` | about 7.7 µs (the rest is Python overhead) |
+| writing 128 KB of TX buffer with `MMIO.write()` per word | 0.31 s |
+| writing 128 KB of TX buffer as one numpy slice assignment | 0.5 ms, reads back correctly |
 
-## A.2 PYNQ 原生接口（`examples/native/raw_pynq.py`）
+## A.2 PYNQ's own API (`rf_clock.examples.native.raw_pynq`)
 
 ```python
 import numpy as np
 from pynq import MMIO, allocate
 
-gpio = MMIO(0xA002_0000, 0x1000)          # 时钟状态 GPIO（pl_clk0 域，随时可读）
-p2   = MMIO(0xA000_0000, 0x1000)          # P2 寄存器（fabric 域）
-txb  = MMIO(0xA040_0000, 4 << 20)         # TX buffer（4 MiB 窗口）
-dma  = MMIO(0xA001_0000, 0x10000)         # AXI DMA 寄存器
+gpio = MMIO(0xA002_0000, 0x1000)          # clock-status GPIO (pl_clk0, always readable)
+p2   = MMIO(0xA000_0000, 0x1000)          # P2 registers (fabric)
+txb  = MMIO(0xA040_0000, 4 << 20)         # TX buffer (4 MiB window)
+dma  = MMIO(0xA001_0000, 0x10000)         # AXI DMA registers
 
-assert gpio.read(0) & 1                   # 先确认 fabric 时钟在跑，否则访问 P2 会卡死总线
+assert gpio.read(0) & 1                   # the fabric clock must run, or P2 hangs the bus
 
-# 寄存器：一次一个 32 位字，按协议顺序
-lo = p2.read(0x20); hi = p2.read(0x24)    # TICK：先读 LO，同时锁存 HI
+# Registers: one 32-bit word at a time, in protocol order
+lo = p2.read(0x20); hi = p2.read(0x24)    # TICK: LO first, which latches HI
 tick = (hi << 32) | lo
 p2.write(0x40, target & 0xFFFF_FFFF); p2.write(0x44, target >> 32)
-p2.write(0x48, nbeats); p2.write(0x08, 0x1)   # 先写 shadow，最后按 doorbell
+p2.write(0x48, nbeats); p2.write(0x08, 0x1)   # shadows first, the doorbell last
 assert p2.read(0x4C) & 0xFF == 0x01           # ARMED
 
-# TX buffer：整块写（beat_bytes 是按 TX_LAYOUT 打包的字节串）
+# TX buffer: one block (beat_bytes are beats packed with TX_LAYOUT)
 words = np.frombuffer(beat_bytes, dtype=np.uint32)
 txb.array[:words.size] = words
 
-# RX DMA：分配连续内存 → 写 DMA 寄存器 → 再按 RX doorbell
+# RX DMA: allocate contiguous memory → write the DMA registers → then the RX doorbell
 buf = allocate(shape=(nbytes,), dtype=np.uint8)
 dma.write(0x30, 0x1)                                # S2MM_DMACR.RS
 dma.write(0x48, buf.physical_address & 0xFFFF_FFFF) # S2MM_DA
 dma.write(0x4C, buf.physical_address >> 32)         # S2MM_DA_MSB
-dma.write(0x58, nbytes)                             # S2MM_LENGTH：写入即开始
-# ……写 RX_TARGET、RX_LENGTH，再 W32 CONTROL 0x4……
+dma.write(0x58, nbytes)                             # S2MM_LENGTH: writing it starts the transfer
+# ... write RX_TARGET, RX_LENGTH, then W32 CONTROL 0x4 ...
 while not dma.read(0x34) & 0x2: pass                # S2MM_DMASR.Idle
-received = dma.read(0x58)                           # 实际字节数
-buf.invalidate()                                    # 可缓存 buffer 读之前必须做
+received = dma.read(0x58)                           # bytes received
+buf.invalidate()                                    # needed before reading a cacheable buffer
 data = np.array(buf[:received])
 ```
 
-地址最好从 HWH 读（`overlay.ip_dict["p_top_0"]["phys_addr"]` 等），这里写死只为说明。
+Take the addresses from the HWH (`overlay.ip_dict["p_top_0"]["phys_addr"]`
+and so on); they are hard-coded here for clarity only.
 
-## A.3 C++（`examples/native/mmio_demo.cpp`）
+## A.3 C++ (`rf_clock/examples/native/mmio_demo.cpp`)
 
 ```cpp
 int fd = open("/dev/mem", O_RDWR | O_SYNC);
 auto *gpio = (volatile uint32_t *)mmap(nullptr, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0xA0020000);
 auto *p2   = (volatile uint32_t *)mmap(nullptr, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0xA0000000);
-if (!(gpio[0] & 1)) return 1;                   // fabric 时钟没跑，不碰 P2
-uint32_t lo = p2[0x20 / 4], hi = p2[0x24 / 4];  // 先 LO 后 HI
+if (!(gpio[0] & 1)) return 1;                   // fabric clock not running: leave P2 alone
+uint32_t lo = p2[0x20 / 4], hi = p2[0x24 / 4];  // LO before HI
 p2[0x40 / 4] = target; p2[0x44 / 4] = target >> 32; p2[0x48 / 4] = nbeats;
 p2[0x08 / 4] = 0x1;                              // doorbell
 ```
 
-编译：`g++ -O2 -o mmio_demo examples/native/mmio_demo.cpp`，以 root 运行。`volatile` 保证每次访问
-都真的发到总线上、编译器不调换顺序。
+Build in the file's directory with `g++ -O2 -o mmio_demo mmio_demo.cpp` and run
+as root. `volatile` makes every access really reach the bus and keeps the
+compiler from reordering them.
 
-DMA buffer 在 C++ 里需要物理连续内存。可以用 XRT 的 C++ 接口（PYNQ 底层用的就是它：`xrt::bo`、
-`bo.address()` 取物理地址、`bo.map()`、`bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`；板上有 XRT 2.17，
-**这条路尚未在板上试过**），或者由 Python 分配、流程控制留在 Python，只把大数据量的计算写成
-C++ 扩展。
+A DMA buffer in C++ needs physically contiguous memory. Use XRT's C++ API
+(which PYNQ uses underneath: `xrt::bo`, `bo.address()` for the physical
+address, `bo.map()`, `bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`; the board has XRT
+2.17, **not yet tried on the board**), or allocate in Python, keep the control
+flow in Python and write only the heavy computation as a C++ extension.
 
-## A.4 注意事项
+## A.4 Notes
 
-1. 都需要 root（`/dev/mem`）。
-2. 访问 fabric 域（P2、TX buffer）之前先读时钟状态 GPIO，C++ 也一样，否则总线卡死只能复位整板。
-3. P2 只用对齐的 32 位访问：8/16 位写返回 SLVERR；64 位写可能被拆成两次，与 doorbell 的顺序
-   语义冲突。
-4. TX buffer 整块写要 4 字节对齐；不要对映射区用 `memset` 或非对齐访问（可能用到设备内存不
-   允许的指令，进程收到 SIGBUS）。numpy 切片赋值实测可用。
-5. C++ 里普通内存（DMA buffer）与设备寄存器之间的先后，`volatile` 管不到：在"写完数据"和
-   "按 doorbell"之间、"确认 DMA 完成"和"读数据"之间加屏障（`std::atomic_thread_fence` 或
-   `__sync_synchronize()`）。
+1. All of this needs root (`/dev/mem`).
+2. Read the clock-status GPIO before touching the fabric domain (P2, TX
+   buffer), in C++ too; otherwise the bus hangs and only a board reset helps.
+3. Use only aligned 32-bit accesses on P2: 8/16-bit writes return SLVERR, and a
+   64-bit write may be split in two, which conflicts with the doorbell ordering.
+4. Block writes to the TX buffer must be 4-byte aligned; do not use `memset` or
+   unaligned accesses on the mapping (they may use instructions device memory
+   does not allow, and the process gets SIGBUS). numpy slice assignment works.
+5. In C++, `volatile` does not order ordinary memory (the DMA buffer) against
+   device registers: put a barrier (`std::atomic_thread_fence` or
+   `__sync_synchronize()`) between "data written" and "doorbell", and between
+   "DMA finished" and "read the data".

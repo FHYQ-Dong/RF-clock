@@ -1,5 +1,7 @@
 # RF-clock 设计计划：5.8 GHz 双向时间传递驯服 FS725
 
+> 本文是 `plan/RF_clock_modules.md`（英文，标准版）的中文翻译，两者内容一致。
+
 > 本文档是重新设计的版本，不继承以前 H00-H19 的模块划分和已有 RTL。
 > 原则：**算法全部在 ARM，PL 只负责确定性的时间**——维护 raw tick、
 > 在确定的 tick 发射/采集、给样本块打时间锚点。
@@ -74,7 +76,7 @@ PL 里**没有**任何 DSP 算法：没有 PRN 发生器、没有 FIR、没有�
 只有在同类至少两个 tile 参加、且每个参加的 tile 都启用通道 0 时才允许 MTS。
 4x2 板上引出的是 ADC/DAC 的 tile 0 和 tile 2，两者都有自己的参考时钟，所以
 tile 0 以相同配置、各自的 PLL 参加 MTS，数据不用；不使用片上时钟分发（参与
-分发的 DAC tile 采样率上限为 7.0 GS/s）。依据见 `plan/checklist.md` §1、§3。
+分发的 DAC tile 采样率上限为 7.0 GS/s）。依据见 `plan/checklist_zh.md` §1、§3。
 
 **频谱翻转：** 5.8 GHz 是第二 Nyquist 区镜像，发射的 RF 频谱相对基带是翻转的；
 ADC 在第三（奇数）Nyquist 区，不翻转。所以接收基带是发射基带的共轭。BPSK
@@ -83,7 +85,7 @@ PRN 经实系数 RRC 后是实信号，共轭不影响；若以后换成复数�
 
 | 参数 | 值 | 说明 |
 | --- | --- | --- |
-| `RRC_CONFIG_ID` | 2134958710 | 系数集的标识，系数存于 `config/RRC_config.db` |
+| `RRC_CONFIG_ID` | 2134958710 | 滤波器的标识：RRC 参数的哈希，系数在运行时现算（`rrc_config()`） |
 | `RRC_SAMPLES_PER_SYMBOL` | 8 | 每码片 8 个样本 |
 | `RRC_SPAN_CHIPS` | 10 | 滤波器跨度 10 码片 |
 | `RRC_TAP_COUNT` | 81 | = 10 × 8 + 1 |
@@ -319,7 +321,7 @@ ADC AXIS ─> 窗口门控 + 时间戳 ─> 异步 FIFO ─> 位宽转换 ─> A
 
 ## 10. 待确认项
 
-逐项进度和依据记录在 `plan/checklist.md`。
+逐项进度和依据记录在 `plan/checklist_zh.md`。
 
 1. **板卡型号和外部参考输入**：板上时钟链能否接受 10 MHz 外部参考，
    RFDC 和 fabric 时钟能否都从它派生？
