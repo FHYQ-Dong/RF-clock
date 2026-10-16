@@ -1331,7 +1331,13 @@ git push origin v1.3.0.1
 ```
 
 组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取
-`.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release。
+`.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release，
+同时把 wheel 和 sdist 上传到仓库所有者的 Gitea PyPI 软件包仓库。用一个有读取软件包权限的 Gitea 访问令牌即可安装：
+
+```text
+uv pip install --no-deps --index-url http://<用户名>:<令牌>@<gitea>/api/packages/<所有者>/pypi/simple rf-clock==1.3.0.2
+```
+
 tag 推到哪个远端，哪个远端就发布 Release。
 
 wheel 里有库、随包的 overlay、时钟寄存器文件、`rf_clock.examples` 和 `rf_clock.checks`；在板上

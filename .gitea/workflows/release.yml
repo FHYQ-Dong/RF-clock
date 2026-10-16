@@ -1,7 +1,8 @@
 # Gitea counterpart of .github/workflows/release.yml: push a tag vA.B.C.D (the
-# pyproject.toml version) to publish a Gitea release with the wheel and sdist;
-# the wheel carries the packaged overlay.  Gitea reads .gitea/workflows and
-# ignores .github/workflows, so each forge runs its own file.
+# pyproject.toml version) to publish a Gitea release with the wheel and sdist,
+# and upload both to the owner's Gitea PyPI registry; the wheel carries the
+# packaged overlay.  Gitea reads .gitea/workflows and ignores .github/workflows,
+# so each forge runs its own file.
 #
 #   git tag -a v1.3.0.0 -m "what changed"   # the message opens the release notes
 #   git push <gitea remote> v1.3.0.0
@@ -39,6 +40,16 @@ jobs:
 
       - name: Build
         run: uv build -o dist
+
+      # Before the release so that a rerun skips files already uploaded.
+      - name: Publish to the Gitea PyPI registry
+        env:
+          UV_PUBLISH_USERNAME: ${{ github.actor }}
+          UV_PUBLISH_PASSWORD: ${{ github.token }}
+        run: |
+          registry="${GITHUB_SERVER_URL%/}/api/packages/${GITHUB_REPOSITORY_OWNER}/pypi"
+          uv publish --trusted-publishing never --publish-url "${registry}" \
+            --check-url "${registry}/simple/" dist/*.whl dist/*.tar.gz
 
       - name: Publish the release
         env:

@@ -153,7 +153,7 @@ A rebuild increments C; a Python-only change increments D.
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
-| `.gitea/workflows/release.yml` | The same for a Gitea release (Gitea Actions; publishes through the Gitea API) |
+| `.gitea/workflows/release.yml` | The same for a Gitea release, plus an upload to the Gitea PyPI registry (Gitea Actions) |
 
 The bitstream and other binaries are stored with Git LFS: after cloning, run
 `git lfs install` and `git lfs pull`.
