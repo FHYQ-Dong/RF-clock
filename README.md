@@ -63,9 +63,9 @@ board files.
 
 ### On the board
 
-Releases on GitHub carry a wheel that contains the library, the bitstream, the
-clock register files, the examples and the board checks; nothing else from the
-repository is needed. Create the environment once and install the wheel as
+Releases (on GitHub and on the group's Gitea) carry a wheel that contains the
+library, the bitstream, the clock register files, the examples and the board
+checks; nothing else from the repository is needed. Create the environment once and install the wheel as
 described in [docs/ABI.md §9.1](docs/ABI.md), then, as root:
 
 ```bash
@@ -107,8 +107,8 @@ uv run python -m rf_clock.examples.pl.01_fake_tx
 3. `python3 tools/package_overlay.py <build dir>` copies the bitstream and a
    manifest into `src/rf_clock/overlay/` (refused unless the build completed
    with timing met for this version).
-4. Commit, then push a tag `vA.B.C.D`: the GitHub Action builds the wheel and
-   publishes a release with notes.
+4. Commit, then push a tag `vA.B.C.D`: GitHub Actions, and Gitea Actions where
+   the tag is pushed to Gitea, build the wheel and publish a release with notes.
 
 Details in [docs/ABI.md §14.1](docs/ABI.md).
 
@@ -153,6 +153,7 @@ A rebuild increments C; a Python-only change increments D.
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
+| `.gitea/workflows/release.yml` | The same for a Gitea release (Gitea Actions; publishes through the Gitea API) |
 
 The bitstream and other binaries are stored with Git LFS: after cloning, run
 `git lfs install` and `git lfs pull`.

@@ -1492,6 +1492,12 @@ git tag -a v1.3.0.1 -m "what changed"
 git push origin v1.3.0.1
 ```
 
+The group's Gitea server runs the same steps from
+`.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores
+`.github/workflows`) on its own runner and creates a Gitea release with the
+same files through the Gitea API. Push the tag to each remote that should get
+a release.
+
 The wheel contains the library, the packaged overlay, the clock register files,
 `rf_clock.examples` and `rf_clock.checks`; installed on the board (§9.1) it
 works without the repository.

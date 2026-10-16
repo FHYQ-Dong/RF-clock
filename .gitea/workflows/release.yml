@@ -1,0 +1,60 @@
+# Gitea counterpart of .github/workflows/release.yml: push a tag vA.B.C.D (the
+# pyproject.toml version) to publish a Gitea release with the wheel and sdist;
+# the wheel carries the packaged overlay.  Gitea reads .gitea/workflows and
+# ignores .github/workflows, so each forge runs its own file.
+#
+#   git tag -a v1.3.0.0 -m "what changed"   # the message opens the release notes
+#   git push <gitea remote> v1.3.0.0
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Git LFS
+        run: command -v git-lfs || (apt-get update -q && apt-get install -yq git-lfs)
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          lfs: true        # the overlay (.bit/.hwh/.xsa) is stored in Git LFS
+          fetch-depth: 0   # previous tag and commits for the notes
+
+      # actions/checkout can leave the pushed tag lightweight
+      # (actions/checkout#290); refetch it so the tag message is there.
+      - name: Fetch the tag message
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+
+      - name: Check the tag and write the release notes
+        run: |
+          mkdir -p dist
+          uv run --no-project python tools/release_notes.py "${GITHUB_REF_NAME}" > dist/NOTES.md
+
+      - name: Build
+        run: uv build -o dist
+
+      - name: Publish the release
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          api="${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}"
+          uv run --no-project python - > release.json <<'EOF'
+          import json, os
+          tag = os.environ["GITHUB_REF_NAME"]
+          notes = open("dist/NOTES.md", encoding="utf-8").read()
+          print(json.dumps({"tag_name": tag, "name": f"rf-clock {tag[1:]}", "body": notes}))
+          EOF
+          id=$(curl -fsS -H "Authorization: token ${TOKEN}" -H "Content-Type: application/json" \
+                 --data @release.json "${api}/releases" |
+               uv run --no-project python -c "import json, sys; print(json.load(sys.stdin)['id'])")
+          for file in dist/*.whl dist/*.tar.gz src/rf_clock/overlay/manifest.json; do
+            curl -fsS -o /dev/null -H "Authorization: token ${TOKEN}" -F "attachment=@${file}" \
+              "${api}/releases/${id}/assets?name=$(basename "${file}")"
+          done

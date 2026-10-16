@@ -1330,6 +1330,10 @@ git tag -a v1.3.0.1 -m "说明这次改了什么"
 git push origin v1.3.0.1
 ```
 
+组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取
+`.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release。
+tag 推到哪个远端，哪个远端就发布 Release。
+
 wheel 里有库、随包的 overlay、时钟寄存器文件、`rf_clock.examples` 和 `rf_clock.checks`；在板上
 装好（§9.1）即可使用，不需要仓库。
 
