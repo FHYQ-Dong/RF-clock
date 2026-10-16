@@ -41,11 +41,13 @@ jobs:
       - name: Build
         run: uv build -o dist
 
-      # Before the release so that a rerun skips files already uploaded.
+      # Before the release so that a rerun skips files already uploaded.  The job
+      # token may not write packages (401 reqPackageAccess): PACKAGE_TOKEN is an
+      # Actions secret holding an access token with package write access.
       - name: Publish to the Gitea PyPI registry
         env:
           UV_PUBLISH_USERNAME: ${{ github.actor }}
-          UV_PUBLISH_PASSWORD: ${{ github.token }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PACKAGE_TOKEN }}
         run: |
           registry="${GITHUB_SERVER_URL%/}/api/packages/${GITHUB_REPOSITORY_OWNER}/pypi"
           uv publish --trusted-publishing never --publish-url "${registry}" \

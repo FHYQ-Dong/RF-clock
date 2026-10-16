@@ -1496,8 +1496,10 @@ The group's Gitea server runs the same steps from
 `.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores
 `.github/workflows`) on its own runner and creates a Gitea release with the
 same files through the Gitea API. It also uploads the wheel and sdist to the
-repository owner's Gitea PyPI registry; with a Gitea access token that may read
-packages:
+repository owner's Gitea PyPI registry, which needs an Actions secret
+`PACKAGE_TOKEN` (an access token with package write access; the job's own
+token may not write packages). To install, use a Gitea access token that may
+read packages:
 
 ```text
 uv pip install --no-deps --index-url http://<user>:<token>@<gitea>/api/packages/<owner>/pypi/simple rf-clock==1.3.0.2
