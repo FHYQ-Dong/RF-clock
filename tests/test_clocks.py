@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from rf_clock.clocks.lmk04828 import decode_lmk, load_lmk, make_100mhz_config, validate_sysref_frequency
-from rf_clock.clocks.lmx2594 import decode_lmx, load_lmx
+from rf_clock.clocks.lmx2594 import decode_lmx, load_lmx, make_phase_sync_config
 
 
 FILES = Path(__file__).parents[1] / "src" / "rf_clock" / "clocks" / "files"
@@ -53,8 +53,25 @@ def test_lmx_known_and_generated_files_decode() -> None:
     assert known.output_a_hz == pytest.approx(500e6)
     assert generated.output_a_hz == pytest.approx(480e6)
     assert generated.output_b_hz == pytest.approx(480e6)
-    assert generated.pll_n == 160
+    assert generated.vco_hz == pytest.approx(7.68e9)
     assert generated.channel_divider == 16
+    # Phase SYNC: SEG0 x SEG1 = 4 of the channel divider joins the feedback, so N = 160 / 4.
+    assert (generated.phase_sync, generated.included_divide, generated.pll_n) == (True, 4, 40)
+
+
+def test_phase_sync_image_keeps_the_frequencies() -> None:
+    # The RFSoC-MTS fixture has no phase SYNC (like the PYNQ images): same VCO
+    # and outputs with it, and generating again changes nothing.
+    base = load_lmx(FILES / "LMX2594_500.0.txt")
+    synced = make_phase_sync_config(base)
+    before, after = (decode_lmx(f, reference_hz=500e6) for f in (base, synced))
+    assert not before.phase_sync and after.phase_sync
+    assert after.pll_n * after.included_divide == before.pll_n
+    assert (after.vco_hz, after.output_a_hz, after.output_b_hz) == pytest.approx(
+        (before.vco_hz, before.output_a_hz, before.output_b_hz))
+    assert make_phase_sync_config(synced) == synced
+    packaged = load_lmx(FILES / "LMX2594_480.0.txt")
+    assert make_phase_sync_config(packaged) == packaged
 
 
 def test_sysref_is_an_integer_subfrequency_of_all_project_clocks() -> None:

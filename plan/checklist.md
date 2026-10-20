@@ -135,6 +135,31 @@ Last updated: 2026-10-14
 - [ ] **All clocks from one reference**: DAC/ADC sample clocks, PL_CLK and the
   fabric clock all derived from the FS725 10 MHz; check with a frequency
   counter or scope
+- [x] **LMX2594 phase SYNC** (2026-10-19, rf-clock 1.3.0.4): without it the
+  LMX channel divider started in an arbitrary phase at every clock write, the
+  480 MHz tile reference moved by whole VCO periods (130.2 ps), and after MTS
+  the converters sat at positions of a 26.04 ps lattice (1/4 DAC sample, 1/8
+  ADC sample), unseen by MTS: on the scope the DAC took two positions 52 ps
+  apart (first read as 260.4 ps steps; corrected by the M3 loopback,
+  `results/lmx-sync-loopback-20261019/`). Found in the overnight restart test, traced to the clock writes
+  (mixer bypassed; `--no-clocks` kept the state, clock writes changed it). The
+  image now has VCO_PHASE_SYNC = 1 and PLL_N 40 (IncludedDivide 4, same VCO),
+  and `program_clocks` toggles VCO_PHASE_SYNC after writing: SYNC category 2 of
+  TI SNAS696C, software only, timing not critical. Verified: ten clock writes
+  and ten reboots each left both boards at one start time (run-to-run sd
+  2.4-3.5 ps and 5-7 ps). Report: `results/lmx-phase-sync-20261019/`
+  - [x] ADC side, with the wired M3 loopback (2026-10-19): with both LMX2594
+    synchronized the loopback time stayed within 0.10 ps (sd, carrier phase)
+    over ten clock writes; ADC LMX2594 unsynchronized, three adjacent lattice
+    positions in 80 clock writes (26.3 and 27.0 ps apart; four 52 ps states had
+    been predicted); DAC LMX2594 unsynchronized, two adjacent positions, which
+    moved up one step when the unsynchronized image was written twice (the
+    scope's pair two steps apart was not reproduced). A rare extra 7.6 ps at
+    the low TX amplitude is not a DAC state (none in 50 runs at amplitude
+    16000). MTS identical in all 201 runs. Report:
+    `results/lmx-sync-loopback-20261019/`
+  - [ ] RF mode (3.8/5.8 GHz datapath): confirm one state over reboots; redo the
+    absolute delay calibrations made before 1.3.0.4
 
 ## 3. Vivado build (`PL/bd/create_rf_clock_bd.tcl`)
 
@@ -167,8 +192,11 @@ Last updated: 2026-10-14
 - [ ] **Tiles 0 and 2 share their reference**: MTS needs the sample clocks of
   both tiles from one reference (LMK/LMX) and a shared SYSREF; confirm from the
   schematic and the LMK/LMX configuration
-- [ ] **ADC input**: the ADC moved from `vin2_23` to `vin2_01` (tile 2 channel
+- [x] **ADC input**: the ADC moved from `vin2_23` to `vin2_01` (tile 2 channel
   0); confirm which 4x2 SMA it is
+  - Evidence (2026-10-19, board 887329260072A): M3 with DAC_A cabled to ADC_A
+    received only the crosstalk (225.89 samples, PSL 16.9 dB); cabled to ADC_B,
+    230.45 samples, PSL 21-22 dB. `vin2_01` is ADC_B, as in section 1
 - [ ] **Cost of tile 0**: power and heat; DAC tile 0 (`vout00`, the board's
   other DAC connector) always outputs 0; should it be switched off at run time
 - [x] **BD stage passes `validate_bd_design`** without critical warnings
@@ -318,6 +346,14 @@ Last updated: 2026-10-14
   - Mixer readback: ADC NCO −1000 MHz; the DAC NCO also reads −1000 MHz, which
     fits IMR high-pass (the NCO at fs/2 = 4.8 GS/s, 3.8 GHz folding to
     −1.0 GHz); confirm the 5.8 GHz output on a spectrum analyser
+- [ ] **NCO phase fixed at every power-up**: after each PL.open the DAC and the
+  ADC NCO each start in one of three phases 120° apart (a pure carrier phase
+  rotation; MTS and the timing unchanged). Restarting both at a SYSREF edge
+  after MTS (mixer event source SYSREF, then ResetNCOPhase) left one phase in
+  12 of 12 M3 runs; restarting only one left three (2026-10-19,
+  `results/lmx-sync-loopback-20261019/` section 5). To do: put it into
+  `PL.open()`, confirm over reboots and on both boards. Needed before any
+  carrier-phase timing or calibration
 - [ ] **DAC outputs 5.8 GHz**: 5.8 GHz on a spectrum analyser (and the 3.8 GHz
   component, to be suppressed by the BPF); record the output power and compare
   with mix-mode's expectation at 0.604 fs
@@ -462,6 +498,59 @@ Last updated: 2026-10-14
   in one step (plan section 10, item 4)
 - [ ] **ARM controls the FS725**: serial connection (USB-serial or other) and
   driver
+- [x] **Shared reference for M4** (2026-10-15/16): FS725 10 MHz output 1 →
+  EPG1 REF IN; EPG1 REF OUT (10 MHz square, locked) → resistive splitter
+  (Mini-Circuits ZFRSC-123-S+) → both boards' external reference, equal cables.
+  FS725 1PPS → EPG1 TRIG IN, EPG1 output 1 → J7 of S/N 887329260101 (.101),
+  output 2 → J7 of S/N 887329260072A (.99) (checked 2026-10-18).
+  `experiments/epg1.py pps` sets external trigger, 10 µs positive pulses, 2.5 V into
+  50 Ω; `experiments/epg1.py status` reads everything back. Both boards (rf-clock
+  1.3.0.1, clocks rewritten) ran M1 for 120 s at the same time: every period
+  100 000 000 ticks, jitter 0, faults 0, pps_locked throughout
+  - Rejected wiring: FS725 10 MHz output 2 → the same resistive splitter →
+    boards. The splitter's 6 dB loss leaves 0.7 Vpp of slow sine at each
+    board; PLL1 kept losing lock and the LMK fell into holdover (register
+    0x150 = 0x11, fixed holdover DAC 512, TRACK_EN = 0), where the VCXO runs
+    about −0.1 ppm: periods of exactly 99 999 990 ticks on one board, 0/−10
+    alternating (locked/holdover) on the other
+  - The EPG1 resamples TRIG IN with its own clock (spec: 2.5 ns peak-to-peak
+    trigger-in-to-output jitter). With its REF IN not yet connected, M1 on the
+    first board (60 s) saw periods of 99 999 999 / 100 000 000 / 100 000 001
+    ticks and 18 jitter counts: the delay walks across a tick boundary. The
+    EPG1 must be locked to the same FS725 10 MHz (REF IN;
+    `REFCLK:IN:STATUS` = 1), then M1 on both boards again
+  - EPG1 command set: not published; read from Thorlabs EPG Software 1.0.2
+    (see `experiments/epg1.py`). Answers only with DTR set; `RUN: 0` while stopped
+    is an error; "Instrument busy" for a moment after some settings
+  - [x] **PPS capture margin** (2026-10-18): the wiring above was found by
+    delaying each EPG1 output by 50 ns and watching which board's PPS_TICK
+    moved by 5 ticks (earlier notes had it reversed). `experiments/m1_pps_phase_scan.py`
+    steps the output delays and logs PPS_TICK mod 1e8 on each board
+    (`results/pps-phase-scan-20261018_*`). At delay 0 the 887329260072A edge
+    lay on a 100 MHz sampling edge: in 15-edge samples 40-60 % of the edges
+    were captured one tick early, and M2 reported `actual-PPS` ±1. In the
+    overnight run of 2026-10-16/17 this happened once in about 23,000 edges, so
+    the phase moved by about a nanosecond in a day. About 7 % of its edges came
+    some 2.5 ns early (still captured early with 2 ns of delay, not with 3-4 ns),
+    apparently the EPG1's input retiming. The 887329260101 edge was about 3.4 ns
+    before its next sampling edge. `experiments/epg1.py pps` now sets output 2 to
+    6.6 ns (the edge 6.25 ns into the tick, the early ones 3.75 ns in), outputs 1
+    and 4 to 0; afterwards 68 and 67 edges each landed in a single tick. Since
+    then 887329260072A captures the later of the two ticks: its absolute TX
+    delay to the PPS may differ by 10 ns from earlier measurements
+  - [x] **EPG1 trigger threshold** (2026-10-19): from 11:16 that day about
+    half of all EPG1 output pulses came 2.5 ns early (scope trigger jitter
+    1.2 ns rms against the boards' bursts, which stayed put). The EPG1
+    retimes TRIG IN on a 2.5 ns clock, and at `TRIGIN:THRESH` 1.0 V the slow
+    FS725 1PPS edge crossed the threshold right at one of its clock edges.
+    Threshold scan (scope burst delay, rms over 40 acquisitions): 0.25-0.75 V
+    189.02 ns, 19-21 ps; 1.0 V 188.21 ns, 1172 ps; 1.25-1.5 V 186.52 ns, 20 ps;
+    1.75 V 184.02 ns; 2.0 V boards captured the PPS one tick later. `experiments/epg1.py
+    pps` now sets 1.3 V (about 1.25 ns from either EPG1 clock edge): 19 ps rms
+  - [ ] Watch the PPS phase drift (about 1 ns per day) and the EPG1's
+    retiming margin (only ±1.25 ns); consider distributing the PPS without
+    retiming (a fan-out buffer on the FS725 1PPS) so that neither margin
+    depends on the EPG1
 
 ## 7. Open system-design decisions (plan section 10)
 

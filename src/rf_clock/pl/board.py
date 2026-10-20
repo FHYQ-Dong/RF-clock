@@ -21,6 +21,7 @@ through each block's own methods:
 from __future__ import annotations
 
 import re
+import struct
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +44,8 @@ CLOCK_FILES = Path(__file__).resolve().parents[1] / "clocks" / "files"
 # and recalibrate the loopback delay.
 DAC_TARGET_LATENCY = 1896
 ADC_TARGET_LATENCY = 1296
+LMX_VCO_PHASE_SYNC = 1 << 14  # R0 bit
+LMX_CAL_WAIT_S = 0.01  # after an R0 write with FCAL_EN = 1 (TI SNAS696C 7.5)
 
 
 def clock_registers(name: str) -> list[int]:
@@ -62,13 +65,37 @@ def program_clocks(xrfclk: Any) -> None:
     ``set_ref_clks()`` only reads the .txt files in its own package directory,
     into the table ``_Config``, and only when it has not found the devices
     yet.  Finding them here and filling ``_Config`` from our files makes it
-    write our registers, so the board needs no copies inside xrfclk.
+    write our registers, so the board needs no copies inside xrfclk.  An LMX
+    image with VCO_PHASE_SYNC set then gets its SYNC (``sync_lmx_phase``).
     """
     if not xrfclk.lmk_devices and not xrfclk.lmx_devices:
         xrfclk._find_devices()
+    lmx = clock_registers(f"LMX2594_{LMX_FREQ_MHZ}.txt")
     xrfclk._Config["lmk04828"][LMK_FREQ_MHZ] = clock_registers(f"LMK04828_{LMK_FREQ_MHZ}.txt")
-    xrfclk._Config["lmx2594"][LMX_FREQ_MHZ] = clock_registers(f"LMX2594_{LMX_FREQ_MHZ}.txt")
+    xrfclk._Config["lmx2594"][LMX_FREQ_MHZ] = lmx
     xrfclk.set_ref_clks(lmk_freq=LMK_FREQ_MHZ, lmx_freq=LMX_FREQ_MHZ)
+    if lmx[-1] & LMX_VCO_PHASE_SYNC:
+        sync_lmx_phase(xrfclk, lmx[-1])
+
+
+def sync_lmx_phase(xrfclk: Any, r0: int) -> None:
+    """Phase SYNC of every LMX2594: VCO_PHASE_SYNC 0 -> 1 in R0 (TI SNAS696C 7.3.10).
+
+    Writing the image with VCO_PHASE_SYNC = 1 does not count as a SYNC.  The
+    480 MHz image is SYNC category 2, where toggling the bit is the SYNC and its
+    timing is not critical.  Without it the LMX channel divider starts in an
+    arbitrary phase at every clock write, and the RFDC sample clocks follow
+    it: after MTS the DAC output moved by 0 or half a sample (52 ps) from one
+    clock write to the next (results/lmx-phase-sync-20261019).  ``r0`` is the
+    image's final R0 word; FCAL_EN = 1 in it recalibrates the VCO after each
+    write.
+    """
+    time.sleep(LMX_CAL_WAIT_S)
+    for device in xrfclk.lmx_devices:
+        with open(device["spi_device"], "rb+", buffering=0) as f:
+            for word in (r0 & ~LMX_VCO_PHASE_SYNC, r0 | LMX_VCO_PHASE_SYNC):
+                f.write(struct.pack(">I", word)[1:])
+                time.sleep(LMX_CAL_WAIT_S)
 
 
 class RFDC:

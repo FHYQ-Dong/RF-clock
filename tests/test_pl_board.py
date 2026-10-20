@@ -37,21 +37,28 @@ class NoDMA:
     received_bytes = 0
 
 
-def test_clocks_are_written_from_the_packaged_files():
+def test_clocks_are_written_from_the_packaged_files(tmp_path):
     from collections import defaultdict
     from types import SimpleNamespace
 
     from rf_clock.pl.board import program_clocks
 
     written = []
+    spi = [tmp_path / "spidev_adc_lmx", tmp_path / "spidev_dac_lmx"]
+    for path in spi:
+        path.write_bytes(b"")
     xrfclk = SimpleNamespace(_Config=defaultdict(dict), lmk_devices=[], lmx_devices=[])
-    xrfclk._find_devices = lambda: (xrfclk.lmk_devices.append("lmk"), xrfclk.lmx_devices.append("lmx"))
+    xrfclk._find_devices = lambda: (xrfclk.lmk_devices.append("lmk"),
+                                    xrfclk.lmx_devices.extend({"spi_device": p} for p in spi))
     xrfclk.set_ref_clks = lambda lmk_freq, lmx_freq: written.append(
         (xrfclk._Config["lmk04828"][lmk_freq], xrfclk._Config["lmx2594"][lmx_freq]))
     program_clocks(xrfclk)
     lmk, lmx = written[0]
     assert (len(lmk), len(lmx)) == (136, 113)  # every line of the two files
     assert lmk[0] == 0x000090 and 0x013F0B in lmk  # INIT first; PLL1 zero-delay
+    assert lmx[-1] == 0x00641C and 0x240028 in lmx  # VCO_PHASE_SYNC; N = 160 / IncludedDivide 4
+    # Then each LMX gets its SYNC: R0 with VCO_PHASE_SYNC cleared, then set.
+    assert [p.read_bytes() for p in spi] == [bytes.fromhex("00241C00641C")] * 2
     program_clocks(xrfclk)
     assert xrfclk.lmk_devices == ["lmk"]  # devices are found once
 

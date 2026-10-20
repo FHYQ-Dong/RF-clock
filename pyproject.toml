@@ -1,6 +1,6 @@
 [project]
 name = "rf-clock"
-version = "1.3.0.3"
+version = "1.3.0.4"
 description = "RF clock control library for Q-LATS Project. This library provides a Python interface for controlling the RF clock overlay on PYNQ platforms."
 readme = "README.md"
 authors = [
@@ -23,13 +23,24 @@ plot = [
     "matplotlib",
     "plotly>=7.1.0",
 ]
+# Lab instrument drivers (scope, EPG1) for tools/ only; not a dependency of the rf-clock
+# package. From the Tanglab Gitea registry (yale.internal network).
+instruments = [
+    "tanglab-instruments[pyvisa-py]>=0.2.0",
+]
 
 [tool.uv]
-default-groups = ["dev", "plot"]
+default-groups = ["dev", "plot", "instruments"]
+
+[[tool.uv.index]]
+name = "tanglab"
+url = "http://kinabalu2.stdusr.yale.internal/gitea/api/packages/Tanglab/pypi/simple/"
+explicit = true  # only for the packages pinned to it below; everything else from PyPI
 
 [tool.uv.sources]
 pynqmetadata = { git = "https://github.com/Xilinx/PYNQ-Metadata.git" }
 pynqutils = { git = "https://github.com/Xilinx/PYNQ-Utils.git" }
+tanglab-instruments = { index = "tanglab" }
 
 # Type checking (Pylance/pyright): the PL code and the board checks run on the
 # board's Linux.

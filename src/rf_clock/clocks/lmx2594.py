@@ -1,8 +1,19 @@
-"""LMX2594 TICS parser and frequency decoder (TI SNAS696C, section 7.6)."""
+"""LMX2594 TICS parser and frequency decoder (TI SNAS696C, section 7.6).
+
+Phase synchronization (SNAS696C 7.3.10): without it the channel divider
+(SEG0..SEG3 after the VCO) starts in an arbitrary phase at every programming,
+so the output phase to OSCin is not repeatable.  With VCO_PHASE_SYNC = 1 the
+first segments ("IncludedDivide") join the PLL feedback, the N divider is
+divided by IncludedDivide to keep the VCO frequency, and a SYNC fixes the
+output phase to OSCin.  The project's 480 MHz image is SYNC category 2
+(integer-N, f_OUT a multiple of f_OSC, CHDIV 16): the SYNC is a
+VCO_PHASE_SYNC 0 -> 1 toggle in R0, done by
+``rf_clock.pl.board.program_clocks``, and its timing is not critical.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 
@@ -49,6 +60,8 @@ class LMXConfig:
     output_b_enabled: bool
     output_a_power: int
     output_b_power: int
+    phase_sync: bool = False  # VCO_PHASE_SYNC
+    included_divide: int = 1  # channel-divider part in the PLL feedback when phase_sync
 
 
 _LINE = re.compile(r"^R(?P<address>[0-9]+)\s+0x(?P<word>[0-9A-Fa-f]{6})\s*$")
@@ -81,6 +94,8 @@ _CHDIV = {0: 2, 1: 4, 2: 6, 3: 8, 4: 12, 5: 16, 6: 24, 7: 32,
 # TI SNAS696C field table used by the decoder and by callers that need to
 # inspect or edit a register image.  Masks are in the 16-bit register value.
 LMX_FIELDS = {
+    "VCO_PHASE_SYNC": (0, 0x4000, 14),
+    "INPIN_IGNORE": (58, 0x8000, 15),
     "OSC_2X": (9, 0x1000, 12),
     "MULT": (10, 0x0F80, 7),
     "PLL_R": (11, 0x0FF0, 4),
@@ -105,6 +120,41 @@ def encode_lmx(config: LMXConfig | RegisterFile) -> str:
     return (config.registers if isinstance(config, LMXConfig) else config).render()
 
 
+def included_divide(registers: RegisterFile) -> int:
+    """Channel-divider part that VCO_PHASE_SYNC puts into the PLL feedback (SNAS696C Table 11)."""
+    r = registers.registers
+    out_a_mux = (r.get(45, 0) >> 11) & 0x03
+    out_b_mux = r.get(46, 0) & 0x03
+    if out_a_mux != 0 and out_b_mux not in (0, 2):  # neither output from the channel divider or SysRef
+        return 1
+    chdiv = _CHDIV.get((r.get(75, 0) >> 6) & 0x1F, 0)
+    return 6 if chdiv % 3 == 0 and chdiv not in (24, 192) else 4
+
+
+def make_phase_sync_config(base: RegisterFile) -> RegisterFile:
+    """Set VCO_PHASE_SYNC and divide the N divider by IncludedDivide (SNAS696C 7.3.10.3).
+
+    The VCO frequency and every output stay the same.  An image that already has
+    VCO_PHASE_SYNC set is returned unchanged.  Integer-N images only: the
+    fractional numerator would need the same division.
+    """
+    r = base.registers
+    if r.get(0, 0) & 0x4000:
+        return base
+    if (r.get(42, 0) << 16) | r.get(43, 0):
+        raise ValueError("phase SYNC image generation supports integer-N only")
+    divide = included_divide(base)
+    pll_n = ((r.get(34, 0) & 0x07) << 16) | r.get(36, 0)
+    if pll_n % divide:
+        raise ValueError(f"PLL_N {pll_n} is not a multiple of IncludedDivide {divide}")
+    pll_n //= divide
+    values = {34: (r.get(34, 0) & ~0x07) | (pll_n >> 16), 36: pll_n & 0xFFFF}
+    return RegisterFile(tuple(
+        replace(e, value=e.value | 0x4000) if e.address == 0
+        else replace(e, value=values[e.address]) if e.address in values else e
+        for e in base.entries))
+
+
 def decode_lmx(registers: RegisterFile, *, reference_hz: float) -> LMXConfig:
     """Decode the reference path, N divider, channel divider and RF outputs."""
     r = registers.registers
@@ -118,7 +168,9 @@ def decode_lmx(registers: RegisterFile, *, reference_hz: float) -> LMXConfig:
     pll_n = ((r.get(34, 0) & 0x07) << 16) | r.get(36, 0)
     pll_den = (r.get(38, 0) << 16) | r.get(39, 0)
     pll_num = (r.get(42, 0) << 16) | r.get(43, 0)
-    vco_hz = pfd_hz * (pll_n + (pll_num / pll_den if pll_den else 0.0))
+    phase_sync = bool(r.get(0, 0) & 0x4000)
+    divide = included_divide(registers) if phase_sync else 1
+    vco_hz = pfd_hz * divide * (pll_n + (pll_num / pll_den if pll_den else 0.0))
     chdiv = _CHDIV.get((r.get(75, 0) >> 6) & 0x1F)
     out_a_mux = (r.get(45, 0) >> 11) & 0x03
     out_b_mux = r.get(46, 0) & 0x03
@@ -139,4 +191,5 @@ def decode_lmx(registers: RegisterFile, *, reference_hz: float) -> LMXConfig:
         pll_n, pll_num, pll_den, vco_hz, chdiv,
         output(out_a_mux, out_a_enabled), output(out_b_mux, out_b_enabled),
         out_a_enabled, out_b_enabled, (r.get(44, 0) >> 8) & 0x3F, r.get(45, 0) & 0x3F,
+        phase_sync, divide,
     )
