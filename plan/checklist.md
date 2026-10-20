@@ -2,688 +2,218 @@
 
 This is the reference version; `plan/checklist_zh.md` is the Chinese translation.
 
-Confirm items one by one. A checked item states its **conclusion and
-evidence** (file, command output, measurement record or document); nothing is
-checked without evidence. If a result changes the interface or the design,
-update `docs/ABI.md` (and `docs/ABI_zh.md`) and `plan/RF_clock_modules.md`
-(and the Chinese version).
+Confirm items one by one. A checked item states its **conclusion and evidence** (file, command output, measurement record or document); nothing is checked without evidence. If a result changes the interface or the design, update `docs/ABI.md` (and `docs/ABI_zh.md`) and `plan/RF_clock_modules.md` (and the Chinese version).
 
 Last updated: 2026-10-14
 
 ## 1. Board and references
 
 - [x] **Board**: Real Digital RFSoC 4x2, device xczu48dr-ffvg1517-2-e
-  - Evidence: confirmed by the user; the part in the old script
-    `FPGA/ip/generate_rfdc_ip.tcl` (deleted); `RFSoC-4x2-ai` (192.168.2.99) in the
-    ssh configuration
-- [x] **Vivado board files**: RealDigitalOrg/RFSoC4x2-BSP `board_files/`, board
-  part `realdigital.org:rfsoc4x2:part0:1.0`
+  - Evidence: confirmed by the user; the part in the old script `FPGA/ip/generate_rfdc_ip.tcl` (deleted); `RFSoC-4x2-ai` (192.168.2.99) in the ssh configuration
+- [x] **Vivado board files**: RealDigitalOrg/RFSoC4x2-BSP `board_files/`, board part `realdigital.org:rfsoc4x2:part0:1.0`
   - Evidence: cloned to `RF-clock-ai:~/ref/RFSoC4x2-BSP` (not in the repository)
-- [x] **PL_CLK / PL_SYSREF pins**: LVDS pairs, `FPGA_REFCLK_IN_P/N` = AN11/AP11,
-  `SYS_REF_FPGA_P/N` = AP18/AR18 (4x2 manual appendix A; HP banks 65/66, GC pins)
-  - run2/run3 copied RFSoC-MTS `mts.xdc` and received only the P pin as
-    single-ended LVCMOS18. run2 (unused pins PULLNONE): the MMCM locked only
-    sometimes; run3 (PULLUP): no lock within 180 s of repeated resets, most
-    likely because the N pin was pulled up
-  - run4: IBUFDS on both pairs, LVDS, `DIFF_TERM_ADV TERM_100`, `DQS_BIAS TRUE`;
-    `UNUSEDPIN` back to PULLNONE. Done when the MMCM locks on every bring-up and
-    `PPS_LAST_PERIOD` stays at 1e8
-  - Evidence: two run4 bring-ups on the board, the MMCM locked within 1 s of
-    `pl_resetn0` both times; M1 in section 5 (2026-10-13)
-- [x] **PPS input pin**: `IRIG_COMP_OUT` = AJ13, LVCMOS18, the output of the
-  board's 1PPS comparator
+- [x] **PL_CLK / PL_SYSREF pins**: LVDS pairs, `FPGA_REFCLK_IN_P/N` = AN11/AP11, `SYS_REF_FPGA_P/N` = AP18/AR18 (4x2 manual appendix A; HP banks 65/66, GC pins)
+  - run2/run3 copied RFSoC-MTS `mts.xdc` and received only the P pin as single-ended LVCMOS18. run2 (unused pins PULLNONE): the MMCM locked only sometimes; run3 (PULLUP): no lock within 180 s of repeated resets, most likely because the N pin was pulled up
+  - run4: IBUFDS on both pairs, LVDS, `DIFF_TERM_ADV TERM_100`, `DQS_BIAS TRUE`; `UNUSEDPIN` back to PULLNONE. Done when the MMCM locks on every bring-up and `PPS_LAST_PERIOD` stays at 1e8
+  - Evidence: two run4 bring-ups on the board, the MMCM locked within 1 s of `pl_resetn0` both times; M1 in section 5 (2026-10-13)
+- [x] **PPS input pin**: `IRIG_COMP_OUT` = AJ13, LVCMOS18, the output of the board's 1PPS comparator
   - Evidence: RFSoC4x2-BSP `hw/constraints/4x2_1PPS.xdc`
-- [x] **1PPS comparator threshold and input level**: is the threshold fixed, or
-  set by the PL through `IRIG_TRIG_OUT` / `IRIG_ADC_*`; is the FS725 1PPS
-  amplitude within the input range
-  - FS725 side (manual, Specifications): 1 pps output 2.5 V into 50 Ω, 5 V into
-    high impedance, 10 µs wide, 50 Ω source
-  - 4x2 side unknown at first: manual Figure 6 only shows "SMA → resistor
-    divider → LMV7235, threshold from a 3.3 V divider" without values; to be
-    measured on the board (resistance of the PPS SMA to ground, comparator
-    output polarity)
-  - Done when the 4x2 manual or schematic settles it; if the PL must control
-    it, add the pins and logic
-  - First time on the board (2026-10-13, run2 bitstream): `PPS_COUNT` = 0, not
-    one edge reached the PL. The LMV7235 has an open-drain output (the LMV7239
-    is push-pull), and run2's `pps_in` had no pull-up
-  - run3 changes: `PULLTYPE PULLUP` on AJ13; a second input `IRIG_TRIG_OUT`
-    (AH13, Schmitt trigger); ABI 1.1 adds `PPS_CONFIG` (source, inversion) and
-    `PPS_INPUTS` (levels and edge counts of both), so software settles the
-    polarity and the usable copy without another bitstream; `UNUSEDPIN` set to
-    the BSP's PULLUP
-  - The FS725 1PPS seen on a scope, about 30 µs wide; the 500 mV reading did
-    not match the manual (5 V into high impedance), probe ratio/input impedance
-    to be checked
-  - Schematic (`RF-clock-ai:~/ref/docs/sch/rfsoc4x2_sch.pdf` page 10, 1PPS):
-    J7 → 49.9 Ω to ground → 100 Ω → 10 nF AC coupling → node biased at 1.65 V
-    → LMV7235 (about ±0.17 V hysteresis, output pulled up to 3.3 V through
-    1 kΩ) and SN74AUP1G17; an NVT2008 translates to 1.8 V with no pull-up on
-    the 1.8 V side (the FPGA pull-up is needed). A pulse of a few tenths of a
-    volt at J7 already switches the comparator. The earlier "open-drain
-    comparator, no pull-up on the board" was inaccurate
-  - run4 on the board (2026-10-13): comp idle 0, trig idle 1, no edges on
-    either, so no pulses at J7. To check: is the cable on J7 (net IRIG); measure
-    the amplitude at the board with a tee (about 2.5 V into 50 Ω)
-  - Conclusion: the PPS cable had not been on J7; connected, about 2.5 V at the
-    board, one rising edge per second on both copies, idle 0 (positive pulses);
-    the default `PPS_CONFIG` = 0 (comparator, not inverted) is used
-- [x] **Converters brought out on the 4x2**: one DAC on each of tiles 0 and 2
-  (`vout00`, `vout20`); two ADCs on each of tiles 0 and 2 (`vin0_01`, `vin0_23`,
-  `vin2_01`, `vin2_23`). Tiles 0 and 2 both have their own reference clock and
-  PLL
-  - SMA connectors: `vout20` (`DAC_VOUT0_230`) = **DAC_A**, `vout00`
-    (`DAC_VOUT0_228`) = DAC_B (schematic `~/ref/docs/sch/rfsoc4x2_sch.pdf` and
-    the manual's pin table agree; the manual's block diagram has them swapped,
-    2026-10-14). ADC: `vin2_01` (tile 226 `VIN_I01`) = **ADC_B**, `vin2_23` =
-    ADC_A, `vin0_01` = ADC_D, `vin0_23` = ADC_C. The schematic's old labels
-    DAC0/DAC1, ADC0…ADC3 correspond to DAC_A/DAC_B, ADC_A…ADC_D (DAC1 = DAC_B,
-    ADC1 = ADC_B). The board silkscreen reads DAC_A/B, ADC_A…D (confirmed by
-    the user): transmit on DAC_A, receive on **ADC_B**
-  - Evidence: Xilinx RFSoC-PYNQ `boards/RFSoC4x2/base/base.tcl`
-    (`RF-clock-ai:~/ref/pynq4x2/`), `ADC0/ADC2/DAC0/DAC2_PLL_Enable true`, the
-    six analog ports above
-  - Correction: the earlier inference from the RFSoC-MTS reference design that
-    "only tile 2 has a clock" was wrong; that design merely distributes the
-    clock from tile 2
-- [ ] **RFSoC 4x2 manual/schematic**: get the official documents and confirm
-  that the external reference SMA goes to LMK04828 CLKin0 and which LMX2594
-  feeds which RFDC tile
+- [x] **1PPS comparator threshold and input level**: is the threshold fixed, or set by the PL through `IRIG_TRIG_OUT` / `IRIG_ADC_*`; is the FS725 1PPS amplitude within the input range
+  - FS725 side (manual, Specifications): 1 pps output 2.5 V into 50 Ω, 5 V into high impedance, 10 µs wide, 50 Ω source
+  - 4x2 side unknown at first: manual Figure 6 only shows "SMA → resistor divider → LMV7235, threshold from a 3.3 V divider" without values; to be measured on the board (resistance of the PPS SMA to ground, comparator output polarity)
+  - Done when the 4x2 manual or schematic settles it; if the PL must control it, add the pins and logic
+  - First time on the board (2026-10-13, run2 bitstream): `PPS_COUNT` = 0, not one edge reached the PL. The LMV7235 has an open-drain output (the LMV7239 is push-pull), and run2's `pps_in` had no pull-up
+  - run3 changes: `PULLTYPE PULLUP` on AJ13; a second input `IRIG_TRIG_OUT` (AH13, Schmitt trigger); ABI 1.1 adds `PPS_CONFIG` (source, inversion) and `PPS_INPUTS` (levels and edge counts of both), so software settles the polarity and the usable copy without another bitstream; `UNUSEDPIN` set to the BSP's PULLUP
+  - The FS725 1PPS seen on a scope, about 30 µs wide; the 500 mV reading did not match the manual (5 V into high impedance), probe ratio/input impedance to be checked
+  - Schematic (`RF-clock-ai:~/ref/docs/sch/rfsoc4x2_sch.pdf` page 10, 1PPS): J7 → 49.9 Ω to ground → 100 Ω → 10 nF AC coupling → node biased at 1.65 V → LMV7235 (about ±0.17 V hysteresis, output pulled up to 3.3 V through 1 kΩ) and SN74AUP1G17; an NVT2008 translates to 1.8 V with no pull-up on the 1.8 V side (the FPGA pull-up is needed). A pulse of a few tenths of a volt at J7 already switches the comparator. The earlier "open-drain comparator, no pull-up on the board" was inaccurate
+  - run4 on the board (2026-10-13): comp idle 0, trig idle 1, no edges on either, so no pulses at J7. To check: is the cable on J7 (net IRIG); measure the amplitude at the board with a tee (about 2.5 V into 50 Ω)
+  - Conclusion: the PPS cable had not been on J7; connected, about 2.5 V at the board, one rising edge per second on both copies, idle 0 (positive pulses); the default `PPS_CONFIG` = 0 (comparator, not inverted) is used
+- [x] **Converters brought out on the 4x2**: one DAC on each of tiles 0 and 2 (`vout00`, `vout20`); two ADCs on each of tiles 0 and 2 (`vin0_01`, `vin0_23`, `vin2_01`, `vin2_23`). Tiles 0 and 2 both have their own reference clock and PLL
+  - SMA connectors: `vout20` (`DAC_VOUT0_230`) = **DAC_A**, `vout00` (`DAC_VOUT0_228`) = DAC_B (schematic `~/ref/docs/sch/rfsoc4x2_sch.pdf` and the manual's pin table agree; the manual's block diagram has them swapped, 2026-10-14). ADC: `vin2_01` (tile 226 `VIN_I01`) = **ADC_B**, `vin2_23` = ADC_A, `vin0_01` = ADC_D, `vin0_23` = ADC_C. The schematic's old labels DAC0/DAC1, ADC0…ADC3 correspond to DAC_A/DAC_B, ADC_A…ADC_D (DAC1 = DAC_B, ADC1 = ADC_B). The board silkscreen reads DAC_A/B, ADC_A…D (confirmed by the user): transmit on DAC_A, receive on **ADC_B**
+  - Evidence: Xilinx RFSoC-PYNQ `boards/RFSoC4x2/base/base.tcl` (`RF-clock-ai:~/ref/pynq4x2/`), `ADC0/ADC2/DAC0/DAC2_PLL_Enable true`, the six analog ports above
+  - Correction: the earlier inference from the RFSoC-MTS reference design that "only tile 2 has a clock" was wrong; that design merely distributes the clock from tile 2
+- [ ] **RFSoC 4x2 manual/schematic**: get the official documents and confirm that the external reference SMA goes to LMK04828 CLKin0 and which LMX2594 feeds which RFDC tile
 
 ## 2. Clock chain (FS725 → LMK04828 → LMX2594 → RFDC / PL)
 
 - [x] **Can the 4x2 take an external 10 MHz**: yes, on LMK04828 CLKin0
-  - Evidence (second-hand, not yet verified on this board): PYNQ forum; the
-    CASPER file `rfsoc4x2_lmk_CLKin0_extref_10M_PL_122M88_LMXREF_245M76.txt` has
-    been confirmed to work by several people
-- [x] **FS725 10 MHz into the 4x2 external reference SMA**: amplitude and
-  impedance within the input requirements
-  - Evidence: after writing `LMK04828_100.0`, the PLL1, PLL2 and both LMX LEDs
-    are lit (2026-10-13); CLKin0 is selected manually, so PLL1 can only lock to
-    the FS725
+  - Evidence (second-hand, not yet verified on this board): PYNQ forum; the CASPER file `rfsoc4x2_lmk_CLKin0_extref_10M_PL_122M88_LMXREF_245M76.txt` has been confirmed to work by several people
+- [x] **FS725 10 MHz into the 4x2 external reference SMA**: amplitude and impedance within the input requirements
+  - Evidence: after writing `LMK04828_100.0`, the PLL1, PLL2 and both LMX LEDs are lit (2026-10-13); CLKin0 is selected manually, so PLL1 can only lock to the FS725
   - FS725: sine, 0.5 Vrms ±10% (about 1.41 Vpp, +7 dBm) into 50 Ω
-  - `LMK04828_100.0.txt`: CLKin0 selected manually, to PLL1; CLKin0_R = 12,
-    PLL1_N = 192 (10 MHz/12 = 160 MHz VCXO/192 = 833.33 kHz)
-- [x] **LMK04828 register file** (generated in Python on the development
-  machine, to be checked in TICS Pro/on the board): CLKin0 = 10 MHz, PLL1 locked
-  to the external reference; PLL2 VCO 2400 MHz; PL_CLK 100 MHz; the LMX
-  references; SYSREF for the RFDC and the PL
-  - Evidence: `src/rf_clock/clocks/lmk04828.py`,
-    `src/rf_clock/clocks/files/LMK04828_100.0.txt`; target fields VCO0,
-    PLL2_R=2, PLL2_P=2, PLL2_N=15, giving 2400 MHz from the 160 MHz VCXO;
-    DCLKout8 = 100 MHz, LMX reference branches = 480 MHz, SYSREF divider = 480.
-    TICS Pro display and SPI/lock readback not done.
-- [x] **SYSREF frequency**: 5 MHz; checked against the PG269 MTS requirements
-  that it divides the PL clock (100 MHz), the RFDC references (480 MHz) and the
-  sample clocks (9.6 / 4.8 GS/s)
-  - Evidence: AMD PG269 v2.6 SYSREF Signal Requirements (strictly below 10 MHz);
-    `tests/test_clocks.py` checks that 5 MHz divides 100/480/4800/9600 MHz.
-    10 MHz is excluded by the strictly-below-10-MHz rule; continuous MTS and
-    phase still to be checked on the board.
+  - `LMK04828_100.0.txt`: CLKin0 selected manually, to PLL1; CLKin0_R = 12, PLL1_N = 192 (10 MHz/12 = 160 MHz VCXO/192 = 833.33 kHz)
+- [x] **LMK04828 register file** (generated in Python on the development machine, to be checked in TICS Pro/on the board): CLKin0 = 10 MHz, PLL1 locked to the external reference; PLL2 VCO 2400 MHz; PL_CLK 100 MHz; the LMX references; SYSREF for the RFDC and the PL
+  - Evidence: `src/rf_clock/clocks/lmk04828.py`, `src/rf_clock/clocks/files/LMK04828_100.0.txt`; target fields VCO0, PLL2_R=2, PLL2_P=2, PLL2_N=15, giving 2400 MHz from the 160 MHz VCXO; DCLKout8 = 100 MHz, LMX reference branches = 480 MHz, SYSREF divider = 480. TICS Pro display and SPI/lock readback not done.
+- [x] **SYSREF frequency**: 5 MHz; checked against the PG269 MTS requirements that it divides the PL clock (100 MHz), the RFDC references (480 MHz) and the sample clocks (9.6 / 4.8 GS/s)
+  - Evidence: AMD PG269 v2.6 SYSREF Signal Requirements (strictly below 10 MHz); `tests/test_clocks.py` checks that 5 MHz divides 100/480/4800/9600 MHz. 10 MHz is excluded by the strictly-below-10-MHz rule; continuous MTS and phase still to be checked on the board.
 - [x] **LMX2594 register file**: 480 MHz to ADC tiles 0/2 and DAC tiles 0/2
-  - Evidence: `src/rf_clock/clocks/files/LMX2594_480.0.txt`; integer-N with a
-    480 MHz reference: 7.68 GHz VCO divided by 16 gives 480 MHz; decoded again
-    by `tests/test_clocks.py`.
-- [x] **PLL1 really locked to the FS725 on the board**: the PLL1 LED goes out
-  when the 10 MHz is removed; `PPS_LAST_PERIOD` stays at 100000000 (guards
-  against the LMK running on the board VCXO and looking normal)
-  - Evidence: run4 M1, all 60 periods 100000000: the fabric clock shares the
-    FS725 reference (2026-10-13); the unplug test was not done (can be skipped
-    when working remotely)
-  - This project's LMK file does not configure SPI readback; Status_LD1/2 =
-    PLL1/PLL2 lock, driving the board LEDs
-- [ ] **All clocks from one reference**: DAC/ADC sample clocks, PL_CLK and the
-  fabric clock all derived from the FS725 10 MHz; check with a frequency
-  counter or scope
-- [x] **LMX2594 phase SYNC** (2026-10-19, rf-clock 1.3.0.4): without it the
-  LMX channel divider started in an arbitrary phase at every clock write, the
-  480 MHz tile reference moved by whole VCO periods (130.2 ps), and after MTS
-  the converters sat at positions of a 26.04 ps lattice (1/4 DAC sample, 1/8
-  ADC sample), unseen by MTS: on the scope the DAC took two positions 52 ps
-  apart (first read as 260.4 ps steps; corrected by the M3 loopback,
-  `results/lmx-sync-loopback-20261019/`). Found in the overnight restart test, traced to the clock writes
-  (mixer bypassed; `--no-clocks` kept the state, clock writes changed it). The
-  image now has VCO_PHASE_SYNC = 1 and PLL_N 40 (IncludedDivide 4, same VCO),
-  and `program_clocks` toggles VCO_PHASE_SYNC after writing: SYNC category 2 of
-  TI SNAS696C, software only, timing not critical. Verified: ten clock writes
-  and ten reboots each left both boards at one start time (run-to-run sd
-  2.4-3.5 ps and 5-7 ps). Report: `results/lmx-phase-sync-20261019/`
-  - [x] ADC side, with the wired M3 loopback (2026-10-19): with both LMX2594
-    synchronized the loopback time stayed within 0.10 ps (sd, carrier phase)
-    over ten clock writes; ADC LMX2594 unsynchronized, three adjacent lattice
-    positions in 80 clock writes (26.3 and 27.0 ps apart; four 52 ps states had
-    been predicted); DAC LMX2594 unsynchronized, two adjacent positions, which
-    moved up one step when the unsynchronized image was written twice (the
-    scope's pair two steps apart was not reproduced). A rare extra 7.6 ps at
-    the low TX amplitude is not a DAC state (none in 50 runs at amplitude
-    16000). MTS identical in all 201 runs. Report:
-    `results/lmx-sync-loopback-20261019/`
-  - [ ] RF mode (3.8/5.8 GHz datapath): confirm one state over reboots; redo the
-    absolute delay calibrations made before 1.3.0.4
+  - Evidence: `src/rf_clock/clocks/files/LMX2594_480.0.txt`; integer-N with a 480 MHz reference: 7.68 GHz VCO divided by 16 gives 480 MHz; decoded again by `tests/test_clocks.py`.
+- [x] **PLL1 really locked to the FS725 on the board**: the PLL1 LED goes out when the 10 MHz is removed; `PPS_LAST_PERIOD` stays at 100000000 (guards against the LMK running on the board VCXO and looking normal)
+  - Evidence: run4 M1, all 60 periods 100000000: the fabric clock shares the FS725 reference (2026-10-13); the unplug test was not done (can be skipped when working remotely)
+  - This project's LMK file does not configure SPI readback; Status_LD1/2 = PLL1/PLL2 lock, driving the board LEDs
+- [ ] **All clocks from one reference**: DAC/ADC sample clocks, PL_CLK and the fabric clock all derived from the FS725 10 MHz; check with a frequency counter or scope
+- [x] **LMX2594 phase SYNC** (2026-10-19, rf-clock 1.3.0.4): without it the LMX channel divider started in an arbitrary phase at every clock write, the 480 MHz tile reference moved by whole VCO periods (130.2 ps), and after MTS the converters sat at positions of a 26.04 ps lattice (1/4 DAC sample, 1/8 ADC sample), unseen by MTS: on the scope the DAC took two positions 52 ps apart (first read as 260.4 ps steps; corrected by the M3 loopback, `results/lmx-sync-loopback-20261019/`). Found in the overnight restart test, traced to the clock writes (mixer bypassed; `--no-clocks` kept the state, clock writes changed it). The image now has VCO_PHASE_SYNC = 1 and PLL_N 40 (IncludedDivide 4, same VCO), and `program_clocks` toggles VCO_PHASE_SYNC after writing: SYNC category 2 of TI SNAS696C, software only, timing not critical. Verified: ten clock writes and ten reboots each left both boards at one start time (run-to-run sd 2.4-3.5 ps and 5-7 ps). Report: `results/lmx-phase-sync-20261019/`
+  - [x] ADC side, with the wired M3 loopback (2026-10-19): with both LMX2594 synchronized the loopback time stayed within 0.10 ps (sd, carrier phase) over ten clock writes; ADC LMX2594 unsynchronized, three adjacent lattice positions in 80 clock writes (26.3 and 27.0 ps apart; four 52 ps states had been predicted); DAC LMX2594 unsynchronized, two adjacent positions, which moved up one step when the unsynchronized image was written twice (the scope's pair two steps apart was not reproduced). A rare extra 7.6 ps at the low TX amplitude is not a DAC state (none in 50 runs at amplitude 16000). MTS identical in all 201 runs. Report: `results/lmx-sync-loopback-20261019/`
+  - [ ] RF mode (3.8/5.8 GHz datapath): confirm one state over reboots; redo the absolute delay calibrations made before 1.3.0.4
 
 ## 3. Vivado build (`PL/bd/create_rf_clock_bd.tcl`)
 
 - [x] **RTL simulation**: the 5 testbenches of P0–P4, P6 and `p_top` pass
-  - Evidence: `./PL/sim/run_pl_tests.ps1` (iverilog), including a negative
-    check with the TX delay off by one cycle
-- [x] **The IP accepts the RFDC 5.8 GHz configuration**: DAC 9.6 GS/s ×12, NCO
-  3.8 GHz, IMR high-pass, mix-mode; ADC 4.8 GS/s ÷6, NCO −1.0 GHz; AXIS
-  100 MHz; MTS on tiles 0/2
-  - Evidence: `RF-clock-ai:~/build/probe/probe19.log` (IP parameter check
-    only, not a board test)
-- [x] **RFDC MTS and the DAC sample rate**: final choice tiles 0 + 2, each on
-  its own PLL, DAC 9.6 GS/s (user's decision, 2026-10-13; replaces the
-  intermediate plan B "tiles 0–2 with distributed clock, DAC 6.4 GS/s")
+  - Evidence: `./PL/sim/run_pl_tests.ps1` (iverilog), including a negative check with the TX delay off by one cycle
+- [x] **The IP accepts the RFDC 5.8 GHz configuration**: DAC 9.6 GS/s ×12, NCO 3.8 GHz, IMR high-pass, mix-mode; ADC 4.8 GS/s ÷6, NCO −1.0 GHz; AXIS 100 MHz; MTS on tiles 0/2
+  - Evidence: `RF-clock-ai:~/build/probe/probe19.log` (IP parameter check only, not a board test)
+- [x] **RFDC MTS and the DAC sample rate**: final choice tiles 0 + 2, each on its own PLL, DAC 9.6 GS/s (user's decision, 2026-10-13; replaces the intermediate plan B "tiles 0–2 with distributed clock, DAC 6.4 GS/s")
   - First BD run failed with `ADC2_Multi_Tile_Sync=false, expected true`
   - Probe findings (Vivado 2024.1, RFDC 2.6, scripts in `RF-clock-ai:~/build/probe/`):
-    - with one tile only, the IP disables the MTS parameters and creates no
-      `user_sysref_adc/dac` pins
-    - **channel 0 (slice x0) of every participating tile must be enabled**, or
-      that tile's MTS is disabled (with the ADC on slice x2, MTS never enabled;
-      on slice x0 it did at once)
-    - a DAC tile that takes part in on-chip clock distribution is limited to
-      7.0 GS/s
-    - tiles 0 + 2 each on their own PLL, without distribution: MTS enables for
-      both ADC and DAC, and DAC 9.6 GS/s is accepted (`probe19.log`)
-  - Final configuration (`PL/bd/create_rf_clock_bd.tcl`): ADC/DAC tiles 0 and 2
-    enabled, 480 MHz references; DAC 9.6 GS/s, IMR high-pass, interpolation ×6
-    (×12 in total), NCO 3.8 GHz, mix-mode; ADC 4.8 GS/s, I/Q, decimation ×6, NCO
-    −1.0 GHz, input `vin2_01`; tile 0 only for MTS
-- [ ] **Tiles 0 and 2 share their reference**: MTS needs the sample clocks of
-  both tiles from one reference (LMK/LMX) and a shared SYSREF; confirm from the
-  schematic and the LMK/LMX configuration
-- [x] **ADC input**: the ADC moved from `vin2_23` to `vin2_01` (tile 2 channel
-  0); confirm which 4x2 SMA it is
-  - Evidence (2026-10-19, board 887329260072A): M3 with DAC_A cabled to ADC_A
-    received only the crosstalk (225.89 samples, PSL 16.9 dB); cabled to ADC_B,
-    230.45 samples, PSL 21-22 dB. `vin2_01` is ADC_B, as in section 1
-- [ ] **Cost of tile 0**: power and heat; DAC tile 0 (`vout00`, the board's
-  other DAC connector) always outputs 0; should it be switched off at run time
+    - with one tile only, the IP disables the MTS parameters and creates no `user_sysref_adc/dac` pins
+    - **channel 0 (slice x0) of every participating tile must be enabled**, or that tile's MTS is disabled (with the ADC on slice x2, MTS never enabled; on slice x0 it did at once)
+    - a DAC tile that takes part in on-chip clock distribution is limited to 7.0 GS/s
+    - tiles 0 + 2 each on their own PLL, without distribution: MTS enables for both ADC and DAC, and DAC 9.6 GS/s is accepted (`probe19.log`)
+  - Final configuration (`PL/bd/create_rf_clock_bd.tcl`): ADC/DAC tiles 0 and 2 enabled, 480 MHz references; DAC 9.6 GS/s, IMR high-pass, interpolation ×6 (×12 in total), NCO 3.8 GHz, mix-mode; ADC 4.8 GS/s, I/Q, decimation ×6, NCO −1.0 GHz, input `vin2_01`; tile 0 only for MTS
+- [ ] **Tiles 0 and 2 share their reference**: MTS needs the sample clocks of both tiles from one reference (LMK/LMX) and a shared SYSREF; confirm from the schematic and the LMK/LMX configuration
+- [x] **ADC input**: the ADC moved from `vin2_23` to `vin2_01` (tile 2 channel 0); confirm which 4x2 SMA it is
+  - Evidence (2026-10-19, board 887329260072A): M3 with DAC_A cabled to ADC_A received only the crosstalk (225.89 samples, PSL 16.9 dB); cabled to ADC_B, 230.45 samples, PSL 21-22 dB. `vin2_01` is ADC_B, as in section 1
+- [ ] **Cost of tile 0**: power and heat; DAC tile 0 (`vout00`, the board's other DAC connector) always outputs 0; should it be switched off at run time
 - [x] **BD stage passes `validate_bd_design`** without critical warnings
   - Evidence: `RF-clock-ai:~/build/rf_clock_bd_run3` (status `bd=complete`)
-  - Fixed on the way: the AXI DMA `c_prmry_is_aclk_async` is read-only and was
-    removed from the script; the `p_top` BRAM port got `READ_WRITE_MODE` and the
-    other memory parameters
+  - Fixed on the way: the AXI DMA `c_prmry_is_aclk_async` is read-only and was removed from the script; the `p_top` BRAM port got `READ_WRITE_MODE` and the other memory parameters
 - [x] **RFDC over-range pin name**: `adc2_01_over_range` (ADC tile 2 channel 0)
-  - Evidence: `RF-clock-ai:~/build/rf_clock_bd_run3/rfdc_pins.txt`;
-    `ADC_RTS = true` must stay, or the over-range pin is not created
-- [x] **Address map as planned**: P2 0xA000_0000, DMA 0xA001_0000, clock-status
-  GPIO 0xA002_0000, RFDC 0xA004_0000, TX buffer 0xA008_0000; the DMA reaches
-  HP0's DDR_LOW (0–2 GiB) and DDR_HIGH (from 0x8_0000_0000)
-  - Evidence: `RF-clock-ai:~/build/rf_clock_bd_run3/address_map.txt`; the
-    "planned values" note was removed from `docs/ABI.md` §1.2
+  - Evidence: `RF-clock-ai:~/build/rf_clock_bd_run3/rfdc_pins.txt`; `ADC_RTS = true` must stay, or the over-range pin is not created
+- [x] **Address map as planned**: P2 0xA000_0000, DMA 0xA001_0000, clock-status GPIO 0xA002_0000, RFDC 0xA004_0000, TX buffer 0xA008_0000; the DMA reaches HP0's DDR_LOW (0–2 GiB) and DDR_HIGH (from 0x8_0000_0000)
+  - Evidence: `RF-clock-ai:~/build/rf_clock_bd_run3/address_map.txt`; the "planned values" note was removed from `docs/ABI.md` §1.2
 - [x] **Synthesis passes**
   - Evidence: `RF-clock-ai:~/build/rf_clock_impl_run2/status.txt` (`synth=complete`)
-- [x] **Implementation passes with timing met**: WNS 0.246 ns, WHS 0.012 ns; no
-  unclocked or unconstrained endpoints
+- [x] **Implementation passes with timing met**: WNS 0.246 ns, WHS 0.012 ns; no unclocked or unconstrained endpoints
   - Evidence: `RF-clock-ai:~/build/rf_clock_impl_run2/timing_summary.rpt`
-  - CDC: all 8 critical ones are inside the RFDC IP (AXI configuration
-    registers to tile control ports; fabric reset and SYSREF into the IP's own
-    `xpm_cdc` synchronizers), covered by the IP constraints as in the
-    RFSoC-MTS reference design; every clock-crossing path of `p_top` is safe
-    (`cdc_critical_details.rpt`)
-  - Three `set_max_delay` constraints matched no objects (critical warnings)
-    and were removed from `PL/constraints/rf_clock_4x2.xdc`; the fabric and DMA
-    clocks come from the same MMCM, so those paths are analysed as synchronous
-    and meet timing. The next build should have no critical warnings, to be
-    confirmed
+  - CDC: all 8 critical ones are inside the RFDC IP (AXI configuration registers to tile control ports; fabric reset and SYSREF into the IP's own `xpm_cdc` synchronizers), covered by the IP constraints as in the RFSoC-MTS reference design; every clock-crossing path of `p_top` is safe (`cdc_critical_details.rpt`)
+  - Three `set_max_delay` constraints matched no objects (critical warnings) and were removed from `PL/constraints/rf_clock_4x2.xdc`; the fabric and DMA clocks come from the same MMCM, so those paths are analysed as synchronous and meet timing. The next build should have no critical warnings, to be confirmed
 - [x] **`rf_clock.bit`, `rf_clock.hwh`, `rf_clock.xsa` exported**
   - Evidence: `RF-clock-ai:~/build/rf_clock_impl_run2/` (tiles 0 + 2, DAC 9.6 GS/s)
-- [x] **Build machine does not sleep**: `sleep/suspend/hibernate/hybrid-sleep/
-  suspend-then-hibernate.target` masked, GNOME idle suspend set to `nothing`
+- [x] **Build machine does not sleep**: `sleep/suspend/hibernate/hybrid-sleep/ suspend-then-hibernate.target` masked, GNOME idle suspend set to `nothing`
   - Evidence: `systemctl is-enabled` shows masked for all (2026-10-13)
 - [ ] **Stable network to the build machine**
-  - The logs show **no sleep** since this boot. The 13:16 restart was the power
-    button; the disconnects around 14:01 were the USB Wi-Fi adapter
-    (`wlx38a38ca06de0`, YaleSecure) dropping, `reason=4 locally_generated=1`,
-    with Wi-Fi power saving on (`wifi.powersave = 3`)
-  - `/etc/NetworkManager/conf.d/default-wifi-powersave-on.conf` changed to
-    `wifi.powersave = 2` (agreed by the user, 2026-10-13); NetworkManager cannot
-    reapply it live, so it takes effect at the next Wi-Fi reconnect. Watch for
-    further drops before checking this item
-- [ ] **Syncthing**: the new `FPGA/bd/` and `FPGA/constraints/` did not sync to
-  the remote (copied with scp for now); find out why
-- [x] **`include "src/..."` works in Vivado**: the module-reference HDL parser
-  ignores `include_dirs` and resolves includes from the working directory; the
-  script `cd`s to `PL/` before `create_bd_cell -reference` (probe
-  `RF-clock-ai:~/build/probe/inc_probe.tcl`, variant d passes)
-- [x] **run3 build** (ABI 1.1, PPS pull-ups, second PPS input):
-  `RF-clock-ai:~/build/rf_clock_impl_run3`
-  - WNS 0.372 ns, WHS 0.012 ns, no critical warnings; AJ13/AH13 LVCMOS18 +
-    PULLUP (`*_io_placed.rpt`); deployed to the board's `~/RF-clock/overlay/`,
-    run2 kept in `overlay/run2/`
-  - On the board: the MMCM did not lock (see the PL_CLK item above); pulling
-    unused pins up lit the PL RGB LEDs and LEDs
-- [x] **run4 build** (differential PL_CLK/PL_SYSREF, `UNUSEDPIN PULLNONE`):
-  `RF-clock-ai:~/build/rf_clock_impl_run4`
-  - WNS 0.365 ns, WHS 0.012 ns, no critical warnings; the four clock pins LVDS
-    with 100 Ω differential termination and DQS_BIAS (`*_io_placed.rpt`);
-    deployed, run2/run3 kept on the board in `overlay/run2|run3/`
-- [x] **run6 build** (ABI 1.2, `BUILD_VERSION`, rf-clock 1.2.0.0):
-  `RF-clock-ai:~/build/rf_clock_impl_run6`
-  - WNS 0.335 ns, WHS 0.011 ns, no critical warnings; BRAM36 74.5/1080, URAM
-    0/80; pins as in run4; `BUILD_VERSION` = 0x01020000. Packaged into
-    `src/rf_clock/overlay/` and deployed (run5, built with the old encoding, was
-    stopped)
-  - On the board (2026-10-14): the `PL.open()` version check passes; example 03,
-    M1 (12 s), M2 (5 bursts), M3 (delay ×10, stress 3 × 6.4 MB) all PASS
-- [x] **run8 build** (TX buffer 69632 beats, rf-clock 1.2.1.0):
-  `RF-clock-ai:~/build/rf_clock_impl_run8`
-  - WNS 0.345 ns, WHS 0.011 ns, no critical warnings; URAM 68/80, BRAM36
-    10.5/1080; `BUILD_VERSION` = 0x01020100; `tx_bram_ctrl` at 0xA040_0000;
-    pins as in run4/run6. Packaged and deployed (2026-10-14)
-  - On the board: example 03, M1 (12 s), M2 (5 bursts), M3 (delay ×10: 226.12
-    samples, standard deviation 125 ps; stress 3 × 6.4 MB) all PASS; MTS on the
-    fixed targets (DAC 1896, ADC 1296)
-  - Full depth: the TX buffer reads back correctly over AXI after writing; each
-    of the 17 banks held its own random BPSK segment (4086 chips = 4096 beats),
-    all 69632 beats were played and correlated segment by segment: 17 delays
-    in 225.93–226.38 samples (0.45 apart), PSL 16.3–18.4 dB; a whole 65535-chip
-    burst gives 226.0 ± 0.3 samples. Single-sample impulses have too little SNR
-    over the crosstalk for this check
-  - To investigate: the whole 65535-chip burst has a PSL of only 12 dB, below
-    the 16–18 dB of 4096 chips (the delay is unaffected); in the crosstalk path
-    both 3.8 GHz and 5.8 GHz fold onto the ADC's 1.0 GHz; look again with a
-    cable and filter
-  - run7 (same version) was not packaged: the single 69632-deep memory was not
-    inferred as URAM (address-qualified write enable, depth not a power of two)
-    and fell back to 548 BRAM36; 17 banks of 4096 beats fixed this in run8
+  - The logs show **no sleep** since this boot. The 13:16 restart was the power button; the disconnects around 14:01 were the USB Wi-Fi adapter (`wlx38a38ca06de0`, YaleSecure) dropping, `reason=4 locally_generated=1`, with Wi-Fi power saving on (`wifi.powersave = 3`)
+  - `/etc/NetworkManager/conf.d/default-wifi-powersave-on.conf` changed to `wifi.powersave = 2` (agreed by the user, 2026-10-13); NetworkManager cannot reapply it live, so it takes effect at the next Wi-Fi reconnect. Watch for further drops before checking this item
+- [ ] **Syncthing**: the new `FPGA/bd/` and `FPGA/constraints/` did not sync to the remote (copied with scp for now); find out why
+- [x] **`include "src/..."` works in Vivado**: the module-reference HDL parser ignores `include_dirs` and resolves includes from the working directory; the script `cd`s to `PL/` before `create_bd_cell -reference` (probe `RF-clock-ai:~/build/probe/inc_probe.tcl`, variant d passes)
+- [x] **run3 build** (ABI 1.1, PPS pull-ups, second PPS input): `RF-clock-ai:~/build/rf_clock_impl_run3`
+  - WNS 0.372 ns, WHS 0.012 ns, no critical warnings; AJ13/AH13 LVCMOS18 + PULLUP (`*_io_placed.rpt`); deployed to the board's `~/RF-clock/overlay/`, run2 kept in `overlay/run2/`
+  - On the board: the MMCM did not lock (see the PL_CLK item above); pulling unused pins up lit the PL RGB LEDs and LEDs
+- [x] **run4 build** (differential PL_CLK/PL_SYSREF, `UNUSEDPIN PULLNONE`): `RF-clock-ai:~/build/rf_clock_impl_run4`
+  - WNS 0.365 ns, WHS 0.012 ns, no critical warnings; the four clock pins LVDS with 100 Ω differential termination and DQS_BIAS (`*_io_placed.rpt`); deployed, run2/run3 kept on the board in `overlay/run2|run3/`
+- [x] **run6 build** (ABI 1.2, `BUILD_VERSION`, rf-clock 1.2.0.0): `RF-clock-ai:~/build/rf_clock_impl_run6`
+  - WNS 0.335 ns, WHS 0.011 ns, no critical warnings; BRAM36 74.5/1080, URAM 0/80; pins as in run4; `BUILD_VERSION` = 0x01020000. Packaged into `src/rf_clock/overlay/` and deployed (run5, built with the old encoding, was stopped)
+  - On the board (2026-10-14): the `PL.open()` version check passes; example 03, M1 (12 s), M2 (5 bursts), M3 (delay ×10, stress 3 × 6.4 MB) all PASS
+- [x] **run8 build** (TX buffer 69632 beats, rf-clock 1.2.1.0): `RF-clock-ai:~/build/rf_clock_impl_run8`
+  - WNS 0.345 ns, WHS 0.011 ns, no critical warnings; URAM 68/80, BRAM36 10.5/1080; `BUILD_VERSION` = 0x01020100; `tx_bram_ctrl` at 0xA040_0000; pins as in run4/run6. Packaged and deployed (2026-10-14)
+  - On the board: example 03, M1 (12 s), M2 (5 bursts), M3 (delay ×10: 226.12 samples, standard deviation 125 ps; stress 3 × 6.4 MB) all PASS; MTS on the fixed targets (DAC 1896, ADC 1296)
+  - Full depth: the TX buffer reads back correctly over AXI after writing; each of the 17 banks held its own random BPSK segment (4086 chips = 4096 beats), all 69632 beats were played and correlated segment by segment: 17 delays in 225.93–226.38 samples (0.45 apart), PSL 16.3–18.4 dB; a whole 65535-chip burst gives 226.0 ± 0.3 samples. Single-sample impulses have too little SNR over the crosstalk for this check
+  - To investigate: the whole 65535-chip burst has a PSL of only 12 dB, below the 16–18 dB of 4096 chips (the delay is unaffected); in the crosstalk path both 3.8 GHz and 5.8 GHz fold onto the ADC's 1.0 GHz; look again with a cable and filter
+  - run7 (same version) was not packaged: the single 69632-deep memory was not inferred as URAM (address-qualified write enable, depth not a power of two) and fell back to 548 BRAM36; 17 banks of 4096 beats fixed this in run8
 
-- [x] **Remote recovery from a hung board**: on `RF-clock-ai`,
-  `xsdb tools/jtag_reset_board.tcl 887329260072A` (JTAG `rst -system`, then let
-  A53 #0, stopped at the reset catch, continue); ssh is back after about 40 s
-  - Evidence: two tests on 2026-10-13; `rst -system` alone leaves the board
-    stopped at the FSBL entry
-- [ ] **Power-level recovery**: when JTAG cannot recover it (for example JTAG/PMU
-  hung too) only a power cycle helps; needs a smart plug or remote-controlled
-  power
+- [x] **Remote recovery from a hung board**: on `RF-clock-ai`, `xsdb tools/jtag_reset_board.tcl 887329260072A` (JTAG `rst -system`, then let A53 #0, stopped at the reset catch, continue); ssh is back after about 40 s
+  - Evidence: two tests on 2026-10-13; `rst -system` alone leaves the board stopped at the FSBL entry
+- [ ] **Power-level recovery**: when JTAG cannot recover it (for example JTAG/PMU hung too) only a power cycle helps; needs a smart plug or remote-controlled power
 
 ## 4. RFDC and power-up (on the board)
 
-- [x] **PYNQ version**: the PYNQ version on `RFSoC-4x2-ai`, and whether `xrfdc`
-  supports MTS
-  - PYNQ 3.1.1; the Python layer of `xrfdc` has no MTS, but `libxrfdc.so`
-    (embeddedsw xilinx-v2020.2) exports `XRFdc_MultiConverter_Init/Sync`;
-    `src/rf_clock/pl/rfdc.py` calls them through cffi per 2020.2's `xrfdc_mts.h`
-  - About a minute after boot `bootpy.service` loads the base overlay and
-    replaces any design loaded earlier; wait for start-up to finish first
-    (`bringup.wait_for_boot`; hit once on a cold boot, 2026-10-14)
-- [x] **The power-up order works**: per `docs/ABI.md` §7.1, load the overlay,
-  then write LMK/LMX, pulse `pl_resetn0`, wait for the clock-status GPIO, then
-  access P2
-  - Old order (clocks before the overlay), 2026-10-13: the first clock write
-    hung the whole system within about 4 s (the base overlay was still in the
-    PL; cause not found); the second, with a 20 s wait before loading, did not
-    hang but the MMCM did not lock; after a reload the MMCM locked at once and
-    P2 worked
-  - New order (run4, 2026-10-13): two complete bring-ups, no hang, `pps_locked`
-    after about 5 s
-- [x] **RFDC tile start-up**: ADC/DAC tiles 0 and 2 started, tile PLLs locked
-  (tile 0 is only there for MTS but also needs a clock and start-up)
-  - Evidence: `rf_clock.checks.m2_tx_timing`; after `pl_resetn0` the IP starts
-    by itself to TileState 0xF, no StartUp call needed (2026-10-14, run4)
-- [ ] **PL_SYSREF sampled reliably**: the PL_SYSREF input delay in the
-  constraints (2.000/2.031 ns) was copied from RFSoC-MTS, where PL_CLK is
-  500 MHz; with PL_CLK at 100 MHz and another SYSREF divider their relative
-  phase may differ. Check the PL_CLK/PL_SYSREF edges on a scope for enough
-  margin around the PL_CLK sampling edge; change the constraint or the LMK
-  SYSREF delay if needed
-- [x] **MTS succeeds**: ADC/DAC MTS return success, latencies recorded; the
-  same latencies after restarts
-  - Evidence: DAC tiles 0/2 latency 1848, offset 0; ADC tiles 0/2 latency 1236,
-    offset 0 (ref tile 0, target -1). Identical over 3 PL reloads (2 of them
-    rewriting the clocks) and 2 JTAG cold starts (board
-    `~/RF-clock/m2_runs.jsonl`, 2026-10-14). Not yet fixed as calibrated targets
-  - **Latency changes with the bitstream**: run6 has ADC latency 1248 (tile 0
-    offset 2), DAC still 1848; the same on two power-ups. The loopback delay
-    moved from 212.07 to 214.08 samples accordingly (+2.0 samples = ADC latency
-    +12 ÷ decimation 6)
-  - [x] **MTS targets fixed** (user's decision, 2026-10-14): DAC 1896, ADC 1296
-    (`board.py`, `PL.open()` default); both DAC and ADC adjust in steps of 6.
-    The crosstalk loopback delay is 226.05 samples on run4 and 226.02 on run6,
-    0.03 apart, within the standard deviation; `MTSResult.ok` also requires
-    every tile on the target
-  - Mixer readback: ADC NCO −1000 MHz; the DAC NCO also reads −1000 MHz, which
-    fits IMR high-pass (the NCO at fs/2 = 4.8 GS/s, 3.8 GHz folding to
-    −1.0 GHz); confirm the 5.8 GHz output on a spectrum analyser
-- [ ] **NCO phase fixed at every power-up**: after each PL.open the DAC and the
-  ADC NCO each start in one of three phases 120° apart (a pure carrier phase
-  rotation; MTS and the timing unchanged). Restarting both at a SYSREF edge
-  after MTS (mixer event source SYSREF, then ResetNCOPhase) left one phase in
-  12 of 12 M3 runs; restarting only one left three (2026-10-19,
-  `results/lmx-sync-loopback-20261019/` section 5). To do: put it into
-  `PL.open()`, confirm over reboots and on both boards. Needed before any
-  carrier-phase timing or calibration
-- [ ] **DAC outputs 5.8 GHz**: 5.8 GHz on a spectrum analyser (and the 3.8 GHz
-  component, to be suppressed by the BPF); record the output power and compare
-  with mix-mode's expectation at 0.604 fs
-- [ ] **ADC receives 5.8 GHz**: inject a 5.8 GHz tone, confirm it appears at
-  the expected baseband frequency; record the SNR
+- [x] **PYNQ version**: the PYNQ version on `RFSoC-4x2-ai`, and whether `xrfdc` supports MTS
+  - PYNQ 3.1.1; the Python layer of `xrfdc` has no MTS, but `libxrfdc.so` (embeddedsw xilinx-v2020.2) exports `XRFdc_MultiConverter_Init/Sync`; `src/rf_clock/pl/rfdc.py` calls them through cffi per 2020.2's `xrfdc_mts.h`
+  - About a minute after boot `bootpy.service` loads the base overlay and replaces any design loaded earlier; wait for start-up to finish first (`bringup.wait_for_boot`; hit once on a cold boot, 2026-10-14)
+- [x] **The power-up order works**: per `docs/ABI.md` §7.1, load the overlay, then write LMK/LMX, pulse `pl_resetn0`, wait for the clock-status GPIO, then access P2
+  - Old order (clocks before the overlay), 2026-10-13: the first clock write hung the whole system within about 4 s (the base overlay was still in the PL; cause not found); the second, with a 20 s wait before loading, did not hang but the MMCM did not lock; after a reload the MMCM locked at once and P2 worked
+  - New order (run4, 2026-10-13): two complete bring-ups, no hang, `pps_locked` after about 5 s
+- [x] **RFDC tile start-up**: ADC/DAC tiles 0 and 2 started, tile PLLs locked (tile 0 is only there for MTS but also needs a clock and start-up)
+  - Evidence: `rf_clock.checks.m2_tx_timing`; after `pl_resetn0` the IP starts by itself to TileState 0xF, no StartUp call needed (2026-10-14, run4)
+- [ ] **PL_SYSREF sampled reliably**: the PL_SYSREF input delay in the constraints (2.000/2.031 ns) was copied from RFSoC-MTS, where PL_CLK is 500 MHz; with PL_CLK at 100 MHz and another SYSREF divider their relative phase may differ. Check the PL_CLK/PL_SYSREF edges on a scope for enough margin around the PL_CLK sampling edge; change the constraint or the LMK SYSREF delay if needed
+- [x] **MTS succeeds**: ADC/DAC MTS return success, latencies recorded; the same latencies after restarts
+  - Evidence: DAC tiles 0/2 latency 1848, offset 0; ADC tiles 0/2 latency 1236, offset 0 (ref tile 0, target -1). Identical over 3 PL reloads (2 of them rewriting the clocks) and 2 JTAG cold starts (board `~/RF-clock/m2_runs.jsonl`, 2026-10-14). Not yet fixed as calibrated targets
+  - **Latency changes with the bitstream**: run6 has ADC latency 1248 (tile 0 offset 2), DAC still 1848; the same on two power-ups. The loopback delay moved from 212.07 to 214.08 samples accordingly (+2.0 samples = ADC latency +12 ÷ decimation 6)
+  - [x] **MTS targets fixed** (user's decision, 2026-10-14): DAC 1896, ADC 1296 (`board.py`, `PL.open()` default); both DAC and ADC adjust in steps of 6. The crosstalk loopback delay is 226.05 samples on run4 and 226.02 on run6, 0.03 apart, within the standard deviation; `MTSResult.ok` also requires every tile on the target
+  - Mixer readback: ADC NCO −1000 MHz; the DAC NCO also reads −1000 MHz, which fits IMR high-pass (the NCO at fs/2 = 4.8 GS/s, 3.8 GHz folding to −1.0 GHz); confirm the 5.8 GHz output on a spectrum analyser
+- [ ] **NCO phase fixed at every power-up**: after each PL.open the DAC and the ADC NCO each start in one of three phases 120° apart (a pure carrier phase rotation; MTS and the timing unchanged). Restarting both at a SYSREF edge after MTS (mixer event source SYSREF, then ResetNCOPhase) left one phase in 12 of 12 M3 runs; restarting only one left three (2026-10-19, `results/lmx-sync-loopback-20261019/` section 5). To do: put it into `PL.open()`, confirm over reboots and on both boards. Needed before any carrier-phase timing or calibration
+- [ ] **DAC outputs 5.8 GHz**: 5.8 GHz on a spectrum analyser (and the 3.8 GHz component, to be suppressed by the BPF); record the output power and compare with mix-mode's expectation at 0.604 fs
+- [ ] **ADC receives 5.8 GHz**: inject a 5.8 GHz tone, confirm it appears at the expected baseband frequency; record the SNR
 - [x] **DAC beat layout**: lane order and I/Q positions of the 8 samples
-  - Done when: a different ramp per lane plus single-lane impulses, checked bit
-    by bit through a wired loopback, written into `docs/ABI.md` §4.5.8
-  - Conclusion: the DAC reads I and Q interleaved per word, sample n =
-    `{Q[32n+31:32n+16], I[32n+15:32n]}` (`TX_LAYOUT`). Evidence:
-    `rf_clock.checks.m3_loopback --lane-check` (2026-10-14, over the board's
-    DAC→ADC crosstalk, no cable): with planar packing the 8 lane delays were
-    D − ⌈k/2⌉ (211.83 … 208.05); with interleaved packing all 8 agree (spread
-    0.19–0.25 samples); the software model `tests/test_loopback_model.py`
-    reproduces the pattern. The impulses were on I only; which 16-bit half is I
-    and which Q is not verified separately
-  - Polarity: with the DAC mixer bypassed, I = +full scale gives a negative
-    voltage at DAC_A (scope, 2026-10-14), so the board output is inverted
-    relative to I. Account for it in phase/conjugate analysis
-  - Consequence: TX was packed planar before, so M2 sent a scrambled waveform;
-    M2 only checked timing, so its result stands. `WaveformGenerator.generate_beats`
-    now defaults to `TX_LAYOUT`
-- [x] **ADC I/Q combining order**: is the combiner output {Q(m21), I(m20)};
-  written into `docs/ABI.md` §4.6.9
-  - Lane order: planar (8 I in the low 128 bits, 8 Q in the high 128 bits, lane
-    0 lowest) agrees with the lane check (`RX_LAYOUT`). I/Q identity as above,
-    not verified separately
-- [ ] **Spectral inversion**: confirm the received baseband is the conjugate of
-  the transmitted one (plan section 3); real BPSK signals are not affected
-- [x] **Sustained RX DMA bandwidth**: 3.2 GB/s of writes without window
-  overflow while the ARM uses DDR (plan M3)
-  - Evidence: `rf_clock.checks.m3_loopback --stress`: 5 windows of 2 ms
-    (6.4 MB) and 3 of 20 ms (64 MB) with the ARM copying memory in the
-    background at about 4.2 GB/s, all valid (2026-10-14)
+  - Done when: a different ramp per lane plus single-lane impulses, checked bit by bit through a wired loopback, written into `docs/ABI.md` §4.5.8
+  - Conclusion: the DAC reads I and Q interleaved per word, sample n = `{Q[32n+31:32n+16], I[32n+15:32n]}` (`TX_LAYOUT`). Evidence: `rf_clock.checks.m3_loopback --lane-check` (2026-10-14, over the board's DAC→ADC crosstalk, no cable): with planar packing the 8 lane delays were D − ⌈k/2⌉ (211.83 … 208.05); with interleaved packing all 8 agree (spread 0.19–0.25 samples); the software model `tests/test_loopback_model.py` reproduces the pattern. The impulses were on I only; which 16-bit half is I and which Q is not verified separately
+  - Polarity: with the DAC mixer bypassed, I = +full scale gives a negative voltage at DAC_A (scope, 2026-10-14), so the board output is inverted relative to I. Account for it in phase/conjugate analysis
+  - Consequence: TX was packed planar before, so M2 sent a scrambled waveform; M2 only checked timing, so its result stands. `WaveformGenerator.generate_beats` now defaults to `TX_LAYOUT`
+- [x] **ADC I/Q combining order**: is the combiner output {Q(m21), I(m20)}; written into `docs/ABI.md` §4.6.9
+  - Lane order: planar (8 I in the low 128 bits, 8 Q in the high 128 bits, lane 0 lowest) agrees with the lane check (`RX_LAYOUT`). I/Q identity as above, not verified separately
+- [ ] **Spectral inversion**: confirm the received baseband is the conjugate of the transmitted one (plan section 3); real BPSK signals are not affected
+- [x] **Sustained RX DMA bandwidth**: 3.2 GB/s of writes without window overflow while the ARM uses DDR (plan M3)
+  - Evidence: `rf_clock.checks.m3_loopback --stress`: 5 windows of 2 ms (6.4 MB) and 3 of 20 ms (64 MB) with the ARM copying memory in the background at about 4.2 GB/s, all valid (2026-10-14)
 
 ## 5. PL functions (on the board)
 
 - [x] **raw_tick**: exactly 100,000,000 ticks per second (against the PPS)
-  - Evidence: run4 M1, all 60 PPS periods 100000000 (2026-10-13). The ARM's own
-    clock measured +108 ppm, the error of the ARM crystal
-- [x] **PPS capture**: `PPS_LAST_PERIOD` stays at 100,000,000;
-  `PPS_JITTER_CNT` does not grow (if it does, adjust the PPS input with IDELAY)
-  - Evidence: run4 for 3 hours (10801 PPS edges), `PPS_JITTER_CNT` +0, faults
-    +0, `pps_locked` always 1 (board `~/RF-clock/long_run.log`,
-    2026-10-13/14). P1 checks every period in hardware, so this covers all of
-    them, not only those software sampled once a second
-  - An earlier 10-minute test had 3 periods off (+1590, +80, +130 ticks) around
-    23:43:40 UTC, which recovered by themselves without rewriting the clocks;
-    it looks like a brief disturbance of the 10 MHz reference, cause unknown
-    (`RF-clock-ai:~/build/m1_run4_600s.log`)
-- [x] **TX timing**: with a scope triggered by the PPS, the burst delay after
-  the PPS is fixed and unchanged after restarts (plan M2)
-  - Digital part passed: every burst has `TX_ACTUAL` = target = PPS_TICK +
-    offset, including after cold starts (`rf_clock.checks.m2_tx_timing`,
-    2026-10-14)
-  - First analog test (2026-10-14, rf-clock 1.2.1.0, RIGOL DHO924 250 MHz):
-    CH1 = FS725 1PPS, CH2 = DAC_A. `m2_tx_timing --scope-nco 100 --amplitude
-    16000 --offset-ticks 1000` (DAC temporarily IMR low-pass, zone 1, NCO
-    100 MHz); every burst **10.2 µs** after the PPS rising edge (10 µs set + a
-    fixed delay of about 200 ns), no jitter or jumps. Visible burst length
-    40.8 µs (read from the grid; theory 40.97 µs, envelope above 10%). At
-    50 ns/div the PPS **falling edge** to burst start was steady at about
-    212 ns, so the FS725 1PPS is about 10.0 µs wide; P1 times the rising edge,
-    the falling edge is not a reference.
-  - `--offset-ticks 0` (burst in the tick of the PPS rising edge), cursors at
-    50 ns/div, PPS rising edge at 50% → burst start: 222.5, 226.5, 226.5,
-    225.5, 222.5 ns, mean **224.7 ns**, 4 ns peak to peak (manual reading
-    error; no 10 ns tick jumps). Includes the PPS input chain, the DAC data
-    path (scope mode) and about 35 ns of RRC ramp.
-  - **Consistency over restarts (M2 acceptance)**: `m2_tx_timing --waveform
-    rect --scope-nco 100 --amplitude 32000 --offset-ticks 0` (rectangular
-    waveform, fine-mixer scale 1.0 in scope mode), without `--no-clocks` (each
-    run reloads the bitstream, rewrites LMK/LMX, pulses pl_resetn0, redoes
-    MTS), 3 times; scope Measure → Delay (CH1 PPS rising edge → second peak of
-    the CH2 burst; the first peak is half height): **192.5–193 ns** each time,
-    statistics standard deviation < 1 ns (2026-10-14, rf-clock 1.2.1.0, MTS
-    targets DAC 1896 / ADC 1296). About 32 ns below the PRN reading of
-    224.7 ns, i.e. the RRC ramp
-  - After a cold start (2026-10-14): the following three runs (each rewriting
-    the clocks) had the same MTS results as before (DAC 1896/offset 8, ADC
-    1296/offset 10). Scope: third peak 203.5–204 ns (interference forced the
-    third peak; = second peak + 10 ns + about 1 ns), second peak 194.00 ns, 1–1.5
-    ns above the 192.5–193 ns before the cold start. Cause open: a changed
-    measurement threshold, or the next item (steps of 0.42 ns)
-  - **LMK zero-delay mode was off**: `LMK04828_100.0.txt` had 0x13F = 0x02
-    (FB_MUX = DCLKout8 but FB_MUX_EN = 0, PLL1 N fed from OSCin). VCO 2400 MHz ÷
-    24 = 100 MHz; with no fixed divider start, the tick can take one of 24
-    phases to the FS725 10 MHz/PPS (0.42 ns apart), i.e. the "PPS sub-tick
-    phase" could change with each clock write. About 6 clock writes measured
-    stayed within 1.5 ns, which does not look uniformly random. With the scope
-    settings unchanged, 5 warm restarts: 197.00, 194.50, 186.50, 196.50,
-    197.00 ns, a spread of about 10.5 ns ≈ 1 tick with identical MTS → taken as
-    confirmation that the tick phase changes with each clock write
-  - [x] **LMK nested zero-delay enabled** (2026-10-14): `LMK04828_100.0.txt`
-    0x13F = 0x0B, PLL1_N = 120 (R = 12, 833.3 kHz phase detector unchanged);
-    generated by `make_100mhz_config(mode="ext10m")`; `PL.open()` now fills
-    xrfclk's `_Config` with the packaged registers before writing
-    (`board.program_clocks`), so the board no longer depends on copies in
-    xrfclk's directory. On the board: M1 30 s (all periods 1e8, jitter 0), M2 5
-    bursts PASS, MTS unchanged.
-    Released as **rf-clock 1.2.1.1** (Python/package data only, with the 1.2.1.0
-    bitstream; user's decision); 1.3 includes these changes as well
-  - After zero-delay, 5 warm restarts with the same method: 197.5, 194.5, 193.0,
-    197.5, 201.0 ns, with a smaller peak before the first one. **The method was
-    flawed**: `--scope-nco 100` resets the NCO on each run, so the carrier
-    phase at the burst start differs every time (0–360° = 0–10 ns), and an
-    "Nth peak"/threshold reading jumps within one carrier period. The
-    186.5–197 ns before zero-delay may also come mostly from this, so "the tick
-    phase changes with each clock write" is not proven (zero-delay stays, per
-    the datasheet, and does no harm)
-  - A phase-independent method: `--scope-nco 0` (coarse mixer bypassed, the DAC
-    outputs I) + `--waveform square` (I is a 25 MHz square wave whose first
-    edge is the burst start). Smoke test on the board PASS
-  - [x] **Scope retest (square wave, baseband)** (2026-10-14, rf-clock 1.2.1.1,
-    LMK zero-delay, MTS targets DAC 1896 / ADC 1296): `m2_tx_timing 120
-    --waveform square --scope-nco 0 --amplitude 32000 --offset-ticks 0`, 5 warm
-    restarts (each reloading the bitstream, rewriting the clocks, redoing
-    MTS), scope Delay (CH1 PPS↑ → first CH2 edge): **180.00, 180.00, 180.00,
-    180.00, 180.00 ns**. The first edge falls: DAC_A is inverted relative to I.
-    Screenshot `images/tests/pl_m2_tx_timing.png` (CH2 = PPS, CH1 = DAC_A,
-    1 MΩ; with two channels on the scope samples at 625 MSa/s, 1.6 ns per
-    point, so the restarts agree within that resolution)
-  - To do (optional): one cold start to confirm 180.00 ns; a few runs with the
-    old (non-zero-delay) LMK image and the same method, to see whether
-    zero-delay is needed
-  - To do: the absolute delay in the operational 5.8 GHz configuration (scope
-    mode uses another data path; calibrate with a ≥ 6 GHz scope, a detector or
-    the wired M3 loopback)
-- [ ] **Wired loopback**: DAC → attenuator → ADC on this board, with a stable
-  correlation delay (plan M3)
-  - Without a cable, the crosstalk from DAC tile 2 to ADC tile 2 already gives
-    a correlation peak: 212.07 samples (265.1 ns), standard deviation 156 ps
-    over 10, PSL ≥ 16 dB (`rf_clock.checks.m3_loopback`, 2026-10-14). With a
-    cable: standard deviation, consistency over restarts (including cold
-    starts)
+  - Evidence: run4 M1, all 60 PPS periods 100000000 (2026-10-13). The ARM's own clock measured +108 ppm, the error of the ARM crystal
+- [x] **PPS capture**: `PPS_LAST_PERIOD` stays at 100,000,000; `PPS_JITTER_CNT` does not grow (if it does, adjust the PPS input with IDELAY)
+  - Evidence: run4 for 3 hours (10801 PPS edges), `PPS_JITTER_CNT` +0, faults +0, `pps_locked` always 1 (board `~/RF-clock/long_run.log`, 2026-10-13/14). P1 checks every period in hardware, so this covers all of them, not only those software sampled once a second
+  - An earlier 10-minute test had 3 periods off (+1590, +80, +130 ticks) around 23:43:40 UTC, which recovered by themselves without rewriting the clocks; it looks like a brief disturbance of the 10 MHz reference, cause unknown (`RF-clock-ai:~/build/m1_run4_600s.log`)
+- [x] **TX timing**: with a scope triggered by the PPS, the burst delay after the PPS is fixed and unchanged after restarts (plan M2)
+  - Digital part passed: every burst has `TX_ACTUAL` = target = PPS_TICK + offset, including after cold starts (`rf_clock.checks.m2_tx_timing`, 2026-10-14)
+  - First analog test (2026-10-14, rf-clock 1.2.1.0, RIGOL DHO924 250 MHz): CH1 = FS725 1PPS, CH2 = DAC_A. `m2_tx_timing --scope-nco 100 --amplitude 16000 --offset-ticks 1000` (DAC temporarily IMR low-pass, zone 1, NCO 100 MHz); every burst **10.2 µs** after the PPS rising edge (10 µs set + a fixed delay of about 200 ns), no jitter or jumps. Visible burst length 40.8 µs (read from the grid; theory 40.97 µs, envelope above 10%). At 50 ns/div the PPS **falling edge** to burst start was steady at about 212 ns, so the FS725 1PPS is about 10.0 µs wide; P1 times the rising edge, the falling edge is not a reference.
+  - `--offset-ticks 0` (burst in the tick of the PPS rising edge), cursors at 50 ns/div, PPS rising edge at 50% → burst start: 222.5, 226.5, 226.5, 225.5, 222.5 ns, mean **224.7 ns**, 4 ns peak to peak (manual reading error; no 10 ns tick jumps). Includes the PPS input chain, the DAC data path (scope mode) and about 35 ns of RRC ramp.
+  - **Consistency over restarts (M2 acceptance)**: `m2_tx_timing --waveform rect --scope-nco 100 --amplitude 32000 --offset-ticks 0` (rectangular waveform, fine-mixer scale 1.0 in scope mode), without `--no-clocks` (each run reloads the bitstream, rewrites LMK/LMX, pulses pl_resetn0, redoes MTS), 3 times; scope Measure → Delay (CH1 PPS rising edge → second peak of the CH2 burst; the first peak is half height): **192.5–193 ns** each time, statistics standard deviation < 1 ns (2026-10-14, rf-clock 1.2.1.0, MTS targets DAC 1896 / ADC 1296). About 32 ns below the PRN reading of 224.7 ns, i.e. the RRC ramp
+  - After a cold start (2026-10-14): the following three runs (each rewriting the clocks) had the same MTS results as before (DAC 1896/offset 8, ADC 1296/offset 10). Scope: third peak 203.5–204 ns (interference forced the third peak; = second peak + 10 ns + about 1 ns), second peak 194.00 ns, 1–1.5 ns above the 192.5–193 ns before the cold start. Cause open: a changed measurement threshold, or the next item (steps of 0.42 ns)
+  - **LMK zero-delay mode was off**: `LMK04828_100.0.txt` had 0x13F = 0x02 (FB_MUX = DCLKout8 but FB_MUX_EN = 0, PLL1 N fed from OSCin). VCO 2400 MHz ÷ 24 = 100 MHz; with no fixed divider start, the tick can take one of 24 phases to the FS725 10 MHz/PPS (0.42 ns apart), i.e. the "PPS sub-tick phase" could change with each clock write. About 6 clock writes measured stayed within 1.5 ns, which does not look uniformly random. With the scope settings unchanged, 5 warm restarts: 197.00, 194.50, 186.50, 196.50, 197.00 ns, a spread of about 10.5 ns ≈ 1 tick with identical MTS → taken as confirmation that the tick phase changes with each clock write
+  - [x] **LMK nested zero-delay enabled** (2026-10-14): `LMK04828_100.0.txt` 0x13F = 0x0B, PLL1_N = 120 (R = 12, 833.3 kHz phase detector unchanged); generated by `make_100mhz_config(mode="ext10m")`; `PL.open()` now fills xrfclk's `_Config` with the packaged registers before writing (`board.program_clocks`), so the board no longer depends on copies in xrfclk's directory. On the board: M1 30 s (all periods 1e8, jitter 0), M2 5 bursts PASS, MTS unchanged. Released as **rf-clock 1.2.1.1** (Python/package data only, with the 1.2.1.0 bitstream; user's decision); 1.3 includes these changes as well
+  - After zero-delay, 5 warm restarts with the same method: 197.5, 194.5, 193.0, 197.5, 201.0 ns, with a smaller peak before the first one. **The method was flawed**: `--scope-nco 100` resets the NCO on each run, so the carrier phase at the burst start differs every time (0–360° = 0–10 ns), and an "Nth peak"/threshold reading jumps within one carrier period. The 186.5–197 ns before zero-delay may also come mostly from this, so "the tick phase changes with each clock write" is not proven (zero-delay stays, per the datasheet, and does no harm)
+  - A phase-independent method: `--scope-nco 0` (coarse mixer bypassed, the DAC outputs I) + `--waveform square` (I is a 25 MHz square wave whose first edge is the burst start). Smoke test on the board PASS
+  - [x] **Scope retest (square wave, baseband)** (2026-10-14, rf-clock 1.2.1.1, LMK zero-delay, MTS targets DAC 1896 / ADC 1296): `m2_tx_timing 120 --waveform square --scope-nco 0 --amplitude 32000 --offset-ticks 0`, 5 warm restarts (each reloading the bitstream, rewriting the clocks, redoing MTS), scope Delay (CH1 PPS↑ → first CH2 edge): **180.00, 180.00, 180.00, 180.00, 180.00 ns**. The first edge falls: DAC_A is inverted relative to I. Screenshot `images/tests/pl_m2_tx_timing.png` (CH2 = PPS, CH1 = DAC_A, 1 MΩ; with two channels on the scope samples at 625 MSa/s, 1.6 ns per point, so the restarts agree within that resolution)
+  - To do (optional): one cold start to confirm 180.00 ns; a few runs with the old (non-zero-delay) LMK image and the same method, to see whether zero-delay is needed
+  - To do: the absolute delay in the operational 5.8 GHz configuration (scope mode uses another data path; calibrate with a ≥ 6 GHz scope, a detector or the wired M3 loopback)
+- [ ] **Wired loopback**: DAC → attenuator → ADC on this board, with a stable correlation delay (plan M3)
+  - Without a cable, the crosstalk from DAC tile 2 to ADC tile 2 already gives a correlation peak: 212.07 samples (265.1 ns), standard deviation 156 ps over 10, PSL ≥ 16 dB (`rf_clock.checks.m3_loopback`, 2026-10-14). With a cable: standard deviation, consistency over restarts (including cold starts)
 
 ## 6. FS725
 
-- [ ] **RS-232 correction commands**: range, resolution and units of the
-  frequency-offset command (FS725/PRS10 manual)
-- [ ] **Coarse PPS alignment**: can the PPS phase be jumped close to the target
-  in one step (plan section 10, item 4)
-- [ ] **ARM controls the FS725**: serial connection (USB-serial or other) and
-  driver
-- [x] **Shared reference for M4** (2026-10-15/16): FS725 10 MHz output 1 →
-  EPG1 REF IN; EPG1 REF OUT (10 MHz square, locked) → resistive splitter
-  (Mini-Circuits ZFRSC-123-S+) → both boards' external reference, equal cables.
-  FS725 1PPS → EPG1 TRIG IN, EPG1 output 1 → J7 of S/N 887329260101 (.101),
-  output 2 → J7 of S/N 887329260072A (.99) (checked 2026-10-18).
-  `experiments/epg1.py pps` sets external trigger, 10 µs positive pulses, 2.5 V into
-  50 Ω; `experiments/epg1.py status` reads everything back. Both boards (rf-clock
-  1.3.0.1, clocks rewritten) ran M1 for 120 s at the same time: every period
-  100 000 000 ticks, jitter 0, faults 0, pps_locked throughout
-  - Rejected wiring: FS725 10 MHz output 2 → the same resistive splitter →
-    boards. The splitter's 6 dB loss leaves 0.7 Vpp of slow sine at each
-    board; PLL1 kept losing lock and the LMK fell into holdover (register
-    0x150 = 0x11, fixed holdover DAC 512, TRACK_EN = 0), where the VCXO runs
-    about −0.1 ppm: periods of exactly 99 999 990 ticks on one board, 0/−10
-    alternating (locked/holdover) on the other
-  - The EPG1 resamples TRIG IN with its own clock (spec: 2.5 ns peak-to-peak
-    trigger-in-to-output jitter). With its REF IN not yet connected, M1 on the
-    first board (60 s) saw periods of 99 999 999 / 100 000 000 / 100 000 001
-    ticks and 18 jitter counts: the delay walks across a tick boundary. The
-    EPG1 must be locked to the same FS725 10 MHz (REF IN;
-    `REFCLK:IN:STATUS` = 1), then M1 on both boards again
-  - EPG1 command set: not published; read from Thorlabs EPG Software 1.0.2
-    (see `experiments/epg1.py`). Answers only with DTR set; `RUN: 0` while stopped
-    is an error; "Instrument busy" for a moment after some settings
-  - [x] **PPS capture margin** (2026-10-18): the wiring above was found by
-    delaying each EPG1 output by 50 ns and watching which board's PPS_TICK
-    moved by 5 ticks (earlier notes had it reversed). `experiments/m1_pps_phase_scan.py`
-    steps the output delays and logs PPS_TICK mod 1e8 on each board
-    (`results/pps-phase-scan-20261018_*`). At delay 0 the 887329260072A edge
-    lay on a 100 MHz sampling edge: in 15-edge samples 40-60 % of the edges
-    were captured one tick early, and M2 reported `actual-PPS` ±1. In the
-    overnight run of 2026-10-16/17 this happened once in about 23,000 edges, so
-    the phase moved by about a nanosecond in a day. About 7 % of its edges came
-    some 2.5 ns early (still captured early with 2 ns of delay, not with 3-4 ns),
-    apparently the EPG1's input retiming. The 887329260101 edge was about 3.4 ns
-    before its next sampling edge. `experiments/epg1.py pps` now sets output 2 to
-    6.6 ns (the edge 6.25 ns into the tick, the early ones 3.75 ns in), outputs 1
-    and 4 to 0; afterwards 68 and 67 edges each landed in a single tick. Since
-    then 887329260072A captures the later of the two ticks: its absolute TX
-    delay to the PPS may differ by 10 ns from earlier measurements
-  - [x] **EPG1 trigger threshold** (2026-10-19): from 11:16 that day about
-    half of all EPG1 output pulses came 2.5 ns early (scope trigger jitter
-    1.2 ns rms against the boards' bursts, which stayed put). The EPG1
-    retimes TRIG IN on a 2.5 ns clock, and at `TRIGIN:THRESH` 1.0 V the slow
-    FS725 1PPS edge crossed the threshold right at one of its clock edges.
-    Threshold scan (scope burst delay, rms over 40 acquisitions): 0.25-0.75 V
-    189.02 ns, 19-21 ps; 1.0 V 188.21 ns, 1172 ps; 1.25-1.5 V 186.52 ns, 20 ps;
-    1.75 V 184.02 ns; 2.0 V boards captured the PPS one tick later. `experiments/epg1.py
-    pps` now sets 1.3 V (about 1.25 ns from either EPG1 clock edge): 19 ps rms
-  - [ ] Watch the PPS phase drift (about 1 ns per day) and the EPG1's
-    retiming margin (only ±1.25 ns); consider distributing the PPS without
-    retiming (a fan-out buffer on the FS725 1PPS) so that neither margin
-    depends on the EPG1
+- [ ] **RS-232 correction commands**: range, resolution and units of the frequency-offset command (FS725/PRS10 manual)
+- [ ] **Coarse PPS alignment**: can the PPS phase be jumped close to the target in one step (plan section 10, item 4)
+- [ ] **ARM controls the FS725**: serial connection (USB-serial or other) and driver
+- [x] **Shared reference for M4** (2026-10-15/16): FS725 10 MHz output 1 → EPG1 REF IN; EPG1 REF OUT (10 MHz square, locked) → resistive splitter (Mini-Circuits ZFRSC-123-S+) → both boards' external reference, equal cables. FS725 1PPS → EPG1 TRIG IN, EPG1 output 1 → J7 of S/N 887329260101 (.101), output 2 → J7 of S/N 887329260072A (.99) (checked 2026-10-18). `experiments/epg1.py pps` sets external trigger, 10 µs positive pulses, 2.5 V into 50 Ω; `experiments/epg1.py status` reads everything back. Both boards (rf-clock 1.3.0.1, clocks rewritten) ran M1 for 120 s at the same time: every period 100 000 000 ticks, jitter 0, faults 0, pps_locked throughout
+  - Rejected wiring: FS725 10 MHz output 2 → the same resistive splitter → boards. The splitter's 6 dB loss leaves 0.7 Vpp of slow sine at each board; PLL1 kept losing lock and the LMK fell into holdover (register 0x150 = 0x11, fixed holdover DAC 512, TRACK_EN = 0), where the VCXO runs about −0.1 ppm: periods of exactly 99 999 990 ticks on one board, 0/−10 alternating (locked/holdover) on the other
+  - The EPG1 resamples TRIG IN with its own clock (spec: 2.5 ns peak-to-peak trigger-in-to-output jitter). With its REF IN not yet connected, M1 on the first board (60 s) saw periods of 99 999 999 / 100 000 000 / 100 000 001 ticks and 18 jitter counts: the delay walks across a tick boundary. The EPG1 must be locked to the same FS725 10 MHz (REF IN; `REFCLK:IN:STATUS` = 1), then M1 on both boards again
+  - EPG1 command set: not published; read from Thorlabs EPG Software 1.0.2 (see `experiments/epg1.py`). Answers only with DTR set; `RUN: 0` while stopped is an error; "Instrument busy" for a moment after some settings
+  - [x] **PPS capture margin** (2026-10-18): the wiring above was found by delaying each EPG1 output by 50 ns and watching which board's PPS_TICK moved by 5 ticks (earlier notes had it reversed). `experiments/m1_pps_phase_scan.py` steps the output delays and logs PPS_TICK mod 1e8 on each board (`results/pps-phase-scan-20261018_*`). At delay 0 the 887329260072A edge lay on a 100 MHz sampling edge: in 15-edge samples 40-60 % of the edges were captured one tick early, and M2 reported `actual-PPS` ±1. In the overnight run of 2026-10-16/17 this happened once in about 23,000 edges, so the phase moved by about a nanosecond in a day. About 7 % of its edges came some 2.5 ns early (still captured early with 2 ns of delay, not with 3-4 ns), apparently the EPG1's input retiming. The 887329260101 edge was about 3.4 ns before its next sampling edge. `experiments/epg1.py pps` now sets output 2 to 6.6 ns (the edge 6.25 ns into the tick, the early ones 3.75 ns in), outputs 1 and 4 to 0; afterwards 68 and 67 edges each landed in a single tick. Since then 887329260072A captures the later of the two ticks: its absolute TX delay to the PPS may differ by 10 ns from earlier measurements
+  - [x] **EPG1 trigger threshold** (2026-10-19): from 11:16 that day about half of all EPG1 output pulses came 2.5 ns early (scope trigger jitter 1.2 ns rms against the boards' bursts, which stayed put). The EPG1 retimes TRIG IN on a 2.5 ns clock, and at `TRIGIN:THRESH` 1.0 V the slow FS725 1PPS edge crossed the threshold right at one of its clock edges. Threshold scan (scope burst delay, rms over 40 acquisitions): 0.25-0.75 V 189.02 ns, 19-21 ps; 1.0 V 188.21 ns, 1172 ps; 1.25-1.5 V 186.52 ns, 20 ps; 1.75 V 184.02 ns; 2.0 V boards captured the PPS one tick later. `experiments/epg1.py pps` now sets 1.3 V (about 1.25 ns from either EPG1 clock edge): 19 ps rms
+  - [ ] Watch the PPS phase drift (about 1 ns per day) and the EPG1's retiming margin (only ±1.25 ns); consider distributing the PPS without retiming (a fan-out buffer on the FS725 1PPS) so that neither margin depends on the EPG1
 
 ## 7. Open system-design decisions (plan section 10)
 
 - [x] **Two-way link**: A and B transmit to each other
   - Evidence: confirmed by the user
-- [ ] **Antennas**: separate TX/RX, or shared with a T/R switch (if shared, the
-  PL needs a timed switch output)
-- [ ] **Data channel between nodes**: Ethernet by default; confirm the two ARMs
-  can reach each other
-- [ ] **Target accuracy**: ns level (code correlation is enough) or below
-  100 ps (needs carrier phase)
+- [ ] **Antennas**: separate TX/RX, or shared with a T/R switch (if shared, the PL needs a timed switch output)
+- [ ] **Data channel between nodes**: Ethernet by default; confirm the two ARMs can reach each other
+- [ ] **Target accuracy**: ns level (code correlation is enough) or below 100 ps (needs carrier phase)
 - [ ] **Regulations**: 5.8 GHz transmit power and occupied bandwidth limits
 
 ## 8. Repository
 
 - [x] **Old H-architecture files deleted** (2026-10-13, user's request)
-  - Deleted: H-series RTL/testbenches, `FPGA/ip/` (old RFDC configuration and
-    BD scripts), `FPGA/src/rf_clock_bd_wrapper.v`, `FPGA/compile_rtl.tcl`,
-    `FPGA/sim/run_testbench.ps1`/`.sh`, `FPGA/data/H09_rrc_coeffs.vh`,
-    `utils/compare_h09_rtl.py`, `handler/RFDC_config.md`
-  - Changed: the old `utils/gen_h09_rrc_coeffs.py` deleted, the new generator
-    was `tools/gen_rrc_coeffs.py`; `.vscode/tasks.json` uses `run_pl_tests.ps1`;
-    `project.sigasi` adds `PL/src` as an include directory; `README.md`
-    rewritten
-  - Kept then: `config/RRC_config.db` (`RRC_config`/`RRC_coeff` float RRC
-    coefficients); `utils/sim_h09_rrc_fir.py` only offered optional Plotly
-    diagnostics on that database, without the old database or the old RTL/CSV
-    comparison formats
-- [x] **`FPGA/` renamed to `PL/`** (2026-10-14, user's request): paths in the
-  scripts, configuration (`.vscode/tasks.json`, `project.sigasi`, `.gitignore`,
-  `tools/generate_abi.py`) and documents updated; the entries above recording
-  deleted files keep their old paths; Syncthing carried the rename to
-  RF-clock-ai
-- [x] **Overlay shipped with the package, version binding** (2026-10-14,
-  user's request; `docs/ABI.md` §14.1): `src/rf_clock/overlay/` (`.bit`/`.hwh`/
-  `.xsa` in Git LFS) + `manifest.json`, written by `tools/package_overlay.py`;
-  the build script writes the `pyproject.toml` version into P2 `BUILD_VERSION`
-  (ABI 1.2, 0x94); `PL.open()` checks the manifest before loading and
-  `BUILD_VERSION` after. Four-field version `A.B.C.D` (user's decision): A.B =
-  `VERSION`, C = which bitstream for that protocol, D = Python-only; A.B.C must
-  match the installed package. From 1.2.0.0 (run6)
-- [x] **PL blocks by address space** (2026-10-14, user's request): `pl.ctrl`
-  (formerly `pl.p2`; P2 registers: every command, timestamps, status),
-  `pl.tx_buffer` (TX buffer), `pl.rx_dma` (`RXDMA`, the S2MM only).
-  `ctrl.wait_tx()` returns `TX_ACTUAL`, `ctrl.wait_rx()` returns `RXWindow` and
-  does the checks of §7.3; `rxcap.py` became `rxdma.py`
-  - [x] M2 and M3 retested on the board (the split RX order: `rx_dma.prepare` →
-    `ctrl.arm_rx` → `ctrl.wait_rx` → `rx_dma.wait`): all PASS on run6
-    (2026-10-14)
-- [x] **PYNQ 3.1 cannot have an `.xsa` of the same name next to the `.bit`**: it
-  takes its XSA branch and reports `UnknownInputFileExtension`; the packaged XSA
-  is named `rf_clock_hw.xsa` (`tools/package_overlay.py`)
-- [x] **TX buffer deepened to 69632 beats** (user's request, 2026-10-14): 17 ×
-  4096, enough for a 65535-chip burst (65545 beats); UltraRAM in 17 banks of
-  4096 beats (Vivado would not infer a single 69632-deep memory as URAM; run7
-  fell back to 548 BRAM36), AXI window 0xA040_0000, 4 MiB; P3/`p_top` got a
-  `DEPTH`/`TX_DEPTH` parameter (need not be a power of two), writes beyond it
-  inside the window are dropped. rf-clock 1.2.1.0 (run8)
-- [x] **Python typing cleanup** (2026-10-14, the user reported many Pylance
-  `"X" is not a known attribute of "None"`): the `PL` blocks, `RFDC.mts` and
-  `PLClient.info` are no longer optional (they raise when not ready);
-  `ClockStatusIO` matches the implementations; `pyproject.toml` has
-  `[tool.pyright]` (`pythonPlatform = "Linux"`).
-  `uvx pyright --pythonpath .venv/Scripts/python.exe src tests examples tools`: 0 errors
-- [x] **TX repeated playback** (user's request, 2026-10-14; ABI 1.3, rf-clock
-  1.3.0.0): new register `TX_REPEAT` (0x5C, shadow, 1 … 65535, reset 1); one
-  command plays `TX_LENGTH` beats `TX_REPEAT` times back to back with no gap
-  between passes, `TX_ACTUAL` is the start of the first pass, DONE after the
-  last. Python: `arm_tx(target, beats, repeat=n)` (the address is not written
-  on bitstreams before 1.3), `WaveformGenerator(periodic=True)` (circular RRC
-  convolution without tails; 65535 chips = 65535 beats)
-  - [x] RTL and simulation: the P3 testbench covers 3 passes × 5 beats, 2
-    passes × full depth (wrapping from the last bank to the first), 65535
-    passes × 1 beat, and rejects 0 and 65536; a negative check (a new pass
-    starting at beat 1) fails as it should
-  - [x] run9 build (`RF-clock-ai:~/build/rf_clock_impl_run9`): WNS 0.322 ns,
-    WHS 0.012 ns, no critical warnings; URAM 68/80, BRAM36 10.5/1080
-  - [x] Packaged and deployed (1.3.0.0 on the board, 2026-10-14); example 03, M1
-    (12 s), M2 (5 bursts), M3 stress (3 × 6.4 MB) PASS
-  - [x] On the board: a periodic 65535-chip waveform × 10 passes sent by one
-    command (6.55 ms) and captured in one window; correlating each pass gives
-    10 delays in 231.990–232.061 samples (0.071 apart), PSL 22–23 dB;
-    `TX_ACTUAL` = target and `TX_SEQ` advances by one. One extra cycle between
-    passes would add 8 samples per pass to the delays, so the passes are
-    seamless
-  - M3 delay FAILED this time (231.95 samples, standard deviation 684 ps,
-    lowest PSL 5.1 dB), and run8 gives the same under the same conditions:
-    the wiring had changed (for the scope test: DAC → scope CH1 tee → what the
-    user called "ADC_1"), not run9. With 31 times the TX amplitude |rx| stayed
-    at the noise level, so the cable does not reach the receive port ADC_B
-    (presumably ADC_A) and only changed the crosstalk path. The real M3 needs
-    DAC_A → SMA cable → ≥ 20 dB attenuator → ADC_B, without the scope tee
-- [x] **Commits**: rf-clock 1.2.1.1, line endings to LF, rf-clock 1.3.0.0 (commit ids:
-  `git log`; the history was rewritten more than once)
-- [x] **Local settings out of the repository** (2026-10-14, user's request):
-  `.codegraph`, `.cursor`, `.sigasi`, `.vscode`, `.editorconfig` and
-  `project.sigasi` removed from all history with `git filter-repo` and added to
-  `.gitignore`; the files stay on this machine only; all commits re-signed,
-  `main` and `v2-python-overlay` force-pushed
-- [x] **Examples and board checks in the package** (2026-10-14, user's
-  request): `examples/` → `rf_clock.examples`, `tests/pl/` → `rf_clock.checks`
-  (`python -m rf_clock.checks.m2_tx_timing ...`); the unit tests stay in
-  `tests/`, outside the wheel. The wheel has the library, overlay, clock
-  files, examples and checks; installing it on the board is enough
-  (`docs/ABI.md` §9.1)
-- [x] **RRC coefficients computed at run time** (2026-10-14, user's decision):
-  `WaveformGenerator(beta, span_chips, samples_per_symbol)` computes them with
-  `rrc_config()` (1.6 ms on the board, 75 µs on the development machine);
-  `config_id` is still the hash of the parameters (2134958710 by default).
-  `config/RRC_config.db` and `tools/gen_rrc_coeffs.py` removed;
-  `tests/test_waveform.py` keeps the database's 81 coefficients as golden
-  values (the computed ones are bit-identical)
-- [x] **Faster beat packing** (2026-10-14, user's request): `pack_samples()`
-  packs an integer NumPy array with array operations instead of one Python
-  loop per sample. On the board (from `/tmp`, nothing installed) the packing
-  went from 1.22 s to about 20 ms for 4096 chips and from 19.5 s to about
-  0.18 s for 65535 chips; `generate_beats()` now takes 52 ms and 0.70 s, mostly
-  computing the samples. The beats are identical to the per-sample path for
-  both lengths (same SHA-256), and `tests/test_beats.py` compares the two paths
-  for three layouts, a partial last beat and the 16-bit limits
-- [x] **CASPER clock file removed** (2026-10-14, user's request; licence
-  unknown): `LMK04828_casper_ext10m.txt` removed from the tree and the git
-  history; the generator regenerates `LMK04828_100.0.txt` unchanged from
-  itself, which the test now checks; provenance in
-  `src/rf_clock/clocks/files/README.md`
-- [x] **English documents are the reference** (2026-10-14, user's request):
-  `docs/ABI.md`, `plan/checklist.md` and the examples README are English, with
-  Chinese translations in `*_zh.md`; docstrings and code comments are all
-  English. `plan/handoff_*.md` deleted; what was still useful moved to
-  `docs/ABI.md` §9.1 (board environment) and `src/rf_clock/clocks/files/README.md`
-  (clock plan)
-- [x] **GitHub releases** (2026-10-14): pushing a tag `vA.B.C.D` runs
-  `.github/workflows/release.yml`, which checks the version and the overlay,
-  runs `uv build` and creates a Release (wheel, sdist, `manifest.json`); the
-  notes come from `tools/release_notes.py` (`docs/ABI.md` §14.1). rf-clock
-  1.3.0.1
+  - Deleted: H-series RTL/testbenches, `FPGA/ip/` (old RFDC configuration and BD scripts), `FPGA/src/rf_clock_bd_wrapper.v`, `FPGA/compile_rtl.tcl`, `FPGA/sim/run_testbench.ps1`/`.sh`, `FPGA/data/H09_rrc_coeffs.vh`, `utils/compare_h09_rtl.py`, `handler/RFDC_config.md`
+  - Changed: the old `utils/gen_h09_rrc_coeffs.py` deleted, the new generator was `tools/gen_rrc_coeffs.py`; `.vscode/tasks.json` uses `run_pl_tests.ps1`; `project.sigasi` adds `PL/src` as an include directory; `README.md` rewritten
+  - Kept then: `config/RRC_config.db` (`RRC_config`/`RRC_coeff` float RRC coefficients); `utils/sim_h09_rrc_fir.py` only offered optional Plotly diagnostics on that database, without the old database or the old RTL/CSV comparison formats
+- [x] **`FPGA/` renamed to `PL/`** (2026-10-14, user's request): paths in the scripts, configuration (`.vscode/tasks.json`, `project.sigasi`, `.gitignore`, `tools/generate_abi.py`) and documents updated; the entries above recording deleted files keep their old paths; Syncthing carried the rename to RF-clock-ai
+- [x] **Overlay shipped with the package, version binding** (2026-10-14, user's request; `docs/ABI.md` §14.1): `src/rf_clock/overlay/` (`.bit`/`.hwh`/ `.xsa` in Git LFS) + `manifest.json`, written by `tools/package_overlay.py`; the build script writes the `pyproject.toml` version into P2 `BUILD_VERSION` (ABI 1.2, 0x94); `PL.open()` checks the manifest before loading and `BUILD_VERSION` after. Four-field version `A.B.C.D` (user's decision): A.B = `VERSION`, C = which bitstream for that protocol, D = Python-only; A.B.C must match the installed package. From 1.2.0.0 (run6)
+- [x] **PL blocks by address space** (2026-10-14, user's request): `pl.ctrl` (formerly `pl.p2`; P2 registers: every command, timestamps, status), `pl.tx_buffer` (TX buffer), `pl.rx_dma` (`RXDMA`, the S2MM only). `ctrl.wait_tx()` returns `TX_ACTUAL`, `ctrl.wait_rx()` returns `RXWindow` and does the checks of §7.3; `rxcap.py` became `rxdma.py`
+  - [x] M2 and M3 retested on the board (the split RX order: `rx_dma.prepare` → `ctrl.arm_rx` → `ctrl.wait_rx` → `rx_dma.wait`): all PASS on run6 (2026-10-14)
+- [x] **PYNQ 3.1 cannot have an `.xsa` of the same name next to the `.bit`**: it takes its XSA branch and reports `UnknownInputFileExtension`; the packaged XSA is named `rf_clock_hw.xsa` (`tools/package_overlay.py`)
+- [x] **TX buffer deepened to 69632 beats** (user's request, 2026-10-14): 17 × 4096, enough for a 65535-chip burst (65545 beats); UltraRAM in 17 banks of 4096 beats (Vivado would not infer a single 69632-deep memory as URAM; run7 fell back to 548 BRAM36), AXI window 0xA040_0000, 4 MiB; P3/`p_top` got a `DEPTH`/`TX_DEPTH` parameter (need not be a power of two), writes beyond it inside the window are dropped. rf-clock 1.2.1.0 (run8)
+- [x] **Python typing cleanup** (2026-10-14, the user reported many Pylance `"X" is not a known attribute of "None"`): the `PL` blocks, `RFDC.mts` and `PLClient.info` are no longer optional (they raise when not ready); `ClockStatusIO` matches the implementations; `pyproject.toml` has `[tool.pyright]` (`pythonPlatform = "Linux"`). `uvx pyright --pythonpath .venv/Scripts/python.exe src tests examples tools`: 0 errors
+- [x] **TX repeated playback** (user's request, 2026-10-14; ABI 1.3, rf-clock 1.3.0.0): new register `TX_REPEAT` (0x5C, shadow, 1 … 65535, reset 1); one command plays `TX_LENGTH` beats `TX_REPEAT` times back to back with no gap between passes, `TX_ACTUAL` is the start of the first pass, DONE after the last. Python: `arm_tx(target, beats, repeat=n)` (the address is not written on bitstreams before 1.3), `WaveformGenerator(periodic=True)` (circular RRC convolution without tails; 65535 chips = 65535 beats)
+  - [x] RTL and simulation: the P3 testbench covers 3 passes × 5 beats, 2 passes × full depth (wrapping from the last bank to the first), 65535 passes × 1 beat, and rejects 0 and 65536; a negative check (a new pass starting at beat 1) fails as it should
+  - [x] run9 build (`RF-clock-ai:~/build/rf_clock_impl_run9`): WNS 0.322 ns, WHS 0.012 ns, no critical warnings; URAM 68/80, BRAM36 10.5/1080
+  - [x] Packaged and deployed (1.3.0.0 on the board, 2026-10-14); example 03, M1 (12 s), M2 (5 bursts), M3 stress (3 × 6.4 MB) PASS
+  - [x] On the board: a periodic 65535-chip waveform × 10 passes sent by one command (6.55 ms) and captured in one window; correlating each pass gives 10 delays in 231.990–232.061 samples (0.071 apart), PSL 22–23 dB; `TX_ACTUAL` = target and `TX_SEQ` advances by one. One extra cycle between passes would add 8 samples per pass to the delays, so the passes are seamless
+  - M3 delay FAILED this time (231.95 samples, standard deviation 684 ps, lowest PSL 5.1 dB), and run8 gives the same under the same conditions: the wiring had changed (for the scope test: DAC → scope CH1 tee → what the user called "ADC_1"), not run9. With 31 times the TX amplitude |rx| stayed at the noise level, so the cable does not reach the receive port ADC_B (presumably ADC_A) and only changed the crosstalk path. The real M3 needs DAC_A → SMA cable → ≥ 20 dB attenuator → ADC_B, without the scope tee
+- [x] **Commits**: rf-clock 1.2.1.1, line endings to LF, rf-clock 1.3.0.0 (commit ids: `git log`; the history was rewritten more than once)
+- [x] **Local settings out of the repository** (2026-10-14, user's request): `.codegraph`, `.cursor`, `.sigasi`, `.vscode`, `.editorconfig` and `project.sigasi` removed from all history with `git filter-repo` and added to `.gitignore`; the files stay on this machine only; all commits re-signed, `main` and `v2-python-overlay` force-pushed
+- [x] **Examples and board checks in the package** (2026-10-14, user's request): `examples/` → `rf_clock.examples`, `tests/pl/` → `rf_clock.checks` (`python -m rf_clock.checks.m2_tx_timing ...`); the unit tests stay in `tests/`, outside the wheel. The wheel has the library, overlay, clock files, examples and checks; installing it on the board is enough (`docs/ABI.md` §9.1)
+- [x] **RRC coefficients computed at run time** (2026-10-14, user's decision): `WaveformGenerator(beta, span_chips, samples_per_symbol)` computes them with `rrc_config()` (1.6 ms on the board, 75 µs on the development machine); `config_id` is still the hash of the parameters (2134958710 by default). `config/RRC_config.db` and `tools/gen_rrc_coeffs.py` removed; `tests/test_waveform.py` keeps the database's 81 coefficients as golden values (the computed ones are bit-identical)
+- [x] **Faster beat packing** (2026-10-14, user's request): `pack_samples()` packs an integer NumPy array with array operations instead of one Python loop per sample. On the board (from `/tmp`, nothing installed) the packing went from 1.22 s to about 20 ms for 4096 chips and from 19.5 s to about 0.18 s for 65535 chips; `generate_beats()` now takes 52 ms and 0.70 s, mostly computing the samples. The beats are identical to the per-sample path for both lengths (same SHA-256), and `tests/test_beats.py` compares the two paths for three layouts, a partial last beat and the 16-bit limits
+- [x] **CASPER clock file removed** (2026-10-14, user's request; licence unknown): `LMK04828_casper_ext10m.txt` removed from the tree and the git history; the generator regenerates `LMK04828_100.0.txt` unchanged from itself, which the test now checks; provenance in `src/rf_clock/clocks/files/README.md`
+- [x] **English documents are the reference** (2026-10-14, user's request): `docs/ABI.md`, `plan/checklist.md` and the examples README are English, with Chinese translations in `*_zh.md`; docstrings and code comments are all English. `plan/handoff_*.md` deleted; what was still useful moved to `docs/ABI.md` §9.1 (board environment) and `src/rf_clock/clocks/files/README.md` (clock plan)
+- [x] **GitHub releases** (2026-10-14): pushing a tag `vA.B.C.D` runs `.github/workflows/release.yml`, which checks the version and the overlay, runs `uv build` and creates a Release (wheel, sdist, `manifest.json`); the notes come from `tools/release_notes.py` (`docs/ABI.md` §14.1). rf-clock 1.3.0.1

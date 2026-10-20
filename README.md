@@ -1,35 +1,17 @@
 # RF-clock
 
-Two RFSoC 4x2 nodes, each with an SRS FS725 rubidium standard, exchange 5.8 GHz
-PRN bursts (two-way time transfer, TWTT). The follower steers its FS725 so that
-its 10 MHz and 1PPS follow the master. The ARM runs every algorithm; the PL
-only provides deterministic time.
+Two RFSoC 4x2 nodes, each with an SRS FS725 rubidium standard, exchange 5.8 GHz PRN bursts (two-way time transfer, TWTT). The follower steers its FS725 so that its 10 MHz and 1PPS follow the master. The ARM runs every algorithm; the PL only provides deterministic time.
 
-English documents are the reference; `*_zh.md` files are Chinese translations
-with the same content.
+English documents are the reference; `*_zh.md` files are Chinese translations with the same content.
 
 ## How it works
 
-- **TWTT.** Nodes A (master) and B (follower) send each other known PRN bursts
-  in fixed slots after each PPS. Each node timestamps the other's burst;
-  differencing the two directions cancels the propagation delay and leaves the
-  clock offset, which drives B's FS725 through its RS-232 port.
-- **One timebase per node.** The FS725 10 MHz drives the board's LMK04828 and
-  LMX2594, which clock the RFDC converters and the PL. The PL counts a raw tick
-  (100 MHz, 10 ns) on that clock, so steering the FS725 moves the whole
-  timebase of the node.
-- **ARM does algorithms, PL does time.** On the ARM (Python): PRN generation,
-  RRC shaping, correlation and delay estimation, TWTT, Kalman filtering, FS725
-  steering. In the PL: the raw tick, PPS capture, gap-free TX bursts from an
-  on-chip buffer starting at an exact tick, and lossless RX windows into DDR
-  starting at an exact tick, each with its start-tick timestamp.
-- **Signal.** BPSK PRN at 100 Mchip/s with an RRC filter (β = 0.25), 8 samples
-  per chip at 800 MS/s complex baseband. The DAC runs at 9.6 GS/s and puts the
-  burst at 5.8 GHz (second Nyquist zone); the ADC samples at 4.8 GS/s.
-  RFDC multi-tile sync makes the converter latency the same on every power-up.
+- **TWTT.** Nodes A (master) and B (follower) send each other known PRN bursts in fixed slots after each PPS. Each node timestamps the other's burst; differencing the two directions cancels the propagation delay and leaves the clock offset, which drives B's FS725 through its RS-232 port.
+- **One timebase per node.** The FS725 10 MHz drives the board's LMK04828 and LMX2594, which clock the RFDC converters and the PL. The PL counts a raw tick (100 MHz, 10 ns) on that clock, so steering the FS725 moves the whole timebase of the node.
+- **ARM does algorithms, PL does time.** On the ARM (Python): PRN generation, RRC shaping, correlation and delay estimation, TWTT, Kalman filtering, FS725 steering. In the PL: the raw tick, PPS capture, gap-free TX bursts from an on-chip buffer starting at an exact tick, and lossless RX windows into DDR starting at an exact tick, each with its start-tick timestamp.
+- **Signal.** BPSK PRN at 100 Mchip/s with an RRC filter (β = 0.25), 8 samples per chip at 800 MS/s complex baseband. The DAC runs at 9.6 GS/s and puts the burst at 5.8 GHz (second Nyquist zone); the ADC samples at 4.8 GS/s. RFDC multi-tile sync makes the converter latency the same on every power-up.
 
-The design is in [plan/RF_clock_modules.md](plan/RF_clock_modules.md); the
-durable constraints any change must respect are in [AGENTS.md](AGENTS.md).
+The design is in [plan/RF_clock_modules.md](plan/RF_clock_modules.md); the durable constraints any change must respect are in [AGENTS.md](AGENTS.md).
 
 ## Status
 
@@ -55,18 +37,13 @@ Per node:
 | RF receive | ADC_B SMA (`vin2_01`, ADC tile 2) |
 | Loopback test (M3) | DAC_A → SMA cable → ≥ 20 dB attenuator → ADC_B |
 
-Building the bitstream needs Vivado 2024.1 and the
-[RealDigitalOrg RFSoC4x2-BSP](https://github.com/RealDigitalOrg/RFSoC4x2-BSP)
-board files.
+Building the bitstream needs Vivado 2024.1 and the [RealDigitalOrg RFSoC4x2-BSP](https://github.com/RealDigitalOrg/RFSoC4x2-BSP) board files.
 
 ## Getting started
 
 ### On the board
 
-Releases (on GitHub and on the group's Gitea) carry a wheel that contains the
-library, the bitstream, the clock register files, the examples and the board
-checks; nothing else from the repository is needed. Create the environment once and install the wheel as
-described in [docs/ABI.md §9.1](docs/ABI.md), then, as root:
+Releases (on GitHub and on the group's Gitea) carry a wheel that contains the library, the bitstream, the clock register files, the examples and the board checks; nothing else from the repository is needed. Create the environment once and install the wheel as described in [docs/ABI.md §9.1](docs/ABI.md), then, as root:
 
 ```bash
 run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python"
@@ -102,13 +79,9 @@ uv run python -m rf_clock.examples.pl.01_fake_tx
 ### Building and releasing
 
 1. Set the version in `pyproject.toml` (rules below).
-2. On the build machine:
-   `vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl -tclargs <new build dir> <RFSoC4x2-BSP>/board_files impl`
-3. `python3 tools/package_overlay.py <build dir>` copies the bitstream and a
-   manifest into `src/rf_clock/overlay/` (refused unless the build completed
-   with timing met for this version).
-4. Commit, then push a tag `vA.B.C.D`: GitHub Actions, and Gitea Actions where
-   the tag is pushed to Gitea, build the wheel and publish a release with notes.
+2. On the build machine: `vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl -tclargs <new build dir> <RFSoC4x2-BSP>/board_files impl`
+3. `python3 tools/package_overlay.py <build dir>` copies the bitstream and a manifest into `src/rf_clock/overlay/` (refused unless the build completed with timing met for this version).
+4. Commit, then push a tag `vA.B.C.D`: GitHub Actions, and Gitea Actions where the tag is pushed to Gitea, build the wheel and publish a release with notes.
 
 Details in [docs/ABI.md §14.1](docs/ABI.md).
 
@@ -122,9 +95,7 @@ The package version `A.B.C.D` binds the Python code to its bitstream:
 | C | which bitstream for that protocol |
 | D | Python-only releases |
 
-The build writes the version into the bitstream (`BUILD_VERSION`), and
-`PL.open()` refuses a bitstream whose A.B.C differs from the installed package.
-A rebuild increments C; a Python-only change increments D.
+The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open()` refuses a bitstream whose A.B.C differs from the installed package. A rebuild increments C; a Python-only change increments D.
 
 ## Documents
 
@@ -156,5 +127,4 @@ A rebuild increments C; a Python-only change increments D.
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
 | `.gitea/workflows/release.yml` | The same for a Gitea release, plus an upload to the Gitea PyPI registry (Gitea Actions) |
 
-The bitstream and other binaries are stored with Git LFS: after cloning, run
-`git lfs install` and `git lfs pull`.
+The bitstream and other binaries are stored with Git LFS: after cloning, run `git lfs install` and `git lfs pull`.

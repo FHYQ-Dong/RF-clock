@@ -2,14 +2,9 @@
 
 This is the reference version; `docs/ABI_zh.md` is the Chinese translation.
 
-This manual describes how ARM software controls the RF-clock PL. Part I is the
-register-level protocol (the instrument's command set); Part II is the Python
-library `rf_clock.pl` that wraps it.
+This manual describes how ARM software controls the RF-clock PL. Part I is the register-level protocol (the instrument's command set); Part II is the Python library `rf_clock.pl` that wraps it.
 
-- The single RTL source of the protocol is `PL/src/p_regs.vh` (addresses, bit
-  fields) and `PL/src/p_defs.vh` (states, result codes, flags). Python's
-  `rf_clock.pl.abi` is generated from these two files by `tools/generate_abi.py`.
-  Any change to the three updates this manual and bumps `VERSION` per §14.
+- The single RTL source of the protocol is `PL/src/p_regs.vh` (addresses, bit fields) and `PL/src/p_defs.vh` (states, result codes, flags). Python's `rf_clock.pl.abi` is generated from these two files by `tools/generate_abi.py`. Any change to the three updates this manual and bumps `VERSION` per §14.
 - Design background: `plan/RF_clock_modules.md`; open items: `plan/checklist.md`.
 
 ---
@@ -29,9 +24,7 @@ library `rf_clock.pl` that wraps it.
 
 ### 1.2 Addresses
 
-The base addresses are fixed in `PL/bd/create_rf_clock_bd.tcl`. Software reads
-them from the HWH (PYNQ `overlay.ip_dict` / `overlay.mem_dict`) rather than
-hard-coding them.
+The base addresses are fixed in `PL/bd/create_rf_clock_bd.tcl`. Software reads them from the HWH (PYNQ `overlay.ip_dict` / `overlay.mem_dict`) rather than hard-coding them.
 
 | Address space      | HWH name                       | Base        | Size                                          | Clock domain |
 | ------------------ | ------------------------------ | ----------- | --------------------------------------------- | ------------ |
@@ -68,12 +61,7 @@ hard-coding them.
 | complex sample | 16-bit I + 16-bit Q, 800 MS/s, 1.25 ns apart |
 | 1 tick         | exactly 1 beat = 8 samples |
 
-**Which times can be used for measurements.** raw_tick counts from PL reset,
-never wraps, and is not cleared on loss of lock or a new epoch. A register
-read by the ARM takes from a few hundred ns to milliseconds, so a `TICK` read
-by software is only used to schedule future targets. Times used in a
-measurement are always values the PL latched in the cycle of the event:
-`PPS_TICK`, `TX_ACTUAL`, `RX_ACTUAL`.
+**Which times can be used for measurements.** raw_tick counts from PL reset, never wraps, and is not cleared on loss of lock or a new epoch. A register read by the ARM takes from a few hundred ns to milliseconds, so a `TICK` read by software is only used to schedule future targets. Times used in a measurement are always values the PL latched in the cycle of the event: `PPS_TICK`, `TX_ACTUAL`, `RX_ACTUAL`.
 
 ## 3. Command entry format
 
@@ -110,9 +98,7 @@ R64 <off>              R32 <off> (LO), then R32 <off+4> (HI); value = (HI << 32)
 R32 0x00  → 0x52434C4B
 ```
 
-Confirms that the RF-clock bitstream is loaded. On any other value, stop and do
-not access other registers.
-Python: `PLClient.validate()`.
+Confirms that the RF-clock bitstream is loaded. On any other value, stop and do not access other registers. Python: `PLClient.validate()`.
 
 #### 4.1.2 `VERSION` — interface version
 
@@ -124,10 +110,7 @@ Python: `PLClient.validate()`.
 R32 0x04  → 0x00010003
 ```
 
-Refuse to run when major differs from the one the software supports.
-`PPS_INPUTS` and `PPS_CONFIG` need minor ≥ 1, `BUILD_VERSION` needs minor ≥ 2,
-`TX_REPEAT` needs minor ≥ 3 (§14).
-Python: `PLClient.validate()`, `DeviceInfo.version`.
+Refuse to run when major differs from the one the software supports. `PPS_INPUTS` and `PPS_CONFIG` need minor ≥ 1, `BUILD_VERSION` needs minor ≥ 2, `TX_REPEAT` needs minor ≥ 3 (§14). Python: `PLClient.validate()`, `DeviceInfo.version`.
 
 #### 4.1.3 `CONTROL` — command pulses
 
@@ -139,8 +122,7 @@ Python: `PLClient.validate()`, `DeviceInfo.version`.
 W32 0x08 <bits>
 ```
 
-Each bit written as 1 makes a one-cycle pulse; several bits may be written at
-once (for example `0x5` starts TX and RX together).
+Each bit written as 1 makes a one-cycle pulse; several bits may be written at once (for example `0x5` starts TX and RX together).
 
 | Bit | Name          | Effect | See |
 | --- | ------------- | ------ | --- |
@@ -160,10 +142,7 @@ once (for example `0x5` starts TX and RX together).
 R32 0x10  → epoch
 ```
 
-Incremented each time the clocks lock again; 0 means time has never been
-valid. A change means lock was lost in between: timestamps before and after it
-are not comparable, and measurements spanning epochs are discarded (§6.4).
-Python: `PLClient.time_epoch()`, `remember_epoch()`, `require_same_epoch()`.
+Incremented each time the clocks lock again; 0 means time has never been valid. A change means lock was lost in between: timestamps before and after it are not comparable, and measurements spanning epochs are discarded (§6.4). Python: `PLClient.time_epoch()`, `remember_epoch()`, `require_same_epoch()`.
 
 #### 4.1.5 Build parameters `TX_DEPTH`, `RX_MAX_BEATS`, `MIN_LEAD_TICKS`
 
@@ -173,9 +152,7 @@ Python: `PLClient.time_epoch()`, `remember_epoch()`, `require_same_epoch()`.
 | 0x88    | `RX_MAX_BEATS`   | RO     | 2097151 | Longest RX window (beats), limited by the 26-bit DMA length register |
 | 0x8C    | `MIN_LEAD_TICKS` | RO     | 64      | How much later than the tick at the doorbell a target must be |
 
-Read once at start-up and use them to check parameters. Python:
-`PLClient.validate()` → `DeviceInfo`. `TX_DEPTH` = 69632 = 17 × 4096: a
-65535-chip burst with its RRC tails (65545 beats) fits.
+Read once at start-up and use them to check parameters. Python: `PLClient.validate()` → `DeviceInfo`. `TX_DEPTH` = 69632 = 17 × 4096: a 65535-chip burst with its RRC tails (65545 beats) fits.
 
 #### 4.1.6 `BUILD_VERSION` — package version at build time (since 1.2)
 
@@ -187,11 +164,7 @@ Read once at start-up and use them to check parameters. Python:
 R32 0x94  → 0x01030000 (rf-clock 1.3.0.0)
 ```
 
-The build script `PL/bd/create_rf_clock_bd.tcl` reads `version = "A.B.C.D"`
-from `pyproject.toml` and makes it the constant `0xAABBCCDD`; A.B is
-`VERSION`, and the build fails if they differ. Software compares it with its
-installed rf-clock version and refuses to run when A.B.C differs (§14.1).
-Python: `PLClient.build_version()` → `"A.B.C.D"`.
+The build script `PL/bd/create_rf_clock_bd.tcl` reads `version = "A.B.C.D"` from `pyproject.toml` and makes it the constant `0xAABBCCDD`; A.B is `VERSION`, and the build fails if they differ. Software compares it with its installed rf-clock version and refuses to run when A.B.C differs (§14.1). Python: `PLClient.build_version()` → `"A.B.C.D"`.
 
 ### 4.2 Status and faults
 
@@ -216,9 +189,7 @@ R32 0x0C  → status
 | 10:8  | `tx_state`       | TX state, encoded as in §5.1 |
 | 14:12 | `rx_state`       | RX state, encoded as in §5.1 |
 
-The state fields are the authority on TX/RX progress (`*_RESULT` can be
-overwritten by `REJ_BUSY`, §5.2).
-Python: `PLClient.status()` → `Status`.
+The state fields are the authority on TX/RX progress (`*_RESULT` can be overwritten by `REJ_BUSY`, §5.2). Python: `PLClient.status()` → `Status`.
 
 #### 4.2.2 `FAULT_BITS` — sticky fault bits
 
@@ -230,8 +201,7 @@ Python: `PLClient.status()` → `Status`.
 R32 0x14  → bits
 ```
 
-Encoding in §5.4. Cleared only by `CLEAR_FAULT` or a new `TIME_EPOCH`.
-Python: `abi.FaultBit`.
+Encoding in §5.4. Cleared only by `CLEAR_FAULT` or a new `TIME_EPOCH`. Python: `abi.FaultBit`.
 
 #### 4.2.3 `FAULT_INFO` — fault information
 
@@ -244,8 +214,7 @@ R32 0x18  → info
 ```
 
 - [3:0]: bit number + 1 of the first fault since the last clear; 0 = none.
-- [31:16]: a count of fault events that is never cleared. Comparing two polls
-  shows whether a new fault happened in between.
+- [31:16]: a count of fault events that is never cleared. Comparing two polls shows whether a new fault happened in between.
 
 #### 4.2.4 `CONTROL.CLEAR_FAULT` — clear faults
 
@@ -253,10 +222,7 @@ R32 0x18  → info
 W32 0x08 0x10
 ```
 
-Clears `FAULT_BITS` and `FAULT_INFO[3:0]`; a TX in FAULT returns to IDLE and
-`TX_RESULT` becomes NONE. A new fault in the same cycle as the clear is kept.
-Read and record `FAULT_BITS`/`FAULT_INFO` before clearing.
-Python: `PLClient.clear_fault()`.
+Clears `FAULT_BITS` and `FAULT_INFO[3:0]`; a TX in FAULT returns to IDLE and `TX_RESULT` becomes NONE. A new fault in the same cycle as the clear is kept. Read and record `FAULT_BITS`/`FAULT_INFO` before clearing. Python: `PLClient.clear_fault()`.
 
 ### 4.3 Time
 
@@ -270,8 +236,7 @@ Python: `PLClient.clear_fault()`.
 R64 0x20  → tick          reading LO latches HI
 ```
 
-Only for scheduling future targets, never for measurements (§2).
-Python: `PLClient.read64(ABI.REG.TICK_LO)`.
+Only for scheduling future targets, never for measurements (§2). Python: `PLClient.read64(ABI.REG.TICK_LO)`.
 
 ### 4.4 PPS
 
@@ -287,10 +252,7 @@ R64 0x28  → pps_tick      reading LO latches PPS_TICK_HI and PPS_COUNT
 R32 0x30  → pps_count     belongs to the same PPS edge as pps_tick above
 ```
 
-`PPS_TICK` is the tick in which the timed edge of the selected PPS signal
-(§4.4.5) reached the pin, with the fixed synchronizer delay removed. To use the
-tick and the count as a pair, read `PPS_TICK_LO` first. Timing semantics in
-§6.3.
+`PPS_TICK` is the tick in which the timed edge of the selected PPS signal (§4.4.5) reached the pin, with the fixed synchronizer delay removed. To use the tick and the count as a pair, read `PPS_TICK_LO` first. Timing semantics in §6.3.
 
 #### 4.4.2 `PPS_LAST_PERIOD` — the latest period
 
@@ -302,8 +264,7 @@ tick and the count as a pair, read `PPS_TICK_LO` first. Timing semantics in
 R32 0x34  → 100000000     normal value
 ```
 
-Ticks between the last two PPS edges. A constant 100000000 shows that the
-fabric clock and the FS725 share their reference.
+Ticks between the last two PPS edges. A constant 100000000 shows that the fabric clock and the FS725 share their reference.
 
 #### 4.4.3 `PPS_JITTER_CNT` — jitter count
 
@@ -311,9 +272,7 @@ fabric clock and the FS725 share their reference.
 | ------- | ------ | ------ | ----- |
 | 0x38    | RO     | u32    | 0     |
 
-Number of periods off by ±1 tick (within tolerance but not 0). P1 checks every
-period in hardware, so this covers periods software did not sample. A steady
-increase means the PPS edge falls close to the clock sampling edge (§6.3).
+Number of periods off by ±1 tick (within tolerance but not 0). P1 checks every period in hardware, so this covers periods software did not sample. A steady increase means the PPS edge falls close to the clock sampling edge (§6.3).
 
 #### 4.4.4 `PPS_INPUTS` — the board's two PPS copies (since 1.1)
 
@@ -332,12 +291,7 @@ R32 0x3C  → inputs
 | 15:8  | `COMP_EDGES` | Rising edges on `IRIG_COMP_OUT`, 8 bits, wraps |
 | 23:16 | `TRIG_EDGES` | Rising edges on `IRIG_TRIG_OUT`, 8 bits, wraps |
 
-Shows without a scope whether the PPS arrives and its polarity: a PPS pulse is
-only 10–30 µs wide, so the level read is almost always the idle level. Idle 0
-means positive pulses; idle 1 means negative pulses (needs `INVERT = 1`). Read
-twice a few seconds apart: the counts advance by one per second; if neither
-moves, the PPS does not reach the board's PPS connector (J7).
-Python: `PLClient.pps_inputs()` → `PPSInputs`.
+Shows without a scope whether the PPS arrives and its polarity: a PPS pulse is only 10–30 µs wide, so the level read is almost always the idle level. Idle 0 means positive pulses; idle 1 means negative pulses (needs `INVERT = 1`). Read twice a few seconds apart: the counts advance by one per second; if neither moves, the PPS does not reach the board's PPS connector (J7). Python: `PLClient.pps_inputs()` → `PPSInputs`.
 
 #### 4.4.5 `PPS_CONFIG` — PPS source and polarity (since 1.1)
 
@@ -355,17 +309,9 @@ R32 0x90  → cfg
 | 0   | `SRC_TRIG` | 0 = `IRIG_COMP_OUT` (AJ13, default), 1 = `IRIG_TRIG_OUT` (AH13) |
 | 1   | `INVERT`   | 1 = time the falling edge of the selected signal |
 
-Board circuit: the PPS SMA (J7) has a 49.9 Ω termination to ground and is
-AC-coupled through 100 Ω and 10 nF to a node biased at 1.65 V, which feeds a
-comparator (LMV7235, about ±0.17 V hysteresis) and a Schmitt trigger
-(SN74AUP1G17). Both copies reach 1.8 V through an NVT2008 (the FPGA's internal
-pull-up is used). A positive FS725 pulse is a rising edge on both copies; use
-the default 0.
+Board circuit: the PPS SMA (J7) has a 49.9 Ω termination to ground and is AC-coupled through 100 Ω and 10 nF to a node biased at 1.65 V, which feeds a comparator (LMV7235, about ±0.17 V hysteresis) and a Schmitt trigger (SN74AUP1G17). Both copies reach 1.8 V through an NVT2008 (the FPGA's internal pull-up is used). A positive FS725 pulse is a rising edge on both copies; use the default 0.
 
-Writing a different value restarts PPS capture in P1: `pps_locked` clears and
-lock returns after one reference edge and 4 correct periods; no fault is
-recorded. Set it only at start-up.
-Python: `PLClient.set_pps_config(source_trig=..., invert=...)`.
+Writing a different value restarts PPS capture in P1: `pps_locked` clears and lock returns after one reference edge and 4 correct periods; no fault is recorded. Set it only at start-up. Python: `PLClient.set_pps_config(source_trig=..., invert=...)`.
 
 ### 4.5 TX (transmit)
 
@@ -380,9 +326,7 @@ W32 0x40 <target[31:0]>
 W32 0x44 <target[63:32]>
 ```
 
-The tick in which the DAC accepts beat 0 (§6.1). At the doorbell,
-`target ≥ tick at that moment + MIN_LEAD_TICKS`, or the command is rejected
-with `REJ_STALE`.
+The tick in which the DAC accepts beat 0 (§6.1). At the doorbell, `target ≥ tick at that moment + MIN_LEAD_TICKS`, or the command is rejected with `REJ_STALE`.
 
 #### 4.5.2 `TX_LENGTH` — burst length (shadow)
 
@@ -394,9 +338,7 @@ with `REJ_STALE`.
 W32 0x48 <beats>          1 … TX_DEPTH
 ```
 
-Sends this many beats in a row, starting from beat 0 of the buffer. 0 or more
-than `TX_DEPTH` is rejected with `REJ_LENGTH`. Repeated playback: `TX_REPEAT`
-(§4.5.9).
+Sends this many beats in a row, starting from beat 0 of the buffer. 0 or more than `TX_DEPTH` is rejected with `REJ_LENGTH`. Repeated playback: `TX_REPEAT` (§4.5.9).
 
 #### 4.5.3 `CONTROL.TX_DOORBELL` — submit a TX command
 
@@ -409,13 +351,7 @@ W32 0x08 0x01
 R32 0x4C  → 0x01 (ARMED)  otherwise see §5.2
 ```
 
-Handled only when the TX state is IDLE or DONE. Checks, in order: `time_valid`
-→ length and repeat count → stale target. The first failing check gives its
-reject code and the state does not change. Only the shadow values at the
-doorbell cycle count; changing the shadows afterwards does not affect an
-accepted command. With a near target, the command may already be RUNNING or
-even DONE when `TX_RESULT` is read (tell by whether `TX_SEQ` advanced).
-Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
+Handled only when the TX state is IDLE or DONE. Checks, in order: `time_valid` → length and repeat count → stale target. The first failing check gives its reject code and the state does not change. Only the shadow values at the doorbell cycle count; changing the shadows afterwards does not affect an accepted command. With a near target, the command may already be RUNNING or even DONE when `TX_RESULT` is read (tell by whether `TX_SEQ` advanced). Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
 
 #### 4.5.4 `CONTROL.TX_CANCEL` — cancel
 
@@ -423,9 +359,7 @@ Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
 W32 0x08 0x02
 ```
 
-Only in ARMED: back to IDLE, `TX_RESULT = CANCELLED`. Once RUNNING, a burst
-cannot be cancelled; it finishes or enters FAULT.
-Python: `PLClient.cancel_tx()`.
+Only in ARMED: back to IDLE, `TX_RESULT = CANCELLED`. Once RUNNING, a burst cannot be cancelled; it finishes or enters FAULT. Python: `PLClient.cancel_tx()`.
 
 #### 4.5.5 `TX_RESULT` — result code
 
@@ -441,8 +375,7 @@ Encoding in §5.2.
 | ------- | ------ | ------ | ----- |
 | 0x50    | RO     | u32    | 0     |
 
-Number of bursts that completed (DONE). Compare it before and after a submit
-to know that a result belongs to that command.
+Number of bursts that completed (DONE). Compare it before and after a submit to know that a result belongs to that command.
 
 #### 4.5.7 `TX_ACTUAL` — actual start time
 
@@ -454,9 +387,7 @@ to know that a result belongs to that command.
 R64 0x54  → actual        read only after tx_state = DONE
 ```
 
-The tick in which the DAC accepted beat 0. Normally equal to the target;
-software checks it.
-Python: `PLClient.tx_actual()`.
+The tick in which the DAC accepted beat 0. Normally equal to the target; software checks it. Python: `PLClient.tx_actual()`.
 
 #### 4.5.8 TX waveform buffer (memory)
 
@@ -470,20 +401,10 @@ W32 base+i*32+0  <beat i, bytes 0..3>
 W32 base+i*32+28 <beat i, bytes 28..31>
 ```
 
-- The buffer is in UltraRAM, in 17 banks of 4096 beats; capacity `TX_DEPTH` =
-  69632 beats. The address window is 4 MiB (2^17 beats); writes at or above
-  `TX_DEPTH` are dropped and reads there are meaningless.
-- The PL passes each beat unchanged to the RFDC DAC. The DAC reads **I and Q
-  interleaved per word**: sample n (n = 0…7, earliest first) is 32-bit word n,
-  `I = [32n+15:32n]`, `Q = [32n+31:32n+16]` (`TX_LAYOUT`). Evidence: the M3
-  lane check (2026-10-14, §13); with planar packing the impulse delay of lane
-  k became D − ⌈k/2⌉, which is exactly what interleaved reading gives. The
-  impulses were on I only, so which of the two 16-bit halves is I and which is
-  Q is not verified separately (no effect on real BPSK signals).
-- Write a waveform once while it does not change; each burst then only needs a
-  TX command.
-- **Do not** write the buffer while TX is ARMED or RUNNING; TX would enter
-  FAULT with `FAULT_BUF_WRITE`.
+- The buffer is in UltraRAM, in 17 banks of 4096 beats; capacity `TX_DEPTH` = 69632 beats. The address window is 4 MiB (2^17 beats); writes at or above `TX_DEPTH` are dropped and reads there are meaningless.
+- The PL passes each beat unchanged to the RFDC DAC. The DAC reads **I and Q interleaved per word**: sample n (n = 0…7, earliest first) is 32-bit word n, `I = [32n+15:32n]`, `Q = [32n+31:32n+16]` (`TX_LAYOUT`). Evidence: the M3 lane check (2026-10-14, §13); with planar packing the impulse delay of lane k became D − ⌈k/2⌉, which is exactly what interleaved reading gives. The impulses were on I only, so which of the two 16-bit halves is I and which is Q is not verified separately (no effect on real BPSK signals).
+- Write a waveform once while it does not change; each burst then only needs a TX command.
+- **Do not** write the buffer while TX is ARMED or RUNNING; TX would enter FAULT with `FAULT_BUF_WRITE`.
 - Fabric clock domain: check the clock-status GPIO before writing (§1.2).
 
 Python: `TXBuffer.write_beats(beats)`.
@@ -498,22 +419,11 @@ Python: `TXBuffer.write_beats(beats)`.
 W32 0x5C <passes>         1 … TX_REPEAT_MAX (65535)
 ```
 
-One TX command plays buffer beats 0 … `TX_LENGTH`−1 `TX_REPEAT` times back to
-back: beat 0 of each pass follows the last beat of the previous pass in the
-next cycle, with no gap. `TX_ACTUAL` is the start of the first pass; DONE comes
-after the last pass and `TX_SEQ` advances by one. 0 or more than 65535 is
-rejected with `REJ_LENGTH`. The total is `TX_LENGTH × TX_REPEAT` cycles, at
-most about 45 s; a RUNNING burst cannot be cancelled.
+One TX command plays buffer beats 0 … `TX_LENGTH`−1 `TX_REPEAT` times back to back: beat 0 of each pass follows the last beat of the previous pass in the next cycle, with no gap. `TX_ACTUAL` is the start of the first pass; DONE comes after the last pass and `TX_SEQ` advances by one. 0 or more than 65535 is rejected with `REJ_LENGTH`. The total is `TX_LENGTH × TX_REPEAT` cycles, at most about 45 s; a RUNNING burst cannot be cancelled.
 
-The shadow is taken at the doorbell; if not written, the previous value is
-used. `PLClient.arm_tx` writes it on every command on 1.3 and later bitstreams
-(default 1); on older bitstreams this address does not exist (writes return
-SLVERR), so it is not written and `repeat` other than 1 raises
-`IdentityError`.
+The shadow is taken at the doorbell; if not written, the previous value is used. `PLClient.arm_tx` writes it on every command on 1.3 and later bitstreams (default 1); on older bitstreams this address does not exist (writes return SLVERR), so it is not written and `repeat` other than 1 raises `IdentityError`.
 
-Seamless repetition needs a periodic waveform (`WaveformGenerator(periodic=True)`,
-§11.9): an ordinary burst has an RRC tail at each end and would not join up.
-Python: `PLClient.arm_tx(target, beats, repeat=n)`.
+Seamless repetition needs a periodic waveform (`WaveformGenerator(periodic=True)`, §11.9): an ordinary burst has an RRC tail at each end and would not join up. Python: `PLClient.arm_tx(target, beats, repeat=n)`.
 
 ### 4.6 RX (receive)
 
@@ -528,8 +438,7 @@ Python: `PLClient.arm_tx(target, beats, repeat=n)`.
 | -------------------- | --------- | ---------- | ----- |
 | 0x60 (LO), 0x64 (HI) | RW shadow | u64, ticks | 0     |
 
-Beat 0 of the window is the data on the ADC bus in the cycle where
-`raw_tick == RX_TARGET` (§6.2). Stale targets are rejected as for TX.
+Beat 0 of the window is the data on the ADC bus in the cycle where `raw_tick == RX_TARGET` (§6.2). Stale targets are rejected as for TX.
 
 #### 4.6.2 `RX_LENGTH` — window length (shadow)
 
@@ -550,9 +459,7 @@ W32 0x08 0x04
 R32 0x6C  → 0x01 (ARMED)  0x14 means the S2MM is not ready yet
 ```
 
-Handled only when the RX state is IDLE or DONE. Checks, in order: `time_valid`
-→ length → stale target → DMA ready.
-Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.8).
+Handled only when the RX state is IDLE or DONE. Checks, in order: `time_valid` → length → stale target → DMA ready. Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.8).
 
 #### 4.6.4 `CONTROL.RX_CANCEL` — cancel
 
@@ -560,10 +467,7 @@ Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.
 W32 0x08 0x08
 ```
 
-Only while ARMED and before the window opens: back to IDLE,
-`RX_RESULT = CANCELLED`. An S2MM transfer already started does not end by
-itself; reset the DMA (`PynqS2MMDMA.abort()`).
-Python: `PLClient.cancel_rx()`.
+Only while ARMED and before the window opens: back to IDLE, `RX_RESULT = CANCELLED`. An S2MM transfer already started does not end by itself; reset the DMA (`PynqS2MMDMA.abort()`). Python: `PLClient.cancel_rx()`.
 
 #### 4.6.5 `RX_RESULT` — result code and window flags
 
@@ -571,9 +475,7 @@ Python: `PLClient.cancel_rx()`.
 | ------- | ------ | ------ | ----- |
 | 0x6C    | RO     | [7:0] result code, [11:8] window flags | 0 |
 
-Result codes in §5.2, flags in §5.3. A window is valid only if it ends with
-`DONE`; `RX_INVALID` means this measurement must be discarded.
-Python: `PLClient.rx_result()` → `(ResultCode, RxFlag)`.
+Result codes in §5.2, flags in §5.3. A window is valid only if it ends with `DONE`; `RX_INVALID` means this measurement must be discarded. Python: `PLClient.rx_result()` → `(ResultCode, RxFlag)`.
 
 #### 4.6.6 `RX_SEQ`, `RX_INVALID_CNT` — counters
 
@@ -588,10 +490,7 @@ Python: `PLClient.rx_result()` → `(ResultCode, RxFlag)`.
 | ------- | ------ | ---------- | ----- |
 | 0x74    | RO     | u32, beats | 0     |
 
-Beats of this window sent into the DMA stream, including the tail beat added
-to an invalid window. A valid window has `RX_BEATS = RX_LENGTH`, and the S2MM
-has received exactly `RX_BEATS × 32` bytes.
-Python: `PLClient.rx_beats()`.
+Beats of this window sent into the DMA stream, including the tail beat added to an invalid window. A valid window has `RX_BEATS = RX_LENGTH`, and the S2MM has received exactly `RX_BEATS × 32` bytes. Python: `PLClient.rx_beats()`.
 
 #### 4.6.8 `RX_ACTUAL` — actual window start
 
@@ -599,29 +498,18 @@ Python: `PLClient.rx_beats()`.
 | -------------------- | ------ | ---------- | ----- |
 | 0x78 (LO), 0x7C (HI) | RO     | u64, ticks | 0     |
 
-The tick in which beat 0 of the window was on the ADC bus; read only after
-`rx_state = DONE`; equal to the target.
-Python: `PLClient.rx_actual()`.
+The tick in which beat 0 of the window was on the ADC bus; read only after `rx_state = DONE`; equal to the target. Python: `PLClient.rx_actual()`.
 
 #### 4.6.9 RX sample buffer and AXI DMA S2MM
 
 The sample buffer is in DDR:
 
-- Software allocates a physically contiguous, DMA-accessible buffer (PYNQ
-  `allocate`) of at least `RX_LENGTH × 32` bytes.
-- Beat n is at buffer + n × 32. Within a beat the layout is **planar**: the
-  low 128 bits are 8 I samples and the high 128 bits 8 Q samples, lane 0 (the
-  earliest sample) in the lowest 16 bits of each (`RX_LAYOUT`, formed in the
-  block design by concatenating the I and Q streams). The lane order is
-  confirmed by the M3 lane check; which half is I and which Q is, as in
-  §4.5.8, not verified separately.
-- An invalid window may miss beats and may end with an extra all-zero beat
-  (which carries TLAST); its contents must not be used.
-- DMA writes bypass the CPU cache; invalidate before reading (PYNQ
-  `buffer.invalidate()`).
+- Software allocates a physically contiguous, DMA-accessible buffer (PYNQ `allocate`) of at least `RX_LENGTH × 32` bytes.
+- Beat n is at buffer + n × 32. Within a beat the layout is **planar**: the low 128 bits are 8 I samples and the high 128 bits 8 Q samples, lane 0 (the earliest sample) in the lowest 16 bits of each (`RX_LAYOUT`, formed in the block design by concatenating the I and Q streams). The lane order is confirmed by the M3 lane check; which half is I and which Q is, as in §4.5.8, not verified separately.
+- An invalid window may miss beats and may end with an extra all-zero beat (which carries TLAST); its contents must not be used.
+- DMA writes bypass the CPU cache; invalidate before reading (PYNQ `buffer.invalidate()`).
 
-The DMA is a Xilinx AXI DMA in simple mode; offsets per AMD PG021, address
-space `rx_dma`:
+The DMA is a Xilinx AXI DMA in simple mode; offsets per AMD PG021, address space `rx_dma`:
 
 | Offset | Name          | Use |
 | ------ | ------------- | --- |
@@ -641,14 +529,7 @@ space `rx_dma`:
 R32 0xA002_0000  → 1     fabric MMCM locked; P2 and the TX buffer may be accessed
 ```
 
-A Xilinx AXI GPIO (one input bit) in the `pl_clk0` domain, readable at any
-time. Bit 0 = 1 means PL_CLK is present and the MMCM is locked; it **does not
-mean that the LMK04828 is locked to the FS725**: without its external
-reference the LMK keeps running from the on-board VCXO. The evidence that the
-LMK follows the FS725 is `PPS_LAST_PERIOD` staying at 100000000; the PLL1/PLL2
-LEDs on the board (this project's LMK file makes Status_LD1/2 lock indicators)
-are only a visual hint, and the LMK is not read back over SPI.
-Python: `PLClient.fabric_clock_locked()`, `require_fabric_clock()`.
+A Xilinx AXI GPIO (one input bit) in the `pl_clk0` domain, readable at any time. Bit 0 = 1 means PL_CLK is present and the MMCM is locked; it **does not mean that the LMK04828 is locked to the FS725**: without its external reference the LMK keeps running from the on-board VCXO. The evidence that the LMK follows the FS725 is `PPS_LAST_PERIOD` staying at 100000000; the PLL1/PLL2 LEDs on the board (this project's LMK file makes Status_LD1/2 lock indicators) are only a visual hint, and the LMK is not read back over SPI. Python: `PLClient.fabric_clock_locked()`, `require_fabric_clock()`.
 
 ## 5. Status and error reporting
 
@@ -671,8 +552,7 @@ RX:  IDLE/DONE ─doorbell (accepted)→ ARMED ─target→ RUNNING ─last beat
                                      ARMED ─cancel (before the window)→ IDLE
 ```
 
-TX and RX are independent: both can be ARMED at once, and one `CONTROL` write
-can start both.
+TX and RX are independent: both can be ARMED at once, and one `CONTROL` write can start both.
 
 ### 5.2 Result codes (`TX_RESULT` / `RX_RESULT` [7:0])
 
@@ -693,16 +573,11 @@ can start both.
 | 0x22  | FAULT_TIME        | fault  | TX: `time_valid` dropped while ARMED/RUNNING |
 | 0x30  | RX_INVALID        | result | RX: the window ended with a flag set (§5.3); discard the measurement |
 
-A rejection does not change the state and does not affect the command in
-progress. But a doorbell rejected while ARMED/RUNNING (`REJ_BUSY`) overwrites
-the value shown in `*_RESULT` until the next state change writes a new code.
-So track progress with the state fields of `STATUS`, and judge whether a
-submit was accepted from the `*_RESULT` read right after it.
+A rejection does not change the state and does not affect the command in progress. But a doorbell rejected while ARMED/RUNNING (`REJ_BUSY`) overwrites the value shown in `*_RESULT` until the next state change writes a new code. So track progress with the state fields of `STATUS`, and judge whether a submit was accepted from the `*_RESULT` read right after it.
 
 ### 5.3 RX window flags (`RX_RESULT[11:8]`)
 
-Any flag set makes the window `RX_INVALID`; only that measurement is lost and
-the system keeps running.
+Any flag set makes the window `RX_INVALID`; only that measurement is lost and the system keeps running.
 
 | Bit | Name      | Meaning |
 | --- | --------- | ------- |
@@ -724,10 +599,7 @@ the system keeps running.
 
 ### 6.1 TX
 
-The DAC AXIS accepts beat 0 in the cycle where `raw_tick == TX_TARGET`, then
-one beat per cycle with no gap (also between passes when `TX_REPEAT` > 1);
-outside a burst the DAC input is 0. Sample n of the burst (with repetition, n
-counts on from the first pass):
+The DAC AXIS accepts beat 0 in the cycle where `raw_tick == TX_TARGET`, then one beat per cycle with no gap (also between passes when `TX_REPEAT` > 1); outside a burst the DAC input is 0. Sample n of the burst (with repetition, n counts on from the first pass):
 
 ```text
 t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
@@ -735,29 +607,17 @@ t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
 
 ### 6.2 RX
 
-Beat 0 of the window is the data on the ADC AXIS in the cycle where
-`raw_tick == RX_TARGET`; the window covers `RX_LENGTH` consecutive cycles.
-Sample n of the window:
+Beat 0 of the window is the data on the ADC AXIS in the cycle where `raw_tick == RX_TARGET`; the window covers `RX_LENGTH` consecutive cycles. Sample n of the window:
 
 ```text
 t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
 ```
 
-Both are **times at the RFDC digital interfaces**. The delays of the DAC/ADC
-internal data paths are fixed by MTS (§7.1 step 7); cables, amplifiers and
-antennas are not included and are calibrated as in section 8 of the plan.
-Without a loopback cable, the crosstalk from DAC tile 2 to ADC tile 2 on the
-board gives about 226.0 samples (282.5 ns, 2026-10-14) between the two
-digital interfaces. That is the value with the MTS target latencies fixed
-(§7.1 step 7), the same on run4 and run6; without fixed targets it changes
-with the bitstream (212.07, 214.08).
+Both are **times at the RFDC digital interfaces**. The delays of the DAC/ADC internal data paths are fixed by MTS (§7.1 step 7); cables, amplifiers and antennas are not included and are calibrated as in section 8 of the plan. Without a loopback cable, the crosstalk from DAC tile 2 to ADC tile 2 on the board gives about 226.0 samples (282.5 ns, 2026-10-14) between the two digital interfaces. That is the value with the MTS target latencies fixed (§7.1 step 7), the same on run4 and run6; without fixed targets it changes with the bitstream (212.07, 214.08).
 
 ### 6.3 PPS
 
-`PPS_TICK` is quantized to 10 ns. `PPS_LAST_PERIOD` staying at 100000000 shows
-that the fabric clock and the FS725 share their reference; when the LMK runs
-from the on-board VCXO, a second is off by tens to hundreds of ticks and PPS
-does not lock. P1 decides:
+`PPS_TICK` is quantized to 10 ns. `PPS_LAST_PERIOD` staying at 100000000 shows that the fabric clock and the FS725 share their reference; when the LMK runs from the on-board VCXO, a second is off by tens to hundreds of ticks and PPS does not lock. P1 decides:
 
 | Period minus 100000000              | Action |
 | ----------------------------------- | ------ |
@@ -765,15 +625,11 @@ does not lock. P1 decides:
 | ±1                                  | counted in `PPS_JITTER_CNT`; lock kept |
 | larger, or no PPS for over a period | `FAULT_BITS.PPS`; `pps_locked` cleared |
 
-A steadily increasing `PPS_JITTER_CNT` means the PPS edge sits on the sampling
-edge, and the PL input delay needs adjusting. The sub-tick phase of the PPS
-edge relative to the tick is calibrated after each power-up.
+A steadily increasing `PPS_JITTER_CNT` means the PPS edge sits on the sampling edge, and the PL input delay needs adjusting. The sub-tick phase of the PPS edge relative to the tick is calibrated after each power-up.
 
 ### 6.4 Epoch
 
-A change of `TIME_EPOCH` means the clocks lost lock and locked again. raw_tick
-is not cleared, but timestamps and measurements before and after the change
-are not comparable; data spanning epochs is discarded.
+A change of `TIME_EPOCH` means the clocks lost lock and locked again. raw_tick is not cleared, but timestamps and measurements before and after the change are not comparable; data spanning epochs is discarded.
 
 ## 7. Programming sequences
 
@@ -781,14 +637,9 @@ are not comparable; data spanning epochs is discarded.
 
 The order matters:
 
-- At boot PYNQ loads its base overlay, part of which also runs on LMK clocks.
-  Replace it with this design first, then change the clocks (seen on the
-  board: changing the clocks first once hung the whole system).
-- When the clocks change, the fabric MMCM input changes; reset it with
-  `pl_resetn0` so that it locks again (seen on the board: without the reset
-  the MMCM may not lock after the first load).
-- RFDC tile start-up needs the LMX references running; P2 and the TX buffer
-  need the fabric clock running.
+- At boot PYNQ loads its base overlay, part of which also runs on LMK clocks. Replace it with this design first, then change the clocks (seen on the board: changing the clocks first once hung the whole system).
+- When the clocks change, the fabric MMCM input changes; reset it with `pl_resetn0` so that it locks again (seen on the board: without the reset the MMCM may not lock after the first load).
+- RFDC tile start-up needs the LMX references running; P2 and the TX buffer need the fabric clock running.
 
 ```text
 Overlay
@@ -854,10 +705,7 @@ PL
 
 ### 7.4 Monitoring during operation
 
-In each measurement cycle check that bit 0 of the clock-status GPIO is still 1,
-`TIME_EPOCH` has not changed and `STATUS.pps_locked` is still 1 (when the LMK
-loses the FS725 reference, the PPS period drifts out of tolerance). If any of
-them fails, discard the measurements of that interval.
+In each measurement cycle check that bit 0 of the clock-status GPIO is still 1, `TIME_EPOCH` has not changed and `STATUS.pps_locked` is still 1 (when the LMK loses the FS725 reference, the PPS period drifts out of tolerance). If any of them fails, discard the measurements of that interval.
 
 ## 8. Register summary
 
@@ -916,14 +764,9 @@ Offsets from the P2 base.
 
 ### 9.1 Board environment
 
-The board has no internet access. PYNQ's own environment
-`/usr/local/share/pynq-venv` (Python 3.10, pynq 3.1.1, numpy 1.21.5) is left
-untouched; the project uses a separate venv that sees PYNQ's packages read-only
-through a `.pth` file, so packages are found in the order venv → PYNQ
-environment → system, the same order PYNQ itself uses.
+The board has no internet access. PYNQ's own environment `/usr/local/share/pynq-venv` (Python 3.10, pynq 3.1.1, numpy 1.21.5) is left untouched; the project uses a separate venv that sees PYNQ's packages read-only through a `.pth` file, so packages are found in the order venv → PYNQ environment → system, the same order PYNQ itself uses.
 
-Create the environment (on the board, in the project directory, with
-`~/.local/bin/uv`):
+Create the environment (on the board, in the project directory, with `~/.local/bin/uv`):
 
 ```bash
 uv venv --offline --python /usr/bin/python3.10 --system-site-packages .venv
@@ -938,27 +781,13 @@ Install rf-clock, one of:
 
 Notes:
 
-- Use `--no-deps`: numpy comes from PYNQ (1.21.5, as in `pyproject.toml`) and
-  must not be installed a second time into the venv; the board is offline as
-  well. Do not run `uv sync` on the board either: it syncs the whole
-  environment to the lock file.
-- An editable install records the version at install time; reinstall after
-  changing `pyproject.toml` (§14.1).
-- The clock register files are inside the package (`rf_clock/clocks/files/`);
-  `PL.open()` hands them to xrfclk, so nothing is copied into xrfclk's
-  directory.
-- The `BOARD` variable (`RFSoC4x2`) is set by `/etc/profile.d/boardname.sh`, in
-  login shells only, and `xrfclk` reads it at import. `/dev/mem`, bitstream
-  download and the SPI clock chips need root, and `sudo` clears the
-  environment, hence `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`.
-- Jupyter (PYNQ's, running as root):
-  `sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`.
+- Use `--no-deps`: numpy comes from PYNQ (1.21.5, as in `pyproject.toml`) and must not be installed a second time into the venv; the board is offline as well. Do not run `uv sync` on the board either: it syncs the whole environment to the lock file.
+- An editable install records the version at install time; reinstall after changing `pyproject.toml` (§14.1).
+- The clock register files are inside the package (`rf_clock/clocks/files/`); `PL.open()` hands them to xrfclk, so nothing is copied into xrfclk's directory.
+- The `BOARD` variable (`RFSoC4x2`) is set by `/etc/profile.d/boardname.sh`, in login shells only, and `xrfclk` reads it at import. `/dev/mem`, bitstream download and the SPI clock chips need root, and `sudo` clears the environment, hence `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`.
+- Jupyter (PYNQ's, running as root): `sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`.
 - After a PYNQ image upgrade the `.pth` follows the new environment.
-- Remote recovery: an access to the fabric domain while its clock is not
-  running hangs the AXI bus and the board stops answering ping. Reset it from
-  the machine at the other end of the JTAG cable:
-  `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`;
-  ssh is back after about 40 s, with PYNQ's base overlay in the PL.
+- Remote recovery: an access to the fabric domain while its clock is not running hangs the AXI bus and the board stops answering ping. Reset it from the machine at the other end of the JTAG cable: `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`; ssh is back after about 40 s, with PYNQ's base overlay in the PL.
 
 Modules:
 
@@ -981,9 +810,7 @@ Modules:
 
 ## 10. Quick start
 
-On the board: power up, send one burst after a PPS, capture a window from the
-same tick (`python -m rf_clock.examples.pl.03_pynq_bringup`, run on the board
-2026-10-14).
+On the board: power up, send one burst after a PPS, capture a window from the same tick (`python -m rf_clock.examples.pl.03_pynq_bringup`, run on the board 2026-10-14).
 
 ```python
 from rf_clock.pl import PL, WaveformGenerator
@@ -1005,10 +832,7 @@ window = pl.ctrl.wait_rx(timeout=2.5)          # RX_ACTUAL (checked), RX_BEATS, 
 x = pl.rx_dma.wait(window.beats).samples       # complex64, 800 MS/s, from window.actual
 ```
 
-Commands, timestamps and status are all in `pl.ctrl`; `tx_buffer` and `rx_dma`
-only handle the data paths (writing the waveform, setting up the DMA). The
-order of the two waits does not affect the data: once the window opens, the
-hardware moves it P4 → FIFO → DMA → DDR.
+Commands, timestamps and status are all in `pl.ctrl`; `tx_buffer` and `rx_dma` only handle the data paths (writing the waveform, setting up the DMA). The order of the two waits does not affect the data: once the window opens, the hardware moves it P4 → FIFO → DMA → DDR.
 
 On a development machine: check the protocol logic against fake registers.
 
@@ -1027,8 +851,7 @@ client.validate()
 
 ### 11.1 `rf_clock.pl.PL` (power-up and hardware blocks)
 
-`PL.open()` powers up; the object it returns only holds the hardware blocks,
-one per address space of §1.1, and work is done through each block's methods:
+`PL.open()` powers up; the object it returns only holds the hardware blocks, one per address space of §1.1, and work is done through each block's methods:
 
 | Attribute    | Type                 | Hardware |
 | ------------ | -------------------- | -------- |
@@ -1042,11 +865,7 @@ one per address space of §1.1, and work is done through each block's methods:
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, progress=None)`
 
-Runs every power-up step of §7.1. The fixed hardware choices are defaults: the
-packaged overlay `rf_clock/overlay/rf_clock.bit` (§14.1); the clock files
-`LMK04828_100.0.txt` and `LMX2594_480.0.txt` from `rf_clock/clocks/files/`,
-written through xrfclk (no copies in xrfclk's directory needed); `pl_resetn0`;
-RFDC tiles 0 and 2 started and synchronized.
+Runs every power-up step of §7.1. The fixed hardware choices are defaults: the packaged overlay `rf_clock/overlay/rf_clock.bit` (§14.1); the clock files `LMK04828_100.0.txt` and `LMX2594_480.0.txt` from `rf_clock/clocks/files/`, written through xrfclk (no copies in xrfclk's directory needed); `pl_resetn0`; RFDC tiles 0 and 2 started and synchronized.
 
 | Parameter                         | Use |
 | --------------------------------- | --- |
@@ -1057,16 +876,11 @@ RFDC tiles 0 and 2 started and synchronized.
 | `check_version=False`             | skip the manifest and `BUILD_VERSION` checks of §14.1 (bitstreams before 1.2) |
 | `progress`                        | called with one line per step, for example `print` |
 
-On failure the original exception (`BringupError`, `RFDCError`,
-`VersionMismatch`, ...) propagates, carrying `.overlay` and, once MTS ran,
-`.mts`. On a development machine, `PL(ctrl=..., tx_buffer=..., ...)` builds one
-from fakes.
+On failure the original exception (`BringupError`, `RFDCError`, `VersionMismatch`, ...) propagates, carrying `.overlay` and, once MTS ran, `.mts`. On a development machine, `PL(ctrl=..., tx_buffer=..., ...)` builds one from fakes.
 
 ### 11.2 `rf_clock.pl.abi`
 
-Generated by `python tools/generate_abi.py --write` from `p_regs.vh` and
-`p_defs.vh`; never edit it by hand. `--check` reports whether it is stale
-(`tests/test_abi_sync.py`).
+Generated by `python tools/generate_abi.py --write` from `p_regs.vh` and `p_defs.vh`; never edit it by hand. `--check` reports whether it is stale (`tests/test_abi_sync.py`).
 
 | Name                         | Content |
 | ---------------------------- | ------- |
@@ -1092,9 +906,7 @@ Generated by `python tools/generate_abi.py --write` from `p_regs.vh` and
 
 #### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=1)`
 
-The only entry to the P2 register protocol. The constructor touches no
-register. **Every P2 access first reads the clock-status GPIO** and raises
-`ClockUnavailable` if the clock is not locked, so the bus never hangs.
+The only entry to the P2 register protocol. The constructor touches no register. **Every P2 access first reads the clock-status GPIO** and raises `ClockUnavailable` if the clock is not locked, so the bus never hangs.
 
 | Method | Protocol | Returns / raises |
 | ------ | -------- | ---------------- |
@@ -1122,11 +934,7 @@ register. **Every P2 access first reads the clock-status GPIO** and raises
 | `set_pps_config(*, source_trig=False, invert=False)` | W32 `PPS_CONFIG` | same |
 | `build_version()` | R32 `BUILD_VERSION` | `"A.B.C.D"`; `IdentityError` if ABI minor < 2 |
 
-How `arm_tx`/`arm_rx` decide that a command was accepted: ARMED or RUNNING read
-after the submit means accepted; DONE (and for RX also RX_INVALID) counts only
-if `*_SEQ` advanced since before the submit, so the previous command's result
-is never taken for this one. If an epoch was recorded, it is checked before
-the submit.
+How `arm_tx`/`arm_rx` decide that a command was accepted: ARMED or RUNNING read after the submit means accepted; DONE (and for RX also RX_INVALID) counts only if `*_SEQ` advanced since before the submit, so the previous command's result is never taken for this one. If an epoch was recorded, it is checked before the submit.
 
 Data classes:
 
@@ -1175,25 +983,15 @@ Helpers:
 
 ### 11.6 `rf_clock.pl.rfdc`
 
-PYNQ 3.1.1's `xrfdc` does not wrap MTS. This module calls `libxrfdc.so`
-directly through cffi, with declarations from `xrfdc_mts.h` of embeddedsw
-`xilinx-v2020.2`; they must match that version (later versions of
-`XRFdc_MultiConverter_Init` take one more argument).
+PYNQ 3.1.1's `xrfdc` does not wrap MTS. This module calls `libxrfdc.so` directly through cffi, with declarations from `xrfdc_mts.h` of embeddedsw `xilinx-v2020.2`; they must match that version (later versions of `XRFdc_MultiConverter_Init` take one more argument).
 
 #### `setup_rfdc_and_mts(overlay, *, rfdc_name="rfdc", tiles=(0, 2), signal_tile=2, ref_tile=0, dac_target_latency=-1, adc_target_latency=-1)`
 
-Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC,
-and reads back the mixer settings of the signal tile. Usable directly as the
-`rfdc_setup` of `Bringup`.
+Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC, and reads back the mixer settings of the signal tile. Usable directly as the `rfdc_setup` of `Bringup`.
 
 - Returns `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`.
-- Raises `RFDCError` if either MTS status is not OK; its `.result` still holds
-  the result, so the latencies can be logged.
-- `*_target_latency = -1` aligns to the largest measured latency, which
-  changes with the bitstream; `PL.open()` passes the fixed
-  `board.DAC_TARGET_LATENCY` = 1896 and `board.ADC_TARGET_LATENCY` = 1296. A
-  target below a tile's measured latency makes MTS report `TARGET_LOW`; then
-  raise the target and recalibrate the loopback delay.
+- Raises `RFDCError` if either MTS status is not OK; its `.result` still holds the result, so the latencies can be logged.
+- `*_target_latency = -1` aligns to the largest measured latency, which changes with the bitstream; `PL.open()` passes the fixed `board.DAC_TARGET_LATENCY` = 1896 and `board.ADC_TARGET_LATENCY` = 1296. A target below a tile's measured latency makes MTS report `TARGET_LOW`; then raise the target and recalibrate the loopback delay.
 
 | Other functions | Description |
 | --------------- | ----------- |
@@ -1203,17 +1001,9 @@ and reads back the mixer settings of the signal tile. Usable directly as the
 | `rfdc_driver(overlay, name="rfdc")` | the `xrfdc.RFdc` driver; built from the HWH if `xrfdc` was not imported before the overlay loaded |
 | `decode_mts_status(status)` | splits an MTS status into names, for example `["TARGET_LOW"]` |
 
-`MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`,
-`latency` (tiles 0–3), `offset` (tiles 0–3); `describe()` gives one line. `ok`
-requires status 0 and every tile on the target (`on_target`): the driver adds
-delay in whole steps (6 for both DAC and ADC), so a target that is not a whole
-number of steps away would miss without an error.
+`MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`, `latency` (tiles 0–3), `offset` (tiles 0–3); `describe()` gives one line. `ok` requires status 0 and every tile on the target (`on_target`): the driver adds delay in whole steps (6 for both DAC and ADC), so a target that is not a whole number of steps away would miss without an error.
 
-Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have
-latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts
-of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback
-delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within
-the standard deviation (0.13–0.16 samples).
+Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within the standard deviation (0.13–0.16 samples).
 
 ### 11.7 `rf_clock.pl.txbuf`
 
@@ -1226,11 +1016,7 @@ the standard deviation (0.13–0.16 samples).
 | `write_beats(beats)` | writes from beat 0 and returns the number of beats; one block copy (appendix A.2), with one check of the TX state and the clock GPIO for the whole load |
 | `write_beat(index, beat)` | writes one beat |
 
-A beat is an int below 2^256 or 32 bytes. Beyond `TX_DEPTH`, or while TX is
-ARMED/RUNNING, `TXBufferError` is raised and nothing is written (so
-`FAULT_BUF_WRITE` cannot happen). Loading the default 4106-beat waveform takes
-about 17 ms (about 0.5 ms of it the copy); word by word it would take
-0.3–0.5 s.
+A beat is an int below 2^256 or 32 bytes. Beyond `TX_DEPTH`, or while TX is ARMED/RUNNING, `TXBufferError` is raised and nothing is written (so `FAULT_BUF_WRITE` cannot happen). Loading the default 4106-beat waveform takes about 17 ms (about 0.5 ms of it the copy); word by word it would take 0.3–0.5 s.
 
 ### 11.8 `rf_clock.pl.rxdma`
 
@@ -1240,8 +1026,7 @@ about 17 ms (about 0.5 ms of it the copy); word by word it would take
 
 #### `RXDMA(dma, *, buffer_factory=None)`
 
-`pl.rx_dma`: the S2MM side of an RX window. Commands and window checks are in
-`pl.ctrl` (§11.4); one window, following §7.3:
+`pl.rx_dma`: the S2MM side of an RX window. Commands and window checks are in `pl.ctrl` (§11.4); one window, following §7.3:
 
 ```python
 pl.rx_dma.prepare(n)                     # 1. S2MM: buffer address and length
@@ -1257,36 +1042,21 @@ x = data.samples                         # complex64, from window.actual
 | `wait(beats, *, timeout=1.0)` | `beats` from `RXWindow.beats`; returns `RXData(buffer, beats, received_bytes)` |
 | `abort()` | drops a started transfer |
 
-`RXData.samples` decodes the window with `RX_LAYOUT` into complex64 on first
-access. The next window reuses the buffer, so take the `samples` before the
-next `prepare`.
+`RXData.samples` decodes the window with `RX_LAYOUT` into complex64 on first access. The next window reuses the buffer, so take the `samples` before the next `prepare`.
 
-`prepare` comes before the RX doorbell: the PL rejects the doorbell (0x14)
-while the S2MM is not ready. If the doorbell is rejected or the window
-cancelled, the started transfer never sees TLAST; the next `prepare` finds the
-channel busy and resets the DMA first, or call `abort()` at once. An invalid
-window (`RXWindowInvalid`) still ends the DMA normally (P4 reports DONE only
-after the DMA took TLAST), so nothing needs doing.
+`prepare` comes before the RX doorbell: the PL rejects the doorbell (0x14) while the S2MM is not ready. If the doorbell is rejected or the window cancelled, the started transfer never sees TLAST; the next `prepare` finds the channel busy and resets the DMA first, or call `abort()` at once. An invalid window (`RXWindowInvalid`) still ends the DMA normally (P4 reports DONE only after the DMA took TLAST), so nothing needs doing.
 
 | Exception    | When |
 | ------------ | ---- |
 | `RXDMAError` | DMA bytes ≠ `RX_BEATS × 32`; `wait` without `prepare` |
 
-`PynqS2MMDMA(dma, *, length_reader=None)` adapts a PYNQ `DMA` object to the
-`prepare`/`wait`/`abort`/`received_bytes` that `RXDMA` needs. `prepare` starts
-a transfer of exactly the window's bytes, so one large buffer can serve shorter
-windows. `abort()` clears a transfer that will never end with the soft-reset
-bit of `S2MM_DMACR`. `pynq_rx_dma(overlay, name="rx_dma")` returns the board
-adapter, building the driver from the HWH if `pynq.lib.dma` was not imported
-before the overlay loaded.
+`PynqS2MMDMA(dma, *, length_reader=None)` adapts a PYNQ `DMA` object to the `prepare`/`wait`/`abort`/`received_bytes` that `RXDMA` needs. `prepare` starts a transfer of exactly the window's bytes, so one large buffer can serve shorter windows. `abort()` clears a transfer that will never end with the soft-reset bit of `S2MM_DMACR`. `pynq_rx_dma(overlay, name="rx_dma")` returns the board adapter, building the driver from the HWH if `pynq.lib.dma` was not imported before the overlay loaded.
 
 ### 11.9 `rf_clock.pl.waveform`
 
 #### `WaveformGenerator(amplitude=512, chip_count=4096, lfsr_seed=0xACE1, periodic=False, beta=0.25, span_chips=10, samples_per_symbol=8)`
 
-Generates the BPSK PRN waveform on the ARM (Q = 0). The RRC coefficients are
-computed from `beta`, `span_chips` and `samples_per_symbol` (`rrc_config()`,
-about 2 ms on the board); no data file is stored.
+Generates the BPSK PRN waveform on the ARM (Q = 0). The RRC coefficients are computed from `beta`, `span_chips` and `samples_per_symbol` (`rrc_config()`, about 2 ms on the board); no data file is stored.
 
 | Member | Description |
 | ------ | ----------- |
@@ -1296,24 +1066,11 @@ about 2 ms on the board); no data file is stored.
 | `chips(count=None, seed=None)` | PRN chips |
 | `tap_count`, `tail_samples`, `expected_sample_count`, `config_id` | derived values |
 
-Defaults: β = 0.25, a span of 10 chips, 8 samples per chip (81 taps), 4096
-chips, 32841 samples, 4106 beats (about 41 µs). `config_id` is a hash of the
-RRC parameters (2134958710 for the defaults), recorded with each measurement so
-that both ends can confirm they use the same filter; `tests/test_waveform.py`
-holds golden coefficients against implementation drift.
-`rrc_config(beta, span_chips, samples_per_symbol)` returns
-`(config dict, coefficient list)`.
+Defaults: β = 0.25, a span of 10 chips, 8 samples per chip (81 taps), 4096 chips, 32841 samples, 4106 beats (about 41 µs). `config_id` is a hash of the RRC parameters (2134958710 for the defaults), recorded with each measurement so that both ends can confirm they use the same filter; `tests/test_waveform.py` holds golden coefficients against implementation drift. `rrc_config(beta, span_chips, samples_per_symbol)` returns `(config dict, coefficient list)`.
 
-On the board `generate_beats()` takes about 50 ms for 4096 chips and about
-0.7 s for 65535 chips, mostly computing the samples; the packing works on the
-whole array at once.
+On the board `generate_beats()` takes about 50 ms for 4096 chips and about 0.7 s for 65535 chips, mostly computing the samples; the packing works on the whole array at once.
 
-`periodic=True` gives one period of the chip sequence repeated forever: the
-RRC tail wraps onto the start (circular convolution,
-`simulate_periodic_convolution`), exactly `chip_count × 8` samples =
-`chip_count` beats, with no tails. Played with `arm_tx(..., repeat=n)` it gives
-one continuous signal; one period of a 65535-chip m-sequence is 65535 beats and
-fits.
+`periodic=True` gives one period of the chip sequence repeated forever: the RRC tail wraps onto the start (circular convolution, `simulate_periodic_convolution`), exactly `chip_count × 8` samples = `chip_count` beats, with no tails. Played with `arm_tx(..., repeat=n)` it gives one continuous signal; one period of a 65535-chip m-sequence is 65535 beats and fits.
 
 ```python
 gen = WaveformGenerator(chip_count=65535, periodic=True)
@@ -1336,8 +1093,7 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 passes back to back, 6.55 ms
 
 ### 11.11 `rf_clock.correlator`
 
-Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy,
-independent of the board.
+Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy, independent of the board.
 
 | Function | Description |
 | -------- | ----------- |
@@ -1345,10 +1101,7 @@ independent of the board.
 | `find_peak(corr, *, guard=16)` | the largest magnitude, refined by a three-point parabola to a fractional position; `guard` samples on each side count as the main lobe, the largest value outside is the sidelobe |
 | `estimate_delay(rx, ref, *, guard=16)` | both steps; returns `Peak` |
 
-`Peak` fields: `index` (fractional samples; where the reference starts in rx),
-`integer_index`, `magnitude`, `peak_to_sidelobe` (and `peak_to_sidelobe_db`),
-`phase`. For the default RRC waveform the parabolic bias stays below 0.002
-samples over the whole fractional range (noise-free simulation).
+`Peak` fields: `index` (fractional samples; where the reference starts in rx), `integer_index`, `magnitude`, `peak_to_sidelobe` (and `peak_to_sidelobe_db`), `phase`. For the default RRC waveform the parabolic bias stays below 0.002 samples over the whole fractional range (noise-free simulation).
 
 ## 12. Exceptions and result codes
 
@@ -1377,11 +1130,7 @@ samples over the whole fractional range (noise-free simulation).
 
 ## 13. Board checks (`rf_clock.checks`)
 
-Installed with the package; run on the board as root:
-`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<module> ...`;
-`--help` lists every option. Records are appended to `m2_runs.jsonl` and
-`m3_runs.jsonl` in the current directory. If the board hangs, reset it remotely
-with `tools/jtag_reset_board.tcl` (§9.1).
+Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<module> ...`; `--help` lists every option. Records are appended to `m2_runs.jsonl` and `m3_runs.jsonl` in the current directory. If the board hangs, reset it remotely with `tools/jtag_reset_board.tcl` (§9.1).
 
 | Module         | Milestone | Usage |
 | -------------- | --------- | ----- |
@@ -1389,18 +1138,9 @@ with `tools/jtag_reset_board.tcl` (§9.1).
 | `m2_tx_timing` | M2: MTS and timed TX | `[bursts] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`; one burst after every PPS; the MTS latencies of each run go to `m2_runs.jsonl` |
 | `m3_loopback`  | M3: loopback, RX, correlation | `[captures]` measures the loopback delay; `--lane-check` locates single-lane impulses to verify the beat layout; `--stress [--stress-beats N]` tests long windows under DDR load; results go to `m3_runs.jsonl` |
 
-All three take `--bitstream PATH` (default: the packaged overlay),
-`--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks
-when they were written since boot), `--pps-trig` and `--pps-invert`.
+All three take `--bitstream PATH` (default: the packaged overlay), `--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks when they were written since boot), `--pps-trig` and `--pps-invert`.
 
-For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`:
-the DAC is switched to IMR low-pass in Nyquist zone 1 for the run;
-`--scope-nco 100` moves the output to 100 MHz and `--scope-nco 0` bypasses the
-mixer so the DAC outputs the I samples; the settings are restored at the end.
-To measure PPS → burst start, use `--scope-nco 0 --waveform square
---offset-ticks 0`: the first edge of the square wave does not depend on any
-NCO phase (180.00 ns on 2026-10-14, unchanged over five restarts; DAC_A is
-inverted relative to I, so the first edge falls).
+For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: the DAC is switched to IMR low-pass in Nyquist zone 1 for the run; `--scope-nco 100` moves the output to 100 MHz and `--scope-nco 0` bypasses the mixer so the DAC outputs the I samples; the settings are restored at the end. To measure PPS → burst start, use `--scope-nco 0 --waveform square --offset-ticks 0`: the first edge of the square wave does not depend on any NCO phase (180.00 ns on 2026-10-14, unchanged over five restarts; DAC_A is inverted relative to I, so the first edge falls).
 
 ---
 
@@ -1408,12 +1148,9 @@ inverted relative to I, so the first edge falls).
 
 ## 14. Version rules
 
-- `VERSION` minor + 1: registers or bits added only; existing offsets and
-  meanings unchanged, so older software still works.
-- `VERSION` major + 1: any change to existing offsets, bit fields, encodings or
-  timing semantics.
-- Software checks the major at start-up and refuses to run on a mismatch;
-  calls that use a 1.x addition check the minor.
+- `VERSION` minor + 1: registers or bits added only; existing offsets and meanings unchanged, so older software still works.
+- `VERSION` major + 1: any change to existing offsets, bit fields, encodings or timing semantics.
+- Software checks the major at start-up and refuses to run on a mismatch; calls that use a 1.x addition check the minor.
 
 | Version | Change |
 | ------- | ------ |
@@ -1424,8 +1161,7 @@ inverted relative to I, so the first edge falls).
 
 ### 14.1 Package and overlay
 
-The overlay ships with the Python package in `src/rf_clock/overlay/`, copied
-from a build directory by `tools/package_overlay.py`:
+The overlay ships with the Python package in `src/rf_clock/overlay/`, copied from a build directory by `tools/package_overlay.py`:
 
 | File | Content |
 | ---- | ------- |
@@ -1433,12 +1169,9 @@ from a build directory by `tools/package_overlay.py`:
 | `rf_clock_hw.xsa` | the hardware platform for Vitis/PetaLinux (includes the bitstream). Not named `rf_clock.xsa`: with an `.xsa` of the same name next to the `.bit`, PYNQ 3.1 takes its XSA branch and fails to load the `.bit` |
 | `manifest.json` | `build_version`, the build directory, `build_status` (status.txt, with WNS/WHS), and the sha256 of the three files |
 
-The three binaries are stored with Git LFS (`.gitattributes`). After cloning,
-run `git lfs install` and `git lfs pull`; otherwise they are pointer files,
-which the sha256 check of `PL.open()` refuses.
+The three binaries are stored with Git LFS (`.gitattributes`). After cloning, run `git lfs install` and `git lfs pull`; otherwise they are pointer files, which the sha256 check of `PL.open()` refuses.
 
-The rf-clock version has four fields, `A.B.C.D` (PEP 440 allows any number),
-edited by hand in `pyproject.toml`:
+The rf-clock version has four fields, `A.B.C.D` (PEP 440 allows any number), edited by hand in `pyproject.toml`:
 
 | Field | Meaning | Incremented when |
 | ----- | ------- | ---------------- |
@@ -1446,24 +1179,16 @@ edited by hand in `pyproject.toml`:
 | C     | which bitstream for this protocol | a new bitstream with the same registers; reset D |
 | D     | Python-only changes | no rebuild |
 
-Change the version before building; the build script writes it into
-`BUILD_VERSION`. If A.B differs from `P_VERSION` the build script fails, and
-`tests/test_abi_sync.py` checks it too.
+Change the version before building; the build script writes it into `BUILD_VERSION`. If A.B differs from `P_VERSION` the build script fails, and `tests/test_abi_sync.py` checks it too.
 
-`PL.open()` checks twice and raises `VersionMismatch` on a mismatch
-(`check_version=False` turns this off):
+`PL.open()` checks twice and raises `VersionMismatch` on a mismatch (`check_version=False` turns this off):
 
-1. Before loading: if a `manifest.json` sits next to the bitstream, its
-   `build_version` must have the A.B.C of `importlib.metadata.version("rf-clock")`,
-   and the sha256 of the `.bit` and `.hwh` must match the manifest. Loading
-   straight from a build directory (no manifest) skips this.
+1. Before loading: if a `manifest.json` sits next to the bitstream, its `build_version` must have the A.B.C of `importlib.metadata.version("rf-clock")`, and the sha256 of the `.bit` and `.hwh` must match the manifest. Loading straight from a build directory (no manifest) skips this.
 2. After loading: `BUILD_VERSION` has the A.B.C of the installed rf-clock.
 
 Only D may differ: a Python-only release keeps using the existing bitstream.
 
-An editable install records the version at install time; reinstall after
-changing `pyproject.toml` (on the board `uv pip install --no-deps -e .`; on the
-development machine `uv run` reinstalls by itself).
+An editable install records the version at install time; reinstall after changing `pyproject.toml` (on the board `uv pip install --no-deps -e .`; on the development machine `uv run` reinstalls by itself).
 
 Releasing a new bitstream:
 
@@ -1479,27 +1204,14 @@ Releasing a new bitstream:
    uv pip install --no-deps -e .
 ```
 
-Release: pushing a tag `vA.B.C.D` runs the GitHub Action
-`.github/workflows/release.yml`. It checks with `tools/release_notes.py` (the
-tag is `v` + the `pyproject.toml` version; the overlay files are not LFS
-pointers, match the manifest and have the same A.B.C), runs `uv build`, and
-creates a GitHub Release with the wheel, the sdist and `manifest.json`. The
-release notes hold the tag message, the overlay build record, the commits since
-the previous tag and the install steps.
+Release: pushing a tag `vA.B.C.D` runs the GitHub Action `.github/workflows/release.yml`. It checks with `tools/release_notes.py` (the tag is `v` + the `pyproject.toml` version; the overlay files are not LFS pointers, match the manifest and have the same A.B.C), runs `uv build`, and creates a GitHub Release with the wheel, the sdist and `manifest.json`. The release notes hold the tag message, the overlay build record, the commits since the previous tag and the install steps.
 
 ```text
 git tag -a v1.3.0.1 -m "what changed"
 git push origin v1.3.0.1
 ```
 
-The group's Gitea server runs the same steps from
-`.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores
-`.github/workflows`) on its own runner and creates a Gitea release with the
-same files through the Gitea API. It also uploads the wheel and sdist to the
-repository owner's Gitea PyPI registry, which needs an Actions secret
-`PACKAGE_TOKEN` (an access token with package write access; the job's own
-token may not write packages). To install, use a Gitea access token that may
-read packages:
+The group's Gitea server runs the same steps from `.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores `.github/workflows`) on its own runner and creates a Gitea release with the same files through the Gitea API. It also uploads the wheel and sdist to the repository owner's Gitea PyPI registry, which needs an Actions secret `PACKAGE_TOKEN` (an access token with package write access; the job's own token may not write packages). To install, use a Gitea access token that may read packages:
 
 ```text
 uv pip install --no-deps --index-url http://<user>:<token>@<gitea>/api/packages/<owner>/pypi/simple rf-clock==1.3.0.2
@@ -1507,41 +1219,25 @@ uv pip install --no-deps --index-url http://<user>:<token>@<gitea>/api/packages/
 
 Push the tag to each remote that should get a release.
 
-The wheel contains the library, the packaged overlay, the clock register files,
-`rf_clock.examples` and `rf_clock.checks`; installed on the board (§9.1) it
-works without the repository.
+The wheel contains the library, the packaged overlay, the clock register files, `rf_clock.examples` and `rf_clock.checks`; installed on the board (§9.1) it works without the repository.
 
 ## 15. Open items
 
 Tracked in `plan/checklist.md` and copied here once settled. The main ones:
 
-- Which of the two 16-bit halves of a beat word is I and which Q (the lane
-  order is confirmed, §4.5.8, §4.6.9), and whether the received baseband is the
-  conjugate of the transmitted one; real BPSK signals are not affected.
-- With a loopback cable (DAC → attenuator → ADC): the standard deviation of the
-  loopback delay and its consistency over restarts (M3 acceptance); the
-  behaviour of `PynqS2MMDMA.abort()` on the board.
-- Calibrated MTS target latencies, and the sub-tick phase of the PPS edge
-  relative to the tick.
+- Which of the two 16-bit halves of a beat word is I and which Q (the lane order is confirmed, §4.5.8, §4.6.9), and whether the received baseband is the conjugate of the transmitted one; real BPSK signals are not affected.
+- With a loopback cable (DAC → attenuator → ADC): the standard deviation of the loopback delay and its consistency over restarts (M3 acceptance); the behaviour of `PynqS2MMDMA.abort()` on the board.
+- Calibrated MTS target latencies, and the sub-tick phase of the PPS edge relative to the tick.
 
 ---
 
 # Appendix A Low-level access without `rf_clock.pl`
 
-This appendix explains how the three access paths of Part I work on Linux, and
-how to use them with PYNQ's own API or C++. The examples are in
-`rf_clock/examples/native/` and ran on the board on 2026-10-14 (as root, with
-the overlay loaded and the fabric clock running).
+This appendix explains how the three access paths of Part I work on Linux, and how to use them with PYNQ's own API or C++. The examples are in `rf_clock/examples/native/` and ran on the board on 2026-10-14 (as root, with the overlay loaded and the fabric clock running).
 
 ## A.1 How it works
 
-Each IP occupies a range of the PS physical address space (§1.2). CPU reads and
-writes to that range become AXI transactions to the IP through the PS
-`M_AXI_HPM0_FPD` port and the SmartConnect. A Linux user process cannot use
-physical addresses directly; it first `mmap`s that range of `/dev/mem` (needs
-root). Opened with `O_SYNC`, this gives an uncached device mapping, and each
-32-bit read or write is one AXI transaction on the bus. PYNQ's `MMIO` is
-implemented this way (`/dev/mem` + `mmap` + a numpy uint32 view).
+Each IP occupies a range of the PS physical address space (§1.2). CPU reads and writes to that range become AXI transactions to the IP through the PS `M_AXI_HPM0_FPD` port and the SmartConnect. A Linux user process cannot use physical addresses directly; it first `mmap`s that range of `/dev/mem` (needs root). Opened with `O_SYNC`, this gives an uncached device mapping, and each 32-bit read or write is one AXI transaction on the bus. PYNQ's `MMIO` is implemented this way (`/dev/mem` + `mmap` + a numpy uint32 view).
 
 | Path | What is on the other side | How to access it |
 | ---- | ------------------------- | ---------------- |
@@ -1549,10 +1245,7 @@ implemented this way (`/dev/mem` + `mmap` + a numpy uint32 view).
 | Memory writes (TX buffer) | a RAM behind an AXI BRAM controller | the same kind of mapping, but without side effects; can be written as a block |
 | DMA buffer + DMA registers (RX) | the PL's S2MM as a bus master, writing DDR through the HP0 port | allocate a physically contiguous DDR buffer → start the DMA by writing its registers through MMIO → handle the cache → read ordinary memory |
 
-PYNQ's `allocate()` gets physically contiguous memory from CMA through
-XRT/zocl and returns a numpy array with `.physical_address`. It is uncached by
-default; with `cacheable=True` reads are faster, but each read needs an
-`invalidate()` first.
+PYNQ's `allocate()` gets physically contiguous memory from CMA through XRT/zocl and returns a numpy array with `.physical_address`. It is uncached by default; with `cacheable=True` reads are faster, but each read needs an `invalidate()` first.
 
 Measured on the board (2026-10-14):
 
@@ -1600,8 +1293,7 @@ buf.invalidate()                                    # needed before reading a ca
 data = np.array(buf[:received])
 ```
 
-Take the addresses from the HWH (`overlay.ip_dict["p_top_0"]["phys_addr"]`
-and so on); they are hard-coded here for clarity only.
+Take the addresses from the HWH (`overlay.ip_dict["p_top_0"]["phys_addr"]` and so on); they are hard-coded here for clarity only.
 
 ## A.3 C++ (`rf_clock/examples/native/mmio_demo.cpp`)
 
@@ -1615,27 +1307,14 @@ p2[0x40 / 4] = target; p2[0x44 / 4] = target >> 32; p2[0x48 / 4] = nbeats;
 p2[0x08 / 4] = 0x1;                              // doorbell
 ```
 
-Build in the file's directory with `g++ -O2 -o mmio_demo mmio_demo.cpp` and run
-as root. `volatile` makes every access really reach the bus and keeps the
-compiler from reordering them.
+Build in the file's directory with `g++ -O2 -o mmio_demo mmio_demo.cpp` and run as root. `volatile` makes every access really reach the bus and keeps the compiler from reordering them.
 
-A DMA buffer in C++ needs physically contiguous memory. Use XRT's C++ API
-(which PYNQ uses underneath: `xrt::bo`, `bo.address()` for the physical
-address, `bo.map()`, `bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`; the board has XRT
-2.17, **not yet tried on the board**), or allocate in Python, keep the control
-flow in Python and write only the heavy computation as a C++ extension.
+A DMA buffer in C++ needs physically contiguous memory. Use XRT's C++ API (which PYNQ uses underneath: `xrt::bo`, `bo.address()` for the physical address, `bo.map()`, `bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`; the board has XRT 2.17, **not yet tried on the board**), or allocate in Python, keep the control flow in Python and write only the heavy computation as a C++ extension.
 
 ## A.4 Notes
 
 1. All of this needs root (`/dev/mem`).
-2. Read the clock-status GPIO before touching the fabric domain (P2, TX
-   buffer), in C++ too; otherwise the bus hangs and only a board reset helps.
-3. Use only aligned 32-bit accesses on P2: 8/16-bit writes return SLVERR, and a
-   64-bit write may be split in two, which conflicts with the doorbell ordering.
-4. Block writes to the TX buffer must be 4-byte aligned; do not use `memset` or
-   unaligned accesses on the mapping (they may use instructions device memory
-   does not allow, and the process gets SIGBUS). numpy slice assignment works.
-5. In C++, `volatile` does not order ordinary memory (the DMA buffer) against
-   device registers: put a barrier (`std::atomic_thread_fence` or
-   `__sync_synchronize()`) between "data written" and "doorbell", and between
-   "DMA finished" and "read the data".
+2. Read the clock-status GPIO before touching the fabric domain (P2, TX buffer), in C++ too; otherwise the bus hangs and only a board reset helps.
+3. Use only aligned 32-bit accesses on P2: 8/16-bit writes return SLVERR, and a 64-bit write may be split in two, which conflicts with the doorbell ordering.
+4. Block writes to the TX buffer must be 4-byte aligned; do not use `memset` or unaligned accesses on the mapping (they may use instructions device memory does not allow, and the process gets SIGBUS). numpy slice assignment works.
+5. In C++, `volatile` does not order ordinary memory (the DMA buffer) against device registers: put a barrier (`std::atomic_thread_fence` or `__sync_synchronize()`) between "data written" and "doorbell", and between "DMA finished" and "read the data".

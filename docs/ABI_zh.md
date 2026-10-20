@@ -2,12 +2,9 @@
 
 本文是 `docs/ABI.md`（英文，标准版）的中文翻译，两者内容一致；有出入时以英文版为准。
 
-本手册说明 ARM 软件如何控制 RF-clock 的 PL：第一部分是寄存器级协议（相当于仪器的
-命令集），第二部分是封装这些协议的 Python 库 `rf_clock.pl`。
+本手册说明 ARM 软件如何控制 RF-clock 的 PL：第一部分是寄存器级协议（相当于仪器的命令集），第二部分是封装这些协议的 Python 库 `rf_clock.pl`。
 
-- 协议在 RTL 中的唯一来源：`PL/src/p_regs.vh`（地址、位域）和 `PL/src/p_defs.vh`
-  （状态、返回码、标志位）。Python 的 `rf_clock.pl.abi` 由 `tools/generate_abi.py`
-  从这两个文件生成。三者改动时必须同步修改本文，并按 §14 更新 `VERSION`。
+- 协议在 RTL 中的唯一来源：`PL/src/p_regs.vh`（地址、位域）和 `PL/src/p_defs.vh`（状态、返回码、标志位）。Python 的 `rf_clock.pl.abi` 由 `tools/generate_abi.py` 从这两个文件生成。三者改动时必须同步修改本文，并按 §14 更新 `VERSION`。
 - 设计背景见 `plan/RF_clock_modules_zh.md`，未确认事项见 `plan/checklist_zh.md`。
 
 ---
@@ -27,8 +24,7 @@
 
 ### 1.2 地址
 
-基地址在 `PL/bd/create_rf_clock_bd.tcl` 中固定分配。软件应从 HWH（PYNQ
-`overlay.ip_dict` / `overlay.mem_dict`）读取，不要写死。
+基地址在 `PL/bd/create_rf_clock_bd.tcl` 中固定分配。软件应从 HWH（PYNQ `overlay.ip_dict` / `overlay.mem_dict`）读取，不要写死。
 
 | 地址空间       | HWH 名称                         | 基地址      | 大小                  | 时钟域  |
 | -------------- | -------------------------------- | ----------- | --------------------- | ------- |
@@ -63,10 +59,7 @@
 | 复样本 | 16 bit I + 16 bit Q，800 MS/s，间隔 1.25 ns              |
 | 1 tick | 正好 1 beat = 8 个样本                                   |
 
-**哪些时间可以用来测量。** raw_tick 从 PL 复位开始计数，不回绕，失锁或换 epoch 时也
-不清零。ARM 读一次寄存器的延迟从几百 ns 到毫秒不等，所以读到的 `TICK` 只用来安排未来
-的 target。参与测量的时间一律用 PL 在事件那一拍锁存的值：`PPS_TICK`、`TX_ACTUAL`、
-`RX_ACTUAL`。
+**哪些时间可以用来测量。** raw_tick 从 PL 复位开始计数，不回绕，失锁或换 epoch 时也不清零。ARM 读一次寄存器的延迟从几百 ns 到毫秒不等，所以读到的 `TICK` 只用来安排未来的 target。参与测量的时间一律用 PL 在事件那一拍锁存的值：`PPS_TICK`、`TX_ACTUAL`、`RX_ACTUAL`。
 
 ## 3. 命令条目格式
 
@@ -103,8 +96,7 @@ R64 <off>              R32 <off>（LO），再 R32 <off+4>（HI），拼成 (HI 
 R32 0x00  → 0x52434C4B
 ```
 
-确认加载的是 RF-clock 的 bitstream。值不对就停止，不要继续访问其他寄存器。
-Python：`PLClient.validate()`。
+确认加载的是 RF-clock 的 bitstream。值不对就停止，不要继续访问其他寄存器。Python：`PLClient.validate()`。
 
 #### 4.1.2 `VERSION` — 接口版本
 
@@ -116,9 +108,7 @@ Python：`PLClient.validate()`。
 R32 0x04  → 0x00010003
 ```
 
-major 不等于软件支持的值就拒绝运行；`PPS_INPUTS`、`PPS_CONFIG` 需要 minor ≥ 1，
-`BUILD_VERSION` 需要 minor ≥ 2，`TX_REPEAT` 需要 minor ≥ 3（§14）。
-Python：`PLClient.validate()`、`DeviceInfo.version`。
+major 不等于软件支持的值就拒绝运行；`PPS_INPUTS`、`PPS_CONFIG` 需要 minor ≥ 1，`BUILD_VERSION` 需要 minor ≥ 2，`TX_REPEAT` 需要 minor ≥ 3（§14）。Python：`PLClient.validate()`、`DeviceInfo.version`。
 
 #### 4.1.3 `CONTROL` — 命令脉冲
 
@@ -150,9 +140,7 @@ W32 0x08 <bits>
 R32 0x10  → epoch
 ```
 
-时钟每次重新锁定后加 1；0 表示时间还从未有效过。变化说明中途失锁过，变化前后的时间戳
-不可比，跨 epoch 的测量必须丢弃（§6.4）。
-Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`。
+时钟每次重新锁定后加 1；0 表示时间还从未有效过。变化说明中途失锁过，变化前后的时间戳不可比，跨 epoch 的测量必须丢弃（§6.4）。Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`。
 
 #### 4.1.5 构建参数 `TX_DEPTH`、`RX_MAX_BEATS`、`MIN_LEAD_TICKS`
 
@@ -162,8 +150,7 @@ Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`�
 | 0x88 | `RX_MAX_BEATS`   | RO   | 2097151 | 单个 RX 窗口最大长度（beat），受 DMA 26 位长度寄存器限制 |
 | 0x8C | `MIN_LEAD_TICKS` | RO   | 64      | target 至少要比 doorbell 处理时的 tick 晚这么多          |
 
-启动时读一次，之后用它们校验参数。Python：`PLClient.validate()` → `DeviceInfo`。
-`TX_DEPTH` = 69632 = 17 × 4096：65535 码片的突发加 RRC 拖尾是 65545 beat，放得下。
+启动时读一次，之后用它们校验参数。Python：`PLClient.validate()` → `DeviceInfo`。`TX_DEPTH` = 69632 = 17 × 4096：65535 码片的突发加 RRC 拖尾是 65545 beat，放得下。
 
 #### 4.1.6 `BUILD_VERSION` — 构建时的软件包版本（1.2 起）
 
@@ -175,10 +162,7 @@ Python：`PLClient.time_epoch()`、`remember_epoch()`、`require_same_epoch()`�
 R32 0x94  → 0x01030000（rf-clock 1.3.0.0）
 ```
 
-构建脚本 `PL/bd/create_rf_clock_bd.tcl` 读取 `pyproject.toml` 的 `version = "A.B.C.D"`，写成常量
-`0xAABBCCDD`；A.B 就是 `VERSION`，不相等时构建脚本报错。软件把它和自己安装的 rf-clock 版本比较，
-A.B.C 不同就拒绝运行（§14.1）。
-Python：`PLClient.build_version()` → `"A.B.C.D"`。
+构建脚本 `PL/bd/create_rf_clock_bd.tcl` 读取 `pyproject.toml` 的 `version = "A.B.C.D"`，写成常量 `0xAABBCCDD`；A.B 就是 `VERSION`，不相等时构建脚本报错。软件把它和自己安装的 rf-clock 版本比较，A.B.C 不同就拒绝运行（§14.1）。Python：`PLClient.build_version()` → `"A.B.C.D"`。
 
 ### 4.2 状态与故障
 
@@ -203,8 +187,7 @@ R32 0x0C  → status
 | 10:8  | `tx_state`       | TX 状态，编码见 §5.1                             |
 | 14:12 | `rx_state`       | RX 状态，编码见 §5.1                             |
 
-状态字段是 TX/RX 进度的权威信息（`*_RESULT` 可能被 `REJ_BUSY` 改写，§5.2）。
-Python：`PLClient.status()` → `Status`。
+状态字段是 TX/RX 进度的权威信息（`*_RESULT` 可能被 `REJ_BUSY` 改写，§5.2）。Python：`PLClient.status()` → `Status`。
 
 #### 4.2.2 `FAULT_BITS` — 粘滞故障位
 
@@ -237,9 +220,7 @@ R32 0x18  → info
 W32 0x08 0x10
 ```
 
-清除 `FAULT_BITS` 和 `FAULT_INFO[3:0]`；TX 若处于 FAULT，回到 IDLE，`TX_RESULT` 变为
-NONE。与清除同一拍发生的新故障会保留。清除前应先读出并记录 `FAULT_BITS`/`FAULT_INFO`。
-Python：`PLClient.clear_fault()`。
+清除 `FAULT_BITS` 和 `FAULT_INFO[3:0]`；TX 若处于 FAULT，回到 IDLE，`TX_RESULT` 变为 NONE。与清除同一拍发生的新故障会保留。清除前应先读出并记录 `FAULT_BITS`/`FAULT_INFO`。Python：`PLClient.clear_fault()`。
 
 ### 4.3 时间
 
@@ -308,10 +289,7 @@ R32 0x3C  → inputs
 | 15:8  | `COMP_EDGES` | `IRIG_COMP_OUT` 上升沿计数，8 位回绕      |
 | 23:16 | `TRIG_EDGES` | `IRIG_TRIG_OUT` 上升沿计数，8 位回绕      |
 
-不需要示波器就能判断 PPS 是否到达、极性如何：PPS 脉宽只有 10–30 µs，读到的电平几乎
-总是空闲电平；空闲为 0 说明是正脉冲，空闲为 1 说明是负脉冲（需 `INVERT = 1`）。隔几秒
-读两次，计数应每秒加 1；两路都不动说明 PPS 没进到板上的 PPS 口（J7）。
-Python：`PLClient.pps_inputs()` → `PPSInputs`。
+不需要示波器就能判断 PPS 是否到达、极性如何：PPS 脉宽只有 10–30 µs，读到的电平几乎总是空闲电平；空闲为 0 说明是正脉冲，空闲为 1 说明是负脉冲（需 `INVERT = 1`）。隔几秒读两次，计数应每秒加 1；两路都不动说明 PPS 没进到板上的 PPS 口（J7）。Python：`PLClient.pps_inputs()` → `PPSInputs`。
 
 #### 4.4.5 `PPS_CONFIG` — PPS 来源和极性（1.1 起）
 
@@ -329,13 +307,9 @@ R32 0x90  → cfg
 | 0  | `SRC_TRIG` | 0 =`IRIG_COMP_OUT`（AJ13，默认），1 = `IRIG_TRIG_OUT`（AH13） |
 | 1  | `INVERT`   | 1 = 对所选信号的下降沿计时                                        |
 
-板上电路：PPS SMA（J7）有 49.9 Ω 对地终端，经 100 Ω 和 10 nF 交流耦合到偏置在 1.65 V
-的节点，再进比较器（LMV7235，约 ±0.17 V 迟滞）和施密特触发器（SN74AUP1G17），两路经
-NVT2008 转到 1.8 V（FPGA 侧用内部上拉）。FS725 的正脉冲在两路上都是上升沿，用默认值 0。
+板上电路：PPS SMA（J7）有 49.9 Ω 对地终端，经 100 Ω 和 10 nF 交流耦合到偏置在 1.65 V 的节点，再进比较器（LMV7235，约 ±0.17 V 迟滞）和施密特触发器（SN74AUP1G17），两路经 NVT2008 转到 1.8 V（FPGA 侧用内部上拉）。FS725 的正脉冲在两路上都是上升沿，用默认值 0。
 
-写入不同的值会让 P1 重新开始 PPS 捕获：`pps_locked` 清 0，之后要再收到一个参考沿和
-4 个正确周期才重新锁定，不记故障。只在启动时设置。
-Python：`PLClient.set_pps_config(source_trig=..., invert=...)`。
+写入不同的值会让 P1 重新开始 PPS 捕获：`pps_locked` 清 0，之后要再收到一个参考沿和 4 个正确周期才重新锁定，不记故障。只在启动时设置。Python：`PLClient.set_pps_config(source_trig=..., invert=...)`。
 
 ### 4.5 TX（发射）
 
@@ -350,8 +324,7 @@ W32 0x40 <target[31:0]>
 W32 0x44 <target[63:32]>
 ```
 
-第 0 个 beat 被 DAC 接收的那一拍（§6.1）。按 doorbell 时必须满足
-`target ≥ 当时的 tick + MIN_LEAD_TICKS`，否则拒绝为 `REJ_STALE`。
+第 0 个 beat 被 DAC 接收的那一拍（§6.1）。按 doorbell 时必须满足 `target ≥ 当时的 tick + MIN_LEAD_TICKS`，否则拒绝为 `REJ_STALE`。
 
 #### 4.5.2 `TX_LENGTH` — 突发长度（shadow）
 
@@ -363,8 +336,7 @@ W32 0x44 <target[63:32]>
 W32 0x48 <beats>          1 … TX_DEPTH
 ```
 
-从 buffer 的第 0 个 beat 开始连续发出这么多 beat。0 或超过 `TX_DEPTH` 拒绝为 `REJ_LENGTH`。
-重复播放见 `TX_REPEAT`（§4.5.9）。
+从 buffer 的第 0 个 beat 开始连续发出这么多 beat。0 或超过 `TX_DEPTH` 拒绝为 `REJ_LENGTH`。重复播放见 `TX_REPEAT`（§4.5.9）。
 
 #### 4.5.3 `CONTROL.TX_DOORBELL` — 提交 TX 命令
 
@@ -377,11 +349,7 @@ W32 0x08 0x01
 R32 0x4C  → 0x01 (ARMED)  否则见 §5.2
 ```
 
-只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条
-不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改
-shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING
-甚至 DONE（看 `TX_SEQ` 是否增加来区分）。
-Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
+只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改 shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING 甚至 DONE（看 `TX_SEQ` 是否增加来区分）。Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
 
 #### 4.5.4 `CONTROL.TX_CANCEL` — 取消
 
@@ -389,8 +357,7 @@ Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
 W32 0x08 0x02
 ```
 
-只在 ARMED 时有效：回到 IDLE，`TX_RESULT = CANCELLED`。进入 RUNNING 后不能取消，只能
-正常结束或进入 FAULT。Python：`PLClient.cancel_tx()`。
+只在 ARMED 时有效：回到 IDLE，`TX_RESULT = CANCELLED`。进入 RUNNING 后不能取消，只能正常结束或进入 FAULT。Python：`PLClient.cancel_tx()`。
 
 #### 4.5.5 `TX_RESULT` — 返回码
 
@@ -418,8 +385,7 @@ W32 0x08 0x02
 R64 0x54  → actual        只在 tx_state = DONE 后读
 ```
 
-第 0 个 beat 被 DAC 接收那一拍的 tick。正常情况下等于 target，软件应校验。
-Python：`PLClient.tx_actual()`。
+第 0 个 beat 被 DAC 接收那一拍的 tick。正常情况下等于 target，软件应校验。Python：`PLClient.tx_actual()`。
 
 #### 4.5.8 TX 波形 buffer（存储空间）
 
@@ -433,13 +399,8 @@ W32 base+i*32+0  <beat i, 字节 0..3>
 W32 base+i*32+28 <beat i, 字节 28..31>
 ```
 
-- buffer 在 UltraRAM 里，分成 17 个 4096 beat 的 bank，容量 `TX_DEPTH` = 69632 beat。地址窗口是 4 MiB（2^17 beat），
-  `TX_DEPTH` 及以上的写入被丢弃，读出无意义。
-- PL 把每个 beat 原样交给 RFDC DAC。DAC 按 **I/Q 逐字交错**读取：第 n 个样本（n = 0…7，
-  先发的在前）占第 n 个 32 位字，`I = [32n+15:32n]`，`Q = [32n+31:32n+16]`（`TX_LAYOUT`）。
-  依据：M3 lane check（2026-10-14，见 §13）；按平面格式打包时第 k 条 lane 的冲激延迟变为
-  D − ⌈k/2⌉，正是 DAC 交错读取的结果。冲激只放在 I 上，所以一对 16 位里哪个是 I、哪个是 Q
-  尚未单独验证（对 BPSK 实信号无影响）。
+- buffer 在 UltraRAM 里，分成 17 个 4096 beat 的 bank，容量 `TX_DEPTH` = 69632 beat。地址窗口是 4 MiB（2^17 beat），`TX_DEPTH` 及以上的写入被丢弃，读出无意义。
+- PL 把每个 beat 原样交给 RFDC DAC。DAC 按 **I/Q 逐字交错**读取：第 n 个样本（n = 0…7，先发的在前）占第 n 个 32 位字，`I = [32n+15:32n]`，`Q = [32n+31:32n+16]`（`TX_LAYOUT`）。依据：M3 lane check（2026-10-14，见 §13）；按平面格式打包时第 k 条 lane 的冲激延迟变为 D − ⌈k/2⌉，正是 DAC 交错读取的结果。冲激只放在 I 上，所以一对 16 位里哪个是 I、哪个是 Q 尚未单独验证（对 BPSK 实信号无影响）。
 - 波形不变时只写一次，之后每次发射只提交 TX 命令。
 - TX 为 ARMED 或 RUNNING 时**不得**写 buffer，否则 TX 进入 FAULT，返回码 `FAULT_BUF_WRITE`。
 - 属于 fabric 时钟域，写之前确认时钟状态 GPIO（§1.2）。
@@ -456,18 +417,11 @@ Python：`TXBuffer.write_beats(beats)`。
 W32 0x5C <passes>         1 … TX_REPEAT_MAX (65535)
 ```
 
-一条 TX 命令把 buffer 的第 0 … `TX_LENGTH`−1 个 beat 连续播放 `TX_REPEAT` 遍：每一遍最后一个
-beat 的下一拍就是下一遍的第 0 个 beat，中间没有空拍。`TX_ACTUAL` 是第一遍的开始时刻；全部播完
-才进入 DONE，`TX_SEQ` 只加 1。0 或大于 65535 时 doorbell 拒绝为 `REJ_LENGTH`。总时长
-`TX_LENGTH × TX_REPEAT` 拍，最长约 45 s；RUNNING 中不能取消。
+一条 TX 命令把 buffer 的第 0 … `TX_LENGTH`−1 个 beat 连续播放 `TX_REPEAT` 遍：每一遍最后一个 beat 的下一拍就是下一遍的第 0 个 beat，中间没有空拍。`TX_ACTUAL` 是第一遍的开始时刻；全部播完才进入 DONE，`TX_SEQ` 只加 1。0 或大于 65535 时 doorbell 拒绝为 `REJ_LENGTH`。总时长 `TX_LENGTH × TX_REPEAT` 拍，最长约 45 s；RUNNING 中不能取消。
 
-shadow 在 doorbell 时才被取用，不写就沿用上次的值。`PLClient.arm_tx` 在 1.3 起的 bitstream 上
-每次都写它（默认 1）；在更早的 bitstream 上这个地址不存在（写入返回 SLVERR），所以不写，
-`repeat` 不为 1 时抛 `IdentityError`。
+shadow 在 doorbell 时才被取用，不写就沿用上次的值。`PLClient.arm_tx` 在 1.3 起的 bitstream 上每次都写它（默认 1）；在更早的 bitstream 上这个地址不存在（写入返回 SLVERR），所以不写，`repeat` 不为 1 时抛 `IdentityError`。
 
-首尾相接的波形要用周期波形（`WaveformGenerator(periodic=True)`，§11.9）：普通突发两端各有
-RRC 拖尾，直接重复会在接缝处不连续。
-Python：`PLClient.arm_tx(target, beats, repeat=n)`。
+首尾相接的波形要用周期波形（`WaveformGenerator(periodic=True)`，§11.9）：普通突发两端各有 RRC 拖尾，直接重复会在接缝处不连续。Python：`PLClient.arm_tx(target, beats, repeat=n)`。
 
 ### 4.6 RX（接收）
 
@@ -501,8 +455,7 @@ W32 0x08 0x04
 R32 0x6C  → 0x01 (ARMED)  0x14 表示 S2MM 还没就绪
 ```
 
-只在 RX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期 → DMA 就绪。
-Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`（§11.8）。
+只在 RX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期 → DMA 就绪。Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`（§11.8）。
 
 #### 4.6.4 `CONTROL.RX_CANCEL` — 取消
 
@@ -510,8 +463,7 @@ Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`�
 W32 0x08 0x08
 ```
 
-只在 ARMED 且还没到开窗那一拍时有效：回到 IDLE，`RX_RESULT = CANCELLED`。已经启动的
-S2MM 传输不会自己结束，需要复位 DMA（`PynqS2MMDMA.abort()`）。Python：`PLClient.cancel_rx()`。
+只在 ARMED 且还没到开窗那一拍时有效：回到 IDLE，`RX_RESULT = CANCELLED`。已经启动的 S2MM 传输不会自己结束，需要复位 DMA（`PynqS2MMDMA.abort()`）。Python：`PLClient.cancel_rx()`。
 
 #### 4.6.5 `RX_RESULT` — 返回码和窗口标志
 
@@ -519,8 +471,7 @@ S2MM 传输不会自己结束，需要复位 DMA（`PynqS2MMDMA.abort()`）。Py
 | ---- | ---- | ----------------------------- | ------ |
 | 0x6C | RO   | [7:0] 返回码，[11:8] 窗口标志 | 0      |
 
-返回码见 §5.2，标志见 §5.3。窗口结束时 `DONE` 才有效；`RX_INVALID` 表示本次测量必须丢弃。
-Python：`PLClient.rx_result()` → `(ResultCode, RxFlag)`。
+返回码见 §5.2，标志见 §5.3。窗口结束时 `DONE` 才有效；`RX_INVALID` 表示本次测量必须丢弃。Python：`PLClient.rx_result()` → `(ResultCode, RxFlag)`。
 
 #### 4.6.6 `RX_SEQ`、`RX_INVALID_CNT` — 计数
 
@@ -535,8 +486,7 @@ Python：`PLClient.rx_result()` → `(ResultCode, RxFlag)`。
 | ---- | ---- | --------- | ------ |
 | 0x74 | RO   | u32，beat | 0      |
 
-本窗口送进 DMA 流的 beat 数，含作废窗口补发的尾拍。有效窗口应等于 `RX_LENGTH`，并且
-S2MM 实际收到的字节数应为 `RX_BEATS × 32`。Python：`PLClient.rx_beats()`。
+本窗口送进 DMA 流的 beat 数，含作废窗口补发的尾拍。有效窗口应等于 `RX_LENGTH`，并且 S2MM 实际收到的字节数应为 `RX_BEATS × 32`。Python：`PLClient.rx_beats()`。
 
 #### 4.6.8 `RX_ACTUAL` — 实际开窗时刻
 
@@ -544,17 +494,14 @@ S2MM 实际收到的字节数应为 `RX_BEATS × 32`。Python：`PLClient.rx_bea
 | ---------------------- | ---- | --------- | ------ |
 | 0x78（LO）、0x7C（HI） | RO   | u64，tick | 0      |
 
-窗口第 0 拍在 ADC 总线上时的 tick，只在 `rx_state = DONE` 后读，应等于 target。
-Python：`PLClient.rx_actual()`。
+窗口第 0 拍在 ADC 总线上时的 tick，只在 `rx_state = DONE` 后读，应等于 target。Python：`PLClient.rx_actual()`。
 
 #### 4.6.9 RX 样本 buffer 和 AXI DMA S2MM
 
 样本 buffer 在 DDR 中：
 
 - 软件分配物理连续、可被 DMA 访问的 buffer（PYNQ `allocate`），至少 `RX_LENGTH × 32` 字节。
-- 第 n 个 beat 位于 buffer + n × 32。beat 内是**平面**格式：低 128 位是 8 个 I，高 128 位
-  是 8 个 Q，lane 0（先采的样本）在各自的最低 16 位（`RX_LAYOUT`，由 BD 中 I/Q 两路流拼接
-  而成）。lane 顺序由 M3 lane check 确认；I/Q 归属同 §4.5.8 尚未单独验证。
+- 第 n 个 beat 位于 buffer + n × 32。beat 内是**平面**格式：低 128 位是 8 个 I，高 128 位是 8 个 Q，lane 0（先采的样本）在各自的最低 16 位（`RX_LAYOUT`，由 BD 中 I/Q 两路流拼接而成）。lane 顺序由 M3 lane check 确认；I/Q 归属同 §4.5.8 尚未单独验证。
 - 作废窗口可能缺 beat，最后可能多一个全 0 尾拍（用来带上 TLAST），内容不得使用。
 - DMA 写入不经过 CPU cache，读之前必须 invalidate（PYNQ `buffer.invalidate()`）。
 
@@ -578,11 +525,7 @@ DMA 是 Xilinx AXI DMA（simple 模式），偏移以 AMD PG021 为准，地址�
 R32 0xA002_0000  → 1     fabric MMCM 已锁定，可以访问 P2 和 TX buffer
 ```
 
-Xilinx AXI GPIO（全输入，1 位），在 `pl_clk0` 域，任何时候都可以读。bit0 = 1 说明 PL_CLK
-存在且 MMCM 已锁定，**不说明 LMK04828 锁到了 FS725**：LMK 没有外部参考时会靠板上 VCXO
-继续输出。LMK 锁到 FS725 的证据是 `PPS_LAST_PERIOD` 恒为 100000000；板上 PLL1/PLL2 LED
-（本项目的 LMK 文件把 Status_LD1/2 设为锁定指示）只作现场参考，LMK 没有配置 SPI 读回。
-Python：`PLClient.fabric_clock_locked()`、`require_fabric_clock()`。
+Xilinx AXI GPIO（全输入，1 位），在 `pl_clk0` 域，任何时候都可以读。bit0 = 1 说明 PL_CLK 存在且 MMCM 已锁定，**不说明 LMK04828 锁到了 FS725**：LMK 没有外部参考时会靠板上 VCXO 继续输出。LMK 锁到 FS725 的证据是 `PPS_LAST_PERIOD` 恒为 100000000；板上 PLL1/PLL2 LED（本项目的 LMK 文件把 Status_LD1/2 设为锁定指示）只作现场参考，LMK 没有配置 SPI 读回。Python：`PLClient.fabric_clock_locked()`、`require_fabric_clock()`。
 
 ## 5. 状态与错误报告
 
@@ -626,9 +569,7 @@ TX 和 RX 相互独立，可以同时 ARMED，也可以用同一次 `CONTROL` �
 | 0x22 | FAULT_TIME        | 故障 | TX：ARMED/RUNNING 期间`time_valid` 变为 0   |
 | 0x30 | RX_INVALID        | 结果 | RX：窗口结束但有标志位（§5.3），测量必须丢弃 |
 
-拒绝不改变状态，正在进行的命令不受影响。但 ARMED/RUNNING 期间被拒绝的 doorbell（`REJ_BUSY`）
-会改写 `*_RESULT` 的显示值，直到下一次状态转换再写入新的返回码。所以判断进度看
-`STATUS` 的状态字段，判断某次提交是否被接受，看提交后立即读到的 `*_RESULT`。
+拒绝不改变状态，正在进行的命令不受影响。但 ARMED/RUNNING 期间被拒绝的 doorbell（`REJ_BUSY`）会改写 `*_RESULT` 的显示值，直到下一次状态转换再写入新的返回码。所以判断进度看 `STATUS` 的状态字段，判断某次提交是否被接受，看提交后立即读到的 `*_RESULT`。
 
 ### 5.3 RX 窗口标志（`RX_RESULT[11:8]`）
 
@@ -654,9 +595,7 @@ TX 和 RX 相互独立，可以同时 ARMED，也可以用同一次 `CONTROL` �
 
 ### 6.1 TX
 
-第 0 个 beat 被 DAC AXIS 接收的那一拍 `raw_tick == TX_TARGET`，此后每拍一个 beat，中间没有
-空隙（`TX_REPEAT` > 1 时遍与遍之间也没有）；突发以外 DAC 输入为 0。突发中的第 n 个样本
-（重复播放时 n 从第一遍起连续计数）：
+第 0 个 beat 被 DAC AXIS 接收的那一拍 `raw_tick == TX_TARGET`，此后每拍一个 beat，中间没有空隙（`TX_REPEAT` > 1 时遍与遍之间也没有）；突发以外 DAC 输入为 0。突发中的第 n 个样本（重复播放时 n 从第一遍起连续计数）：
 
 ```text
 t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
@@ -664,23 +603,17 @@ t_tx(n) = TX_TARGET × 10 ns + n × 1.25 ns
 
 ### 6.2 RX
 
-窗口第 0 个 beat 是 `raw_tick == RX_TARGET` 那一拍 ADC AXIS 上的数据，覆盖连续 `RX_LENGTH`
-拍。窗口中的第 n 个样本：
+窗口第 0 个 beat 是 `raw_tick == RX_TARGET` 那一拍 ADC AXIS 上的数据，覆盖连续 `RX_LENGTH` 拍。窗口中的第 n 个样本：
 
 ```text
 t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
 ```
 
-以上都是 **RFDC 数字接口处的时间**。DAC/ADC 内部数据通路的延时由 MTS 固定（§7.1 步骤 7），
-线缆、放大器、天线的延时不包含在内，需要按计划 §8 标定。未接环回线时，板上 DAC tile 2 到
-ADC tile 2 的串扰测得两个数字接口之间的延时约 226.0 个样本（282.5 ns，2026-10-14）。这是 MTS
-目标延时固定（§7.1 步骤 7）时的值，run4 和 run6 相同；不固定目标时它随 bitstream 变（212.07、
-214.08）。
+以上都是 **RFDC 数字接口处的时间**。DAC/ADC 内部数据通路的延时由 MTS 固定（§7.1 步骤 7），线缆、放大器、天线的延时不包含在内，需要按计划 §8 标定。未接环回线时，板上 DAC tile 2 到 ADC tile 2 的串扰测得两个数字接口之间的延时约 226.0 个样本（282.5 ns，2026-10-14）。这是 MTS 目标延时固定（§7.1 步骤 7）时的值，run4 和 run6 相同；不固定目标时它随 bitstream 变（212.07、214.08）。
 
 ### 6.3 PPS
 
-`PPS_TICK` 的量化粒度是 10 ns。`PPS_LAST_PERIOD` 恒为 100000000 说明 fabric 时钟与 FS725
-同源；LMK 靠板上 VCXO 运行时每秒会偏差几十到上百 tick，PPS 锁不上。P1 的判断：
+`PPS_TICK` 的量化粒度是 10 ns。`PPS_LAST_PERIOD` 恒为 100000000 说明 fabric 时钟与 FS725 同源；LMK 靠板上 VCXO 运行时每秒会偏差几十到上百 tick，PPS 锁不上。P1 的判断：
 
 | 周期与 100000000 之差        | 处理                                    |
 | ---------------------------- | --------------------------------------- |
@@ -688,13 +621,11 @@ ADC tile 2 的串扰测得两个数字接口之间的延时约 226.0 个样本�
 | ±1                          | 计入`PPS_JITTER_CNT`，锁定保持        |
 | 更大，或超过一个周期没有 PPS | `FAULT_BITS.PPS`，`pps_locked` 清 0 |
 
-`PPS_JITTER_CNT` 持续增长说明 PPS 沿贴着采样沿，需要调整 PL 输入延时。PPS 沿相对 tick
-的亚 tick 相位每次上电后都需要标定。
+`PPS_JITTER_CNT` 持续增长说明 PPS 沿贴着采样沿，需要调整 PL 输入延时。PPS 沿相对 tick 的亚 tick 相位每次上电后都需要标定。
 
 ### 6.4 epoch
 
-`TIME_EPOCH` 变化说明时钟中途失锁又重新锁定。raw_tick 不清零，但变化前后的时间戳和测量
-不可比，跨 epoch 的数据必须丢弃。
+`TIME_EPOCH` 变化说明时钟中途失锁又重新锁定。raw_tick 不清零，但变化前后的时间戳和测量不可比，跨 epoch 的数据必须丢弃。
 
 ## 7. 编程流程
 
@@ -702,10 +633,8 @@ ADC tile 2 的串扰测得两个数字接口之间的延时约 226.0 个样本�
 
 顺序不能调换：
 
-- PYNQ 开机会加载自带的 base overlay，它的一部分逻辑也用 LMK 的时钟。先用本设计替换它，
-  再改时钟（板上实测：先改时钟时出现过整机卡死）。
-- 时钟一变，fabric MMCM 的输入就变了，要用 `pl_resetn0` 复位让它重新锁定（板上实测：
-  不复位时首次加载后 MMCM 可能不锁）。
+- PYNQ 开机会加载自带的 base overlay，它的一部分逻辑也用 LMK 的时钟。先用本设计替换它，再改时钟（板上实测：先改时钟时出现过整机卡死）。
+- 时钟一变，fabric MMCM 的输入就变了，要用 `pl_resetn0` 复位让它重新锁定（板上实测：不复位时首次加载后 MMCM 可能不锁）。
 - RFDC tile 启动需要 LMX 已经输出参考时钟；P2 和 TX buffer 需要 fabric 时钟已经运行。
 
 ```text
@@ -766,8 +695,7 @@ PL
 
 ### 7.4 运行中的监视
 
-每个测量周期都要确认：时钟状态 GPIO bit0 仍为 1、`TIME_EPOCH` 未变、`STATUS.pps_locked`
-仍为 1（LMK 失去 FS725 参考后 PPS 周期会漂出容差）。任何一项不满足，丢弃这段时间的测量。
+每个测量周期都要确认：时钟状态 GPIO bit0 仍为 1、`TIME_EPOCH` 未变、`STATUS.pps_locked` 仍为 1（LMK 失去 FS725 参考后 PPS 周期会漂出容差）。任何一项不满足，丢弃这段时间的测量。
 
 ## 8. 寄存器速查表
 
@@ -826,9 +754,7 @@ PL
 
 ### 9.1 板上环境
 
-板子不联网。不改动 PYNQ 自己的环境 `/usr/local/share/pynq-venv`（Python 3.10，pynq 3.1.1，
-numpy 1.21.5）；项目用一个独立的 venv，通过 `.pth` 文件只读地看到 PYNQ 环境里的包，所以包的
-查找顺序是：venv → PYNQ 环境 → 系统包，与 PYNQ 自己一致。
+板子不联网。不改动 PYNQ 自己的环境 `/usr/local/share/pynq-venv`（Python 3.10，pynq 3.1.1，numpy 1.21.5）；项目用一个独立的 venv，通过 `.pth` 文件只读地看到 PYNQ 环境里的包，所以包的查找顺序是：venv → PYNQ 环境 → 系统包，与 PYNQ 自己一致。
 
 建环境（在板上，项目目录下，需要 `~/.local/bin/uv`）：
 
@@ -845,20 +771,13 @@ echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_v
 
 要点：
 
-- 用 `--no-deps`：numpy 用 PYNQ 那份（与 `pyproject.toml` 的 1.21.5 一致），不要在 venv 里另装一份；
-  板子也不联网。也不要在板上用 `uv sync`，它会按锁文件同步整个环境。
+- 用 `--no-deps`：numpy 用 PYNQ 那份（与 `pyproject.toml` 的 1.21.5 一致），不要在 venv 里另装一份；板子也不联网。也不要在板上用 `uv sync`，它会按锁文件同步整个环境。
 - 可编辑安装记录的是安装那一刻的版本号，改了 `pyproject.toml` 要重装（§14.1）。
-- 时钟寄存器文件在包里（`rf_clock/clocks/files/`），由 `PL.open()` 交给 xrfclk 写入，不需要拷进
-  xrfclk 的目录。
-- `BOARD` 环境变量（`RFSoC4x2`）由 `/etc/profile.d/boardname.sh` 设置，只在登录 shell 里有；
-  `xrfclk` 在 import 时就读它。访问 `/dev/mem`、下载比特流、写 SPI 时钟芯片都需要 root，而
-  `sudo` 会清掉环境变量，所以写成 `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`。
-- Jupyter（PYNQ 自带，以 root 运行）：
-  `sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`。
+- 时钟寄存器文件在包里（`rf_clock/clocks/files/`），由 `PL.open()` 交给 xrfclk 写入，不需要拷进 xrfclk 的目录。
+- `BOARD` 环境变量（`RFSoC4x2`）由 `/etc/profile.d/boardname.sh` 设置，只在登录 shell 里有；`xrfclk` 在 import 时就读它。访问 `/dev/mem`、下载比特流、写 SPI 时钟芯片都需要 root，而 `sudo` 会清掉环境变量，所以写成 `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`。
+- Jupyter（PYNQ 自带，以 root 运行）：`sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`。
 - PYNQ 镜像升级后 `.pth` 自动跟随新环境。
-- 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的
-  机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，
-  约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
+- 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
 
 模块一览：
 
@@ -879,8 +798,7 @@ echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_v
 
 ## 10. 快速上手
 
-板上：上电，按 PPS 发一个突发，同拍收一个窗口（`python -m rf_clock.examples.pl.03_pynq_bringup`，
-2026-10-14 板上运行通过）。
+板上：上电，按 PPS 发一个突发，同拍收一个窗口（`python -m rf_clock.examples.pl.03_pynq_bringup`，2026-10-14 板上运行通过）。
 
 ```python
 from rf_clock.pl import PL, WaveformGenerator
@@ -902,8 +820,7 @@ window = pl.ctrl.wait_rx(timeout=2.5)          # RX_ACTUAL（已核对）、RX_B
 x = pl.rx_dma.wait(window.beats).samples       # complex64，800 MS/s，从 window.actual 开始
 ```
 
-命令、时间戳和状态都在 `pl.ctrl`；`tx_buffer`、`rx_dma` 只管数据通路（写波形、配 DMA）。
-两次 wait 的先后不影响数据：开窗之后 P4 → FIFO → DMA → DDR 由硬件搬运。
+命令、时间戳和状态都在 `pl.ctrl`；`tx_buffer`、`rx_dma` 只管数据通路（写波形、配 DMA）。两次 wait 的先后不影响数据：开窗之后 P4 → FIFO → DMA → DDR 由硬件搬运。
 
 开发机：用假寄存器验证协议逻辑。
 
@@ -922,8 +839,7 @@ client.validate()
 
 ### 11.1 `rf_clock.pl.PL`（上电和硬件部件）
 
-`PL.open()` 完成上电，返回的对象只负责持有各硬件部件，一个部件对应 §1.1 的一个地址空间，
-操作都通过部件自己的方法：
+`PL.open()` 完成上电，返回的对象只负责持有各硬件部件，一个部件对应 §1.1 的一个地址空间，操作都通过部件自己的方法：
 
 | 属性           | 类型                    | 对应的硬件                                                                                                                         |
 | -------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -937,8 +853,7 @@ client.validate()
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, progress=None)`
 
-按 §7.1 完成全部上电步骤。固定的硬件选择都是默认值：overlay 为随包的 `rf_clock/overlay/rf_clock.bit`（§14.1）；
-时钟用包里 `rf_clock/clocks/files/` 的 `LMK04828_100.0.txt` 和 `LMX2594_480.0.txt`（经 xrfclk 写入，板上不必把文件拷进 xrfclk 目录）；`pl_resetn0` 复位；RFDC tile 0、2 启动和 MTS。
+按 §7.1 完成全部上电步骤。固定的硬件选择都是默认值：overlay 为随包的 `rf_clock/overlay/rf_clock.bit`（§14.1）；时钟用包里 `rf_clock/clocks/files/` 的 `LMK04828_100.0.txt` 和 `LMX2594_480.0.txt`（经 xrfclk 写入，板上不必把文件拷进 xrfclk 目录）；`pl_resetn0` 复位；RFDC tile 0、2 启动和 MTS。
 
 | 参数                                | 用途                                                                     |
 | ----------------------------------- | ------------------------------------------------------------------------ |
@@ -949,13 +864,11 @@ client.validate()
 | `check_version=False`             | 不做 §14.1 的 manifest 和`BUILD_VERSION` 检查（1.2 之前的 bitstream） |
 | `progress`                        | 每一步回调一行文字，如`print`                                          |
 
-失败时抛出原异常（`BringupError`、`RFDCError`、`VersionMismatch` 等），异常上带 `.overlay`，MTS 跑过时还带 `.mts`。
-开发机上可以直接 `PL(ctrl=..., tx_buffer=..., ...)` 用假件构造。
+失败时抛出原异常（`BringupError`、`RFDCError`、`VersionMismatch` 等），异常上带 `.overlay`，MTS 跑过时还带 `.mts`。开发机上可以直接 `PL(ctrl=..., tx_buffer=..., ...)` 用假件构造。
 
 ### 11.2 `rf_clock.pl.abi`
 
-由 `python tools/generate_abi.py --write` 从 `p_regs.vh`、`p_defs.vh` 生成，不要手改；
-`--check` 检查是否过期（`tests/test_abi_sync.py`）。
+由 `python tools/generate_abi.py --write` 从 `p_regs.vh`、`p_defs.vh` 生成，不要手改；`--check` 检查是否过期（`tests/test_abi_sync.py`）。
 
 | 名称                               | 内容                                                                                              |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -981,8 +894,7 @@ client.validate()
 
 #### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=1)`
 
-P2 寄存器协议的唯一入口。构造时不访问任何寄存器。**每次访问 P2 之前都先读时钟状态
-GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
+P2 寄存器协议的唯一入口。构造时不访问任何寄存器。**每次访问 P2 之前都先读时钟状态 GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
 
 | 方法                                                   | 对应协议                                                                                  | 返回 / 异常                                                            |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -1010,9 +922,7 @@ GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
 | `set_pps_config(*, source_trig=False, invert=False)` | W32`PPS_CONFIG`                                                                         | 同上                                                                   |
 | `build_version()`                                    | R32`BUILD_VERSION`                                                                      | `"A.B.C.D"`；ABI minor < 2 时 `IdentityError`                      |
 
-`arm_tx`/`arm_rx` 的接受判断：提交后读到 ARMED 或 RUNNING 算接受；读到 DONE（RX 还有
-RX_INVALID）时，只有 `*_SEQ` 比提交前增加才算接受，避免把上一条命令的结果当成这一条的。
-提交前若记下过 epoch，会先检查 epoch 未变。
+`arm_tx`/`arm_rx` 的接受判断：提交后读到 ARMED 或 RUNNING 算接受；读到 DONE（RX 还有 RX_INVALID）时，只有 `*_SEQ` 比提交前增加才算接受，避免把上一条命令的结果当成这一条的。提交前若记下过 epoch，会先检查 epoch 未变。
 
 数据类：
 
@@ -1061,20 +971,15 @@ target = pps_tick + 100_000_000 + offset_ticks      # 下一个 PPS 之后 offse
 
 ### 11.6 `rf_clock.pl.rfdc`
 
-PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.2` 的 `xrfdc_mts.h`
-用 cffi 直接调用 `libxrfdc.so`。声明必须与该版本一致（新版的 `XRFdc_MultiConverter_Init`
-多一个参数）。
+PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.2` 的 `xrfdc_mts.h` 用 cffi 直接调用 `libxrfdc.so`。声明必须与该版本一致（新版的 `XRFdc_MultiConverter_Init` 多一个参数）。
 
 #### `setup_rfdc_and_mts(overlay, *, rfdc_name="rfdc", tiles=(0, 2), signal_tile=2, ref_tile=0, dac_target_latency=-1, adc_target_latency=-1)`
 
-§7.1 的步骤 6–7：等 tile 启动，先 DAC、后 ADC 做 MTS，读回信号 tile 的混频器设置。可直接
-作为 `Bringup` 的 `rfdc_setup`。
+§7.1 的步骤 6–7：等 tile 启动，先 DAC、后 ADC 做 MTS，读回信号 tile 的混频器设置。可直接作为 `Bringup` 的 `rfdc_setup`。
 
 - 返回 `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`。
 - 任一 MTS 状态非 OK 时抛 `RFDCError`，异常的 `.result` 属性仍带着结果，便于记录延时。
-- `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传
-  固定值 `board.DAC_TARGET_LATENCY` = 1896、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个
-  tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
+- `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传固定值 `board.DAC_TARGET_LATENCY` = 1896、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个 tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
 
 | 其他函数                                                                | 说明                                                                          |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -1084,14 +989,9 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 | `rfdc_driver(overlay, name="rfdc")`                                   | 取`xrfdc.RFdc` 驱动；overlay 加载前没导入 `xrfdc` 时，按 HWH 描述自己构造 |
 | `decode_mts_status(status)`                                           | 把 MTS 状态码拆成名称列表，如`["TARGET_LOW"]`                               |
 
-`MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile
-0–3）、`offset`（tile 0–3）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在
-目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点
-而不报错。
+`MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile 0–3）、`offset`（tile 0–3）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点而不报错。
 
-板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），
-同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为
-226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。
+板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为 226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。
 
 ### 11.7 `rf_clock.pl.txbuf`
 
@@ -1104,9 +1004,7 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 | `write_beats(beats)`      | 从第 0 个 beat 起写入，返回 beat 数。一次整块拷贝（附录 A.2），整批只检查一次 TX 状态和时钟 GPIO |
 | `write_beat(index, beat)` | 写单个 beat                                                                                      |
 
-beat 可以是小于 2^256 的 int，或 32 字节的 bytes。超过 `TX_DEPTH`，或 TX 为 ARMED/RUNNING 时
-抛 `TXBufferError`（不会去写，避免触发 `FAULT_BUF_WRITE`）。4106 个 beat 的默认波形加载约
-17 ms（其中拷贝约 0.5 ms），逐字写入时约 0.3–0.5 s。
+beat 可以是小于 2^256 的 int，或 32 字节的 bytes。超过 `TX_DEPTH`，或 TX 为 ARMED/RUNNING 时抛 `TXBufferError`（不会去写，避免触发 `FAULT_BUF_WRITE`）。4106 个 beat 的默认波形加载约 17 ms（其中拷贝约 0.5 ms），逐字写入时约 0.3–0.5 s。
 
 ### 11.8 `rf_clock.pl.rxdma`
 
@@ -1131,30 +1029,21 @@ x = data.samples                         # complex64，从 window.actual 开始
 | `wait(beats, *, timeout=1.0)`         | `beats` 取 `RXWindow.beats`；返回 `RXData(buffer, beats, received_bytes)`                  |
 | `abort()`                             | 放弃已启动的传输                                                                           |
 
-`RXData.samples` 在第一次访问时把窗口按 `RX_LAYOUT` 解码成 complex64。buffer 会被下一个窗口
-复用，所以下一次 `prepare` 之前先取走 `samples`。
+`RXData.samples` 在第一次访问时把窗口按 `RX_LAYOUT` 解码成 complex64。buffer 会被下一个窗口复用，所以下一次 `prepare` 之前先取走 `samples`。
 
-`prepare` 必须在 RX doorbell 之前：S2MM 没就绪时 PL 拒绝 doorbell（0x14）。doorbell 被拒绝或
-窗口被取消时，已启动的传输等不到 TLAST；下一次 `prepare` 发现通道不空闲会先复位 DMA，也可以
-立即 `abort()`。窗口作废（`RXWindowInvalid`）时 DMA 照常结束（P4 在 DMA 收下 TLAST 后才报告
-DONE），不需要处理。
+`prepare` 必须在 RX doorbell 之前：S2MM 没就绪时 PL 拒绝 doorbell（0x14）。doorbell 被拒绝或窗口被取消时，已启动的传输等不到 TLAST；下一次 `prepare` 发现通道不空闲会先复位 DMA，也可以立即 `abort()`。窗口作废（`RXWindowInvalid`）时 DMA 照常结束（P4 在 DMA 收下 TLAST 后才报告 DONE），不需要处理。
 
 | 异常              | 时机                                    |
 | ----------------- | --------------------------------------- |
 | `RXDMAError`      | DMA 字节数 ≠ `RX_BEATS × 32`；没有 `prepare` 就 `wait` |
 
-`PynqS2MMDMA(dma, *, length_reader=None)` 把 PYNQ 的 `DMA` 对象适配成 `RXDMA` 需要的
-`prepare`/`wait`/`abort`/`received_bytes`。`prepare` 只按窗口字节数启动传输，所以一块大
-buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复位位清掉一次不会结束的传输。
-`pynq_rx_dma(overlay, name="rx_dma")` 返回板上的适配器：overlay 加载前没导入 `pynq.lib.dma`
-时，按 HWH 描述自己构造驱动。
+`PynqS2MMDMA(dma, *, length_reader=None)` 把 PYNQ 的 `DMA` 对象适配成 `RXDMA` 需要的 `prepare`/`wait`/`abort`/`received_bytes`。`prepare` 只按窗口字节数启动传输，所以一块大 buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复位位清掉一次不会结束的传输。`pynq_rx_dma(overlay, name="rx_dma")` 返回板上的适配器：overlay 加载前没导入 `pynq.lib.dma` 时，按 HWH 描述自己构造驱动。
 
 ### 11.9 `rf_clock.pl.waveform`
 
 #### `WaveformGenerator(amplitude=512, chip_count=4096, lfsr_seed=0xACE1, periodic=False, beta=0.25, span_chips=10, samples_per_symbol=8)`
 
-在 ARM 上生成 BPSK PRN 波形（Q = 0）。RRC 系数由 `beta`、`span_chips`、`samples_per_symbol`
-现算（`rrc_config()`，板上约 2 ms），不存数据文件。
+在 ARM 上生成 BPSK PRN 波形（Q = 0）。RRC 系数由 `beta`、`span_chips`、`samples_per_symbol` 现算（`rrc_config()`，板上约 2 ms），不存数据文件。
 
 | 成员                                                                               | 说明                                                         |
 | ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -1164,18 +1053,11 @@ buffer 可以反复用于较短的窗口。`abort()` 用 `S2MM_DMACR` 的软复�
 | `chips(count=None, seed=None)`                                                   | PRN 码片                                                     |
 | `tap_count`、`tail_samples`、`expected_sample_count`、`config_id`             | 配置派生量                                                   |
 
-默认配置：β = 0.25，跨 10 个码片，8 个样本/码片（81 抽头），4096 个码片，32841 个样本，4106 个
-beat（约 41 µs）。`config_id` 是 RRC 参数的哈希（默认 2134958710），随每次测量记录，收发两端靠它
-确认用的是同一个滤波器；`tests/test_waveform.py` 用一份黄金系数防止实现漂移。
-`rrc_config(beta, span_chips, samples_per_symbol)` 返回 `(配置字典, 系数列表)`。
+默认配置：β = 0.25，跨 10 个码片，8 个样本/码片（81 抽头），4096 个码片，32841 个样本，4106 个 beat（约 41 µs）。`config_id` 是 RRC 参数的哈希（默认 2134958710），随每次测量记录，收发两端靠它确认用的是同一个滤波器；`tests/test_waveform.py` 用一份黄金系数防止实现漂移。`rrc_config(beta, span_chips, samples_per_symbol)` 返回 `(配置字典, 系数列表)`。
 
-板上 `generate_beats()` 4096 码片约 50 ms，65535 码片约 0.7 s，主要花在计算样本上；打包对整个数组
-一次完成。
+板上 `generate_beats()` 4096 码片约 50 ms，65535 码片约 0.7 s，主要花在计算样本上；打包对整个数组一次完成。
 
-`periodic=True` 生成的是码序列无限重复时的一个周期：RRC 拖尾绕回到开头（循环卷积，
-`simulate_periodic_convolution`），长度正好 `chip_count × 8` 个样本 = `chip_count` 个 beat，
-没有拖尾。用 `arm_tx(..., repeat=n)` 重复播放时得到一段连续信号；65535 码片的 m 序列一个周期
-65535 beat，放得下。
+`periodic=True` 生成的是码序列无限重复时的一个周期：RRC 拖尾绕回到开头（循环卷积，`simulate_periodic_convolution`），长度正好 `chip_count × 8` 个样本 = `chip_count` 个 beat，没有拖尾。用 `arm_tx(..., repeat=n)` 重复播放时得到一段连续信号；65535 码片的 m 序列一个周期 65535 beat，放得下。
 
 ```python
 gen = WaveformGenerator(chip_count=65535, periodic=True)
@@ -1206,9 +1088,7 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 | `find_peak(corr, *, guard=16)`         | 取幅度最大处，三点抛物线插值得到分数位置；峰两侧`guard` 个样本算主瓣，之外找最大旁瓣     |
 | `estimate_delay(rx, ref, *, guard=16)` | 上面两步合起来，返回`Peak`                                                               |
 
-`Peak` 字段：`index`（分数样本，参考波形在 rx 中的起点）、`integer_index`、`magnitude`、
-`peak_to_sidelobe`（及 `peak_to_sidelobe_db`）、`phase`。对默认 RRC 波形，抛物线插值的偏差
-在整个分数范围内不超过 0.002 个样本（无噪声仿真）。
+`Peak` 字段：`index`（分数样本，参考波形在 rx 中的起点）、`integer_index`、`magnitude`、`peak_to_sidelobe`（及 `peak_to_sidelobe_db`）、`phase`。对默认 RRC 波形，抛物线插值的偏差在整个分数范围内不超过 0.002 个样本（无噪声仿真）。
 
 ## 12. 异常与返回码
 
@@ -1237,9 +1117,7 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 
 ## 13. 板上检查（`rf_clock.checks`）
 
-随包安装，在板上以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<模块> ...`，
-`--help` 查看全部选项。记录追加到当前目录下的 `m2_runs.jsonl`、`m3_runs.jsonl`。卡死时用
-`tools/jtag_reset_board.tcl` 远程复位（§9.1）。
+随包安装，在板上以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<模块> ...`，`--help` 查看全部选项。记录追加到当前目录下的 `m2_runs.jsonl`、`m3_runs.jsonl`。卡死时用 `tools/jtag_reset_board.tcl` 远程复位（§9.1）。
 
 | 模块           | 里程碑             | 用法                                                                                                                                                                         |
 | -------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1247,13 +1125,9 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 | `m2_tx_timing` | M2：MTS 与定时 TX  | `[突发数] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`；每个 PPS 发一个突发；每次运行的 MTS 延时追加到 `m2_runs.jsonl` |
 | `m3_loopback`  | M3：环回、RX、相关 | `[次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl`             |
 
-三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的
-bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
+三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
 
-带宽不够看射频的示波器用 `m2_tx_timing --scope-nco`：DAC 临时改为 IMR 低通、1 区，`--scope-nco 100`
-把输出搬到 100 MHz，`--scope-nco 0` 旁路混频器、直接输出 I 样本；结束时恢复。量"PPS → 突发起点"
-用 `--scope-nco 0 --waveform square --offset-ticks 0`：方波的第一个边沿与 NCO 相位无关
-（2026-10-14 测得 180.00 ns，重启 5 次不变；DAC_A 输出相对 I 反相，第一个边沿是下降沿）。
+带宽不够看射频的示波器用 `m2_tx_timing --scope-nco`：DAC 临时改为 IMR 低通、1 区，`--scope-nco 100` 把输出搬到 100 MHz，`--scope-nco 0` 旁路混频器、直接输出 I 样本；结束时恢复。量"PPS → 突发起点" 用 `--scope-nco 0 --waveform square --offset-ticks 0`：方波的第一个边沿与 NCO 相位无关（2026-10-14 测得 180.00 ns，重启 5 次不变；DAC_A 输出相对 I 反相，第一个边沿是下降沿）。
 
 ---
 
@@ -1274,8 +1148,7 @@ bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-tri
 
 ### 14.1 软件包与 overlay
 
-overlay 随 Python 包一起发布，放在 `src/rf_clock/overlay/`，由 `tools/package_overlay.py`
-从构建目录复制过来：
+overlay 随 Python 包一起发布，放在 `src/rf_clock/overlay/`，由 `tools/package_overlay.py` 从构建目录复制过来：
 
 | 文件                               | 内容                                                                                       |
 | ---------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -1283,8 +1156,7 @@ overlay 随 Python 包一起发布，放在 `src/rf_clock/overlay/`，由 `tools
 | `rf_clock_hw.xsa`                | Vitis/PetaLinux 用的硬件平台（含 bitstream）。不能叫 `rf_clock.xsa`：PYNQ 3.1 看到同名 `.xsa` 会改走 XSA 分支，加载 `.bit` 失败 |
 | `manifest.json`                  | `build_version`、构建目录、`build_status`（status.txt，含 WNS/WHS）、三个文件的 sha256 |
 
-三个二进制文件用 Git LFS 保存（`.gitattributes`）。克隆后要先 `git lfs install`、`git lfs pull`，
-否则拿到的是指针文件，`PL.open()` 的 sha256 校验会拒绝它。
+三个二进制文件用 Git LFS 保存（`.gitattributes`）。克隆后要先 `git lfs install`、`git lfs pull`，否则拿到的是指针文件，`PL.open()` 的 sha256 校验会拒绝它。
 
 rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手改 `pyproject.toml`：
 
@@ -1294,20 +1166,16 @@ rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手�
 | C   | 这一版协议下的第几个 bitstream | 重新出 bitstream（寄存器不变），D 清零    |
 | D   | 只改 Python                    | 不重新构建                                |
 
-先改版本号再构建，构建脚本把它写进 `BUILD_VERSION`。A.B 与 `P_VERSION` 不一致时构建脚本报错，
-`tests/test_abi_sync.py` 也检查这一点。
+先改版本号再构建，构建脚本把它写进 `BUILD_VERSION`。A.B 与 `P_VERSION` 不一致时构建脚本报错，`tests/test_abi_sync.py` 也检查这一点。
 
 `PL.open()` 检查两次，不一致时抛 `VersionMismatch`（`check_version=False` 关闭）：
 
-1. 加载前：bitstream 同目录有 `manifest.json` 时，它的 `build_version` 与
-   `importlib.metadata.version("rf-clock")` 的 A.B.C 必须相同，`.bit`、`.hwh` 的 sha256
-   必须与 manifest 一致。直接从构建目录加载（没有 manifest）时跳过这一步。
+1. 加载前：bitstream 同目录有 `manifest.json` 时，它的 `build_version` 与 `importlib.metadata.version("rf-clock")` 的 A.B.C 必须相同，`.bit`、`.hwh` 的 sha256 必须与 manifest 一致。直接从构建目录加载（没有 manifest）时跳过这一步。
 2. 加载后：`BUILD_VERSION` 与安装的 rf-clock 的 A.B.C 相同。
 
 只有 D 可以不同：只改 Python 的发布继续用原来的 bitstream。
 
-可编辑安装记录的是安装那一刻的版本，改了 `pyproject.toml` 要重新安装（板上
-`uv pip install --no-deps -e .`；开发机上 `uv run` 会自动重装）。
+可编辑安装记录的是安装那一刻的版本，改了 `pyproject.toml` 要重新安装（板上 `uv pip install --no-deps -e .`；开发机上 `uv run` 会自动重装）。
 
 发布一个新 bitstream：
 
@@ -1320,20 +1188,14 @@ rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手�
 4. 提交，打 tag 并推送（见下）；板上安装新 wheel，或同步 src/ 后 uv pip install --no-deps -e .
 ```
 
-发布：推送 `vA.B.C.D` 形式的 tag 时，GitHub Action（`.github/workflows/release.yml`）先用
-`tools/release_notes.py` 校验（tag 等于 `v` + `pyproject.toml` 的版本；overlay 不是 LFS 指针、与
-manifest 一致、A.B.C 相同），再 `uv build`，并建立 GitHub Release，附上 wheel、sdist 和
-`manifest.json`。发布说明由 tag 的说明文字、overlay 构建记录、上一个 tag 以来的提交和安装步骤组成。
+发布：推送 `vA.B.C.D` 形式的 tag 时，GitHub Action（`.github/workflows/release.yml`）先用 `tools/release_notes.py` 校验（tag 等于 `v` + `pyproject.toml` 的版本；overlay 不是 LFS 指针、与 manifest 一致、A.B.C 相同），再 `uv build`，并建立 GitHub Release，附上 wheel、sdist 和 `manifest.json`。发布说明由 tag 的说明文字、overlay 构建记录、上一个 tag 以来的提交和安装步骤组成。
 
 ```text
 git tag -a v1.3.0.1 -m "说明这次改了什么"
 git push origin v1.3.0.1
 ```
 
-组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取
-`.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release，
-同时把 wheel 和 sdist 上传到仓库所有者的 Gitea PyPI 软件包仓库。上传需要一个名为 `PACKAGE_TOKEN` 的 Actions
-密钥（有软件包写入权限的访问令牌；任务自带的令牌不能写入软件包）。用一个有读取软件包权限的 Gitea 访问令牌即可安装：
+组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取 `.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release，同时把 wheel 和 sdist 上传到仓库所有者的 Gitea PyPI 软件包仓库。上传需要一个名为 `PACKAGE_TOKEN` 的 Actions 密钥（有软件包写入权限的访问令牌；任务自带的令牌不能写入软件包）。用一个有读取软件包权限的 Gitea 访问令牌即可安装：
 
 ```text
 uv pip install --no-deps --index-url http://<用户名>:<令牌>@<gitea>/api/packages/<所有者>/pypi/simple rf-clock==1.3.0.2
@@ -1341,34 +1203,25 @@ uv pip install --no-deps --index-url http://<用户名>:<令牌>@<gitea>/api/pac
 
 tag 推到哪个远端，哪个远端就发布 Release。
 
-wheel 里有库、随包的 overlay、时钟寄存器文件、`rf_clock.examples` 和 `rf_clock.checks`；在板上
-装好（§9.1）即可使用，不需要仓库。
+wheel 里有库、随包的 overlay、时钟寄存器文件、`rf_clock.examples` 和 `rf_clock.checks`；在板上装好（§9.1）即可使用，不需要仓库。
 
 ## 15. 尚未确定
 
 统一记录在 `plan/checklist.md`，确认后回填本文。主要有：
 
-- beat 内一对 16 位里哪个是 I、哪个是 Q（lane 顺序已确认，§4.5.8、§4.6.9），以及接收基带
-  是否是发射基带的共轭；BPSK 实信号不受影响。
-- 接上环回线（DAC → 衰减器 → ADC）后的环回延时标准差和重启一致性（M3 验收）；
-  `PynqS2MMDMA.abort()` 在板上的行为。
+- beat 内一对 16 位里哪个是 I、哪个是 Q（lane 顺序已确认，§4.5.8、§4.6.9），以及接收基带是否是发射基带的共轭；BPSK 实信号不受影响。
+- 接上环回线（DAC → 衰减器 → ADC）后的环回延时标准差和重启一致性（M3 验收）；`PynqS2MMDMA.abort()` 在板上的行为。
 - MTS 延时的标定目标值，以及 PPS 沿相对 tick 的亚 tick 相位。
 
 ---
 
 # 附录 A 底层访问：不用 `rf_clock.pl` 时怎么做
 
-本附录说明第一部分的三种访问方式在 Linux 上是怎么实现的，以及只用 PYNQ 原生接口或 C++
-时的写法。示例在 `rf_clock/examples/native/`，2026-10-14 在板上运行通过（以 root 运行，overlay
-已加载、fabric 时钟在运行）。
+本附录说明第一部分的三种访问方式在 Linux 上是怎么实现的，以及只用 PYNQ 原生接口或 C++ 时的写法。示例在 `rf_clock/examples/native/`，2026-10-14 在板上运行通过（以 root 运行，overlay 已加载、fabric 时钟在运行）。
 
 ## A.1 原理
 
-每个 IP 在 PS 的物理地址空间里占一段（§1.2）。CPU 对这段地址的读写，经 PS 的 `M_AXI_HPM0_FPD`
-端口和 SmartConnect 变成发给该 IP 的 AXI 读写事务。Linux 用户进程不能直接用物理地址，要先把
-`/dev/mem` 的这一段 `mmap` 进进程（需要 root）；以 `O_SYNC` 打开时得到的是不经 CPU cache 的
-设备内存映射，此后每一次 32 位读或写就是总线上一次 AXI 事务。PYNQ 的 `MMIO` 就是这样实现的
-（`/dev/mem` + `mmap` + numpy uint32 视图）。
+每个 IP 在 PS 的物理地址空间里占一段（§1.2）。CPU 对这段地址的读写，经 PS 的 `M_AXI_HPM0_FPD` 端口和 SmartConnect 变成发给该 IP 的 AXI 读写事务。Linux 用户进程不能直接用物理地址，要先把 `/dev/mem` 的这一段 `mmap` 进进程（需要 root）；以 `O_SYNC` 打开时得到的是不经 CPU cache 的设备内存映射，此后每一次 32 位读或写就是总线上一次 AXI 事务。PYNQ 的 `MMIO` 就是这样实现的（`/dev/mem` + `mmap` + numpy uint32 视图）。
 
 | 通路                                                   | 对面是什么                                      | 怎么访问                                                                           |
 | ------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -1376,8 +1229,7 @@ wheel 里有库、随包的 overlay、时钟寄存器文件、`rf_clock.examples
 | 按内存写入（TX buffer）                                | AXI BRAM 控制器后面的一块 RAM                   | 同样的映射，但没有副作用，可以整块写                                               |
 | DMA buffer + DMA 寄存器（RX）                          | PL 的 S2MM 作为总线主机，经 HP0 端口直接写 DDR  | 分配物理连续的 DDR buffer → 用 MMIO 写 DMA 寄存器启动 → 处理 cache → 读普通内存 |
 
-PYNQ 的 `allocate()` 经 XRT/zocl 从 CMA 分配物理连续内存，返回带 `.physical_address` 的 numpy 数组；
-默认不经 CPU cache，`cacheable=True` 时读得更快，但每次读之前必须 `invalidate()`。
+PYNQ 的 `allocate()` 经 XRT/zocl 从 CMA 分配物理连续内存，返回带 `.physical_address` 的 numpy 数组；默认不经 CPU cache，`cacheable=True` 时读得更快，但每次读之前必须 `invalidate()`。
 
 板上实测（2026-10-14）：
 
@@ -1439,22 +1291,14 @@ p2[0x40 / 4] = target; p2[0x44 / 4] = target >> 32; p2[0x48 / 4] = nbeats;
 p2[0x08 / 4] = 0x1;                              // doorbell
 ```
 
-编译：在该文件所在目录 `g++ -O2 -o mmio_demo mmio_demo.cpp`，以 root 运行。`volatile` 保证每次访问
-都真的发到总线上、编译器不调换顺序。
+编译：在该文件所在目录 `g++ -O2 -o mmio_demo mmio_demo.cpp`，以 root 运行。`volatile` 保证每次访问都真的发到总线上、编译器不调换顺序。
 
-DMA buffer 在 C++ 里需要物理连续内存。可以用 XRT 的 C++ 接口（PYNQ 底层用的就是它：`xrt::bo`、
-`bo.address()` 取物理地址、`bo.map()`、`bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`；板上有 XRT 2.17，
-**这条路尚未在板上试过**），或者由 Python 分配、流程控制留在 Python，只把大数据量的计算写成
-C++ 扩展。
+DMA buffer 在 C++ 里需要物理连续内存。可以用 XRT 的 C++ 接口（PYNQ 底层用的就是它：`xrt::bo`、`bo.address()` 取物理地址、`bo.map()`、`bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE)`；板上有 XRT 2.17，**这条路尚未在板上试过**），或者由 Python 分配、流程控制留在 Python，只把大数据量的计算写成 C++ 扩展。
 
 ## A.4 注意事项
 
 1. 都需要 root（`/dev/mem`）。
 2. 访问 fabric 域（P2、TX buffer）之前先读时钟状态 GPIO，C++ 也一样，否则总线卡死只能复位整板。
-3. P2 只用对齐的 32 位访问：8/16 位写返回 SLVERR；64 位写可能被拆成两次，与 doorbell 的顺序
-   语义冲突。
-4. TX buffer 整块写要 4 字节对齐；不要对映射区用 `memset` 或非对齐访问（可能用到设备内存不
-   允许的指令，进程收到 SIGBUS）。numpy 切片赋值实测可用。
-5. C++ 里普通内存（DMA buffer）与设备寄存器之间的先后，`volatile` 管不到：在"写完数据"和
-   "按 doorbell"之间、"确认 DMA 完成"和"读数据"之间加屏障（`std::atomic_thread_fence` 或
-   `__sync_synchronize()`）。
+3. P2 只用对齐的 32 位访问：8/16 位写返回 SLVERR；64 位写可能被拆成两次，与 doorbell 的顺序语义冲突。
+4. TX buffer 整块写要 4 字节对齐；不要对映射区用 `memset` 或非对齐访问（可能用到设备内存不允许的指令，进程收到 SIGBUS）。numpy 切片赋值实测可用。
+5. C++ 里普通内存（DMA buffer）与设备寄存器之间的先后，`volatile` 管不到：在"写完数据"和 "按 doorbell"之间、"确认 DMA 完成"和"读数据"之间加屏障（`std::atomic_thread_fence` 或 `__sync_synchronize()`）。
