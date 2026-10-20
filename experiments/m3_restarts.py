@@ -130,7 +130,7 @@ def lmx_readback(device: dict, r0: int) -> dict:
     return {name: (words[addr] >> shift) & ((1 << bits) - 1) for name, (addr, shift, bits) in LMX_READBACK.items()}
 
 
-def write_clocks(adc: str, dac: str, readback: bool = False, adc_capctrl: int | None = None) -> None:
+def write_clocks(adc: str, dac: str, readback: bool = False, capctrl: dict[str, int | None] | None = None) -> None:
     """On the board: the clocks as PL.open writes them, then each "nosync" LMX2594 rewritten
     with the unsynchronized image (reset, all registers, VCO calibration) and no SYNC.
 
@@ -138,8 +138,8 @@ def write_clocks(adc: str, dac: str, readback: bool = False, adc_capctrl: int | 
     LMK04828, then each LMX2594 once, a "legacy" one with the unsynchronized image
     and no SYNC (never with the synchronized image first), a "sync" one as now.
 
-    ``adc_capctrl`` then rewrites the ADC's LMX2594 (synchronized) with its VCO
-    band forced to that capcode instead of calibrated."""
+    ``capctrl`` ({"adc": N, "dac": None}) then rewrites that LMX2594 (synchronized)
+    with its VCO band forced to capcode N instead of calibrated."""
     from types import SimpleNamespace
 
     from xrfclk import xrfclk  # board-only  # pyright: ignore[reportMissingImports]
@@ -177,15 +177,17 @@ def write_clocks(adc: str, dac: str, readback: bool = False, adc_capctrl: int | 
             for side, count in writes.items():
                 if count > n:
                     xrfclk._write_LMX_regs(unsynced, lmx_device(xrfclk.lmx_devices, LMX_NODES[side]))
-    if adc_capctrl is not None:
-        if adc != "sync":
-            sys.exit("--adc-capctrl needs --adc-lmx sync")
-        forced = [w | LMX_CAPCTRL_FORCE if w >> 16 == 8 else (w & ~0xFF) | adc_capctrl if w >> 16 == 19 else w
+    for side, code in (capctrl or {}).items():
+        if code is None:
+            continue
+        if {"adc": adc, "dac": dac}[side] != "sync":
+            sys.exit(f"--{side}-capctrl needs --{side}-lmx sync")
+        forced = [w | LMX_CAPCTRL_FORCE if w >> 16 == 8 else (w & ~0xFF) | code if w >> 16 == 19 else w
                   for w in image]
-        device = lmx_device(xrfclk.lmx_devices, LMX_NODES["adc"])
+        device = lmx_device(xrfclk.lmx_devices, LMX_NODES[side])
         xrfclk._write_LMX_regs(forced, device)
         board.sync_lmx_phase(SimpleNamespace(lmx_devices=[device]), image[-1])
-        print(f"ADC LMX2594 rewritten with VCO_CAPCTRL forced to {adc_capctrl}", flush=True)
+        print(f"{side.upper()} LMX2594 rewritten with VCO_CAPCTRL forced to {code}", flush=True)
     time.sleep(1.0)  # as PL.open: let the PLLs settle
     print(f"clocks written, ADC LMX2594 {adc}, DAC LMX2594 {dac}", flush=True)
     if readback:
@@ -329,8 +331,9 @@ def main() -> None:
     parser.add_argument("--reboot", action="store_true", help="reboot the board before every run but the first")
     parser.add_argument("--readback", action="store_true",
                         help="read back each LMX2594's VCO calibration result after writing the clocks")
-    parser.add_argument("--adc-capctrl", type=int, choices=range(184), metavar="0..183",
-                        help="force the ADC LMX2594's VCO band (VCO_CAPCTRL) instead of calibrating it")
+    for side in ("adc", "dac"):
+        parser.add_argument(f"--{side}-capctrl", type=int, choices=range(184), metavar="0..183",
+                            help=f"force the {side.upper()} LMX2594's VCO band (VCO_CAPCTRL) instead of calibrating it")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--captures", type=int, default=30, help="M3 windows per run")
     parser.add_argument("--board", default=BOARD)
@@ -339,7 +342,7 @@ def main() -> None:
     parser.add_argument("--run-m3", action="store_true", help=argparse.SUPPRESS)
     args, m3_argv = parser.parse_known_args()
     if args.write_clocks:
-        write_clocks(args.adc_lmx, args.dac_lmx, args.readback, args.adc_capctrl)
+        write_clocks(args.adc_lmx, args.dac_lmx, args.readback, {"adc": args.adc_capctrl, "dac": args.dac_capctrl})
         return
     if args.run_m3:
         sys.exit(run_m3(args.nco_reset, args.nco_event, m3_argv))
@@ -354,7 +357,8 @@ def main() -> None:
     out.mkdir(parents=True)
     print(f"results in {out}; ADC LMX2594 {args.adc_lmx}"
           + (f" (VCO_CAPCTRL forced to {args.adc_capctrl})" if args.adc_capctrl is not None else "")
-          + f", DAC LMX2594 {args.dac_lmx}, "
+          + f", DAC LMX2594 {args.dac_lmx}"
+          + (f" (VCO_CAPCTRL forced to {args.dac_capctrl})" if args.dac_capctrl is not None else "") + ", "
           f"NCO reset {args.nco_reset} ({args.nco_event}), reboots {args.reboot}", flush=True)
     records: list[dict] = []
     try:
@@ -367,11 +371,13 @@ def main() -> None:
             rec: dict = {"run": run, "start": datetime.now().isoformat(timespec="seconds"), "board": ip,
                          "adc_lmx": args.adc_lmx, "dac_lmx": args.dac_lmx, "nco_reset": args.nco_reset,
                          "nco_event": args.nco_event, "adc_capctrl": args.adc_capctrl,
+                         "dac_capctrl": args.dac_capctrl,
                          "rebooted": args.reboot and run > 1,
                          "captures": args.captures}
             r = ssh(ip, f"cd ~/RF-clock && sudo -n {ENV} .venv/bin/python {REMOTE} --write-clocks "
                         f"--adc-lmx {args.adc_lmx} --dac-lmx {args.dac_lmx}" + (" --readback" if args.readback else "")
-                        + (f" --adc-capctrl {args.adc_capctrl}" if args.adc_capctrl is not None else ""),
+                        + "".join(f" --{side}-capctrl {code}" for side, code in
+                                  (("adc", args.adc_capctrl), ("dac", args.dac_capctrl)) if code is not None),
                     timeout=420)  # waits for the boot to finish (up to 300 s) after a reboot
             text = r.stdout + r.stderr
             if m := READBACK_LINE.search(text):
