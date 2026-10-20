@@ -230,7 +230,8 @@ def main() -> int:
     mode.add_argument("--stress", action="store_true", help="long RX windows under DDR load")
     parser.add_argument("--offset-ticks", type=int, default=100_000,
                         help="slot start after the PPS, in 10-ns ticks (default 1 ms)")
-    parser.add_argument("--amplitude", type=float, default=4096.0, help="PRN waveform amplitude")
+    parser.add_argument("--amplitude", type=float, default=16000.0,
+                        help="PRN waveform amplitude (16000: about 1 ps per run in the wired loopback)")
     parser.add_argument("--impulse", type=int, default=16384, help="lane-check impulse amplitude")
     parser.add_argument("--margin-beats", type=int, default=1250,
                         help="RX window beyond the burst, in beats (default 10 us)")

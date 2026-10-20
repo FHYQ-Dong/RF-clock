@@ -15,7 +15,7 @@ runtime and is imported lazily, so the module loads on a development machine.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -66,7 +66,10 @@ typedef struct {
 
 u32 XRFdc_MultiConverter_Sync(XRFdc *InstancePtr, u32 Type, XRFdc_MultiConverter_Sync_Config *ConfigPtr);
 void XRFdc_MultiConverter_Init(XRFdc_MultiConverter_Sync_Config *ConfigPtr, int *PLL_CodesPtr, int *T1_CodesPtr);
+u32 XRFdc_MTS_Sysref_Config(XRFdc *InstancePtr, XRFdc_MultiConverter_Sync_Config *DACSyncConfigPtr,
+                            XRFdc_MultiConverter_Sync_Config *ADCSyncConfigPtr, u32 SysRefEnable);
 """
+SYSREF_WAIT_S = 0.001  # SYSREF is 5 MHz: an edge every 200 ns
 
 
 class RFDCError(RuntimeError):
@@ -91,6 +94,10 @@ class MTSResult:
     target_latency: int  # requested; -1 = align to the largest measured
     latency: tuple[int, ...]  # per tile 0..3, after alignment
     offset: tuple[int, ...]  # per tile 0..3, applied delay steps
+    # SYSREF capture delay codes the driver picked (0..127) and the number of
+    # capture windows it found, per tile 0..3, for the PLL and the T1 clock: they
+    # follow the tile clock's phase to SYSREF, which latency and offset do not.
+    dtc: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def on_target(self) -> bool:
@@ -122,6 +129,7 @@ class RFDCSetupResult:
     adc: MTSResult
     started_after_startup_call: bool  # tiles needed an explicit StartUp
     mixers: dict[str, Any]  # signal-tile mixer settings read back
+    nco_synced: bool = False  # NCO phases restarted at a SYSREF edge (sync_nco_phase)
 
 
 _MTS: tuple[Any, Any] | None = None  # (cffi.FFI, dlopen'ed libxrfdc)
@@ -224,6 +232,9 @@ def run_mts(
     config.RefTile = int(ref_tile)
     config.Target_Latency = int(target_latency)
     status = int(lib.XRFdc_MultiConverter_Sync(rfdc._instance, DAC if kind == "DAC" else ADC, config))
+    dtc = {f"{name}_{key}": tuple(int(getattr(settings, field_)[t]) for t in range(4))
+           for name, settings in (("pll", config.DTC_Set_PLL), ("t1", config.DTC_Set_T1))
+           for key, field_ in (("code", "DTC_Code"), ("windows", "Num_Windows"))}
     return MTSResult(
         kind=kind,
         status=status,
@@ -232,7 +243,57 @@ def run_mts(
         target_latency=int(target_latency),
         latency=tuple(int(config.Latency[t]) for t in range(4)),
         offset=tuple(int(config.Offset[t]) for t in range(4)),
+        dtc=dtc,
     )
+
+
+def sync_nco_phase(
+    rfdc: Any,
+    tiles: tuple[int, ...] = DEFAULT_TILES,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Restart the NCO phase of block 0 of every ADC and DAC tile at one SYSREF edge.
+
+    MTS aligns the data paths but not the NCO phase accumulators.  The IP
+    starts them on a tile event, issued by software at an arbitrary instant, so
+    after every PL.open the carrier phase landed on one of three values
+    120 degrees apart, on the DAC and on the ADC
+    (results/lmx-sync-loopback-20261019, section 4).  This is PG269's "Use
+    Case 1: Synchronize Digital Features Using SYSREF for Single Device": with
+    the SYSREF receivers off, each mixer takes SYSREF as its event source and
+    ResetNCOPhase arms a phase reset; turning the receivers on lets the next
+    SYSREF edge apply it, and they are turned off again.  A SYSREF period
+    (200 ns) holds whole NCO periods (760 at 3.8 GHz, 200 at 1.0 GHz), so every
+    edge gives the same phase.  The event sources are then set back, so later
+    mixer changes with UpdateEvent keep working.
+    """
+    import xrfdc  # board-only  # pyright: ignore[reportMissingImports]
+
+    ffi, lib = _mts_api()
+    configs = []
+    for _ in (DAC, ADC):
+        config = ffi.new("XRFdc_MultiConverter_Sync_Config*")
+        lib.XRFdc_MultiConverter_Init(config, ffi.NULL, ffi.NULL)
+        config.Tiles = sum(1 << t for t in tiles)
+        configs.append(config)
+
+    def sysref_receivers(enable: int) -> None:
+        status = int(lib.XRFdc_MTS_Sysref_Config(rfdc._instance, configs[0], configs[1], enable))
+        if status:
+            raise RFDCError(f"XRFdc_MTS_Sysref_Config({enable}) failed: {decode_mts_status(status)}")
+
+    blocks = [kind_tiles[t].blocks[0] for kind_tiles in (rfdc.dac_tiles, rfdc.adc_tiles) for t in tiles]
+    sources = [block.MixerSettings["EventSource"] for block in blocks]
+    sysref_receivers(0)
+    for block in blocks:
+        block.MixerSettings = {**block.MixerSettings, "EventSource": xrfdc.EVNT_SRC_SYSREF}
+        block.ResetNCOPhase()
+    sysref_receivers(1)
+    sleep(SYSREF_WAIT_S)
+    sysref_receivers(0)
+    for block, source in zip(blocks, sources):
+        block.MixerSettings = {**block.MixerSettings, "EventSource": source}
 
 
 def setup_rfdc_and_mts(
@@ -245,7 +306,8 @@ def setup_rfdc_and_mts(
     dac_target_latency: int = -1,
     adc_target_latency: int = -1,
 ) -> RFDCSetupResult:
-    """Start the ADC/DAC tiles and run DAC then ADC MTS (``docs/ABI.md`` 7.1).
+    """Start the ADC/DAC tiles, run DAC then ADC MTS (``docs/ABI.md`` 7.1) and,
+    if both succeed, restart the NCO phases at a SYSREF edge (``sync_nco_phase``).
 
     Raises RFDCError if either sync reports a non-OK status; the error carries
     the result so the latencies can still be logged.
@@ -254,11 +316,15 @@ def setup_rfdc_and_mts(
     called = start_tiles(rfdc, tiles)
     dac = run_mts(rfdc, "DAC", tiles, ref_tile=ref_tile, target_latency=dac_target_latency)
     adc = run_mts(rfdc, "ADC", tiles, ref_tile=ref_tile, target_latency=adc_target_latency)
+    nco_synced = dac.ok and adc.ok
+    if nco_synced:
+        sync_nco_phase(rfdc, tiles)
     mixers = {
         "DAC": dict(rfdc.dac_tiles[signal_tile].blocks[0].MixerSettings),
         "ADC": dict(rfdc.adc_tiles[signal_tile].blocks[0].MixerSettings),
     }
-    result = RFDCSetupResult(dac=dac, adc=adc, started_after_startup_call=called, mixers=mixers)
+    result = RFDCSetupResult(dac=dac, adc=adc, started_after_startup_call=called, mixers=mixers,
+                             nco_synced=nco_synced)
     if not (dac.ok and adc.ok):
         error = RFDCError(f"{dac.describe()}; {adc.describe()}")
         error.result = result  # type: ignore[attr-defined]

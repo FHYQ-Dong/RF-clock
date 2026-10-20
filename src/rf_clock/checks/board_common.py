@@ -81,6 +81,7 @@ def mts_record(result) -> dict:
         "target_latency": result.target_latency,
         "latency": {t: result.latency[t] for t in result.tiles},
         "offset": {t: result.offset[t] for t in result.tiles},
+        "dtc": {key: {t: values[t] for t in result.tiles} for key, values in result.dtc.items()},
     }
 
 
@@ -109,6 +110,7 @@ def open_pl(args, log: RunLog) -> PL | None:
     log.record["abi_version"] = f"0x{pl.ctrl.info.version:08x}"
     log.record["mts"] = {"dac": mts_record(mts.dac), "adc": mts_record(mts.adc)}
     log.record["tile_startup_call_needed"] = mts.started_after_startup_call
+    log.record["nco_synced"] = mts.nco_synced
     log.record["mixers"] = mts.mixers
     for kind, settings in mts.mixers.items():
         print(f"{kind} tile 2 block 0 mixer: Freq {settings.get('Freq')} MHz, "

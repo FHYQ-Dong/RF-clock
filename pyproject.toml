@@ -1,6 +1,6 @@
 [project]
 name = "rf-clock"
-version = "1.3.0.4"
+version = "1.3.0.5"
 description = "RF clock control library for Q-LATS Project. This library provides a Python interface for controlling the RF clock overlay on PYNQ platforms."
 readme = "README.md"
 authors = [
@@ -23,8 +23,8 @@ plot = [
     "matplotlib",
     "plotly>=7.1.0",
 ]
-# Lab instrument drivers (scope, EPG1) for tools/ only; not a dependency of the rf-clock
-# package. From the Tanglab Gitea registry (yale.internal network).
+# Lab instrument drivers (scope, EPG1, SA124B) for experiments/ only; not a dependency of
+# the rf-clock package. From the Tanglab Gitea registry (yale.internal network).
 instruments = [
     "tanglab-instruments[pyvisa-py]>=0.2.0",
 ]

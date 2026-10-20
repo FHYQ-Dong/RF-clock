@@ -655,7 +655,9 @@ RFDC
  6. 等 ADC、DAC 的 tile 0 和 tile 2 都进入启动完成状态（TileState 0xF）；pl_resetn0 之后
     IP 会自行重新启动，超时才调用 StartUp
  7. 先 DAC、后 ADC 执行 MTS（tile 0、2），目标延时固定为 DAC 1896、ADC 1296，使数据通路
-    延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止
+    延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止。然后在同一个 SYSREF 沿上
+    让四个 tile 的 NCO 重新起相（PG269 "Use Case 1"），使每次上电后载波相位都相同（rf-clock
+    1.3.0.5 起；此前它会落在相差 120° 的三个值之一）
 PL
  8. 读 ID == 0x52434C4B，VERSION 的 major == 1；BUILD_VERSION 的 A.B.C 与
     安装的 rf-clock 相同（§14.1）
@@ -975,21 +977,22 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 
 #### `setup_rfdc_and_mts(overlay, *, rfdc_name="rfdc", tiles=(0, 2), signal_tile=2, ref_tile=0, dac_target_latency=-1, adc_target_latency=-1)`
 
-§7.1 的步骤 6–7：等 tile 启动，先 DAC、后 ADC 做 MTS，读回信号 tile 的混频器设置。可直接作为 `Bringup` 的 `rfdc_setup`。
+§7.1 的步骤 6–7：等 tile 启动，先 DAC、后 ADC 做 MTS，两次 MTS 都成功时在 SYSREF 沿上让 NCO 重新起相（`sync_nco_phase`），再读回信号 tile 的混频器设置。可直接作为 `Bringup` 的 `rfdc_setup`。
 
-- 返回 `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`。
+- 返回 `RFDCSetupResult(dac, adc, started_after_startup_call, mixers, nco_synced)`。
 - 任一 MTS 状态非 OK 时抛 `RFDCError`，异常的 `.result` 属性仍带着结果，便于记录延时。
 - `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传固定值 `board.DAC_TARGET_LATENCY` = 1896、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个 tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
 
 | 其他函数                                                                | 说明                                                                          |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `run_mts(rfdc, kind, tiles=(0, 2), *, ref_tile=0, target_latency=-1)` | `kind` 为 `"DAC"` 或 `"ADC"`，返回 `MTSResult`                        |
+| `sync_nco_phase(rfdc, tiles=(0, 2))` | PG269 "Use Case 1"：在 SYSREF 接收关闭时，把每个 block 0 混频器的事件源设为 SYSREF 并挂起 ResetNCOPhase；打开接收器等一个 SYSREF 沿（200 ns，整数个 NCO 周期）再关闭；最后恢复原来的事件源，使之后的 `UpdateEvent` 照常可用。`XRFdc_MTS_Sysref_Config` 失败时抛 `RFDCError` |
 | `start_tiles(rfdc, tiles=(0, 2), *, settle=1.0, timeout=5.0)`         | 等 TileState 0xF；`settle` 秒后仍未启动就调 StartUp。返回是否调用过 StartUp |
 | `tile_states(rfdc)`                                                   | `{"ADC": [4 个 TileState], "DAC": [...]}`                                   |
 | `rfdc_driver(overlay, name="rfdc")`                                   | 取`xrfdc.RFdc` 驱动；overlay 加载前没导入 `xrfdc` 时，按 HWH 描述自己构造 |
 | `decode_mts_status(status)`                                           | 把 MTS 状态码拆成名称列表，如`["TARGET_LOW"]`                               |
 
-`MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile 0–3）、`offset`（tile 0–3）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点而不报错。
+`MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile 0–3）、`offset`（tile 0–3）、`dtc`（驱动为每个 tile 选定的 SYSREF 捕获延迟码 0–127 及找到的捕获窗口数，PLL 和 T1 时钟各一组：`pll_code`、`pll_windows`、`t1_code`、`t1_windows`；它们反映 tile 时钟相对 SYSREF 的相位，`latency` 和 `offset` 反映不了）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点而不报错。
 
 板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为 226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。
 

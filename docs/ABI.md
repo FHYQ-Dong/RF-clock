@@ -663,7 +663,9 @@ RFDC
     restarts by itself, and StartUp is called only on a timeout
  7. MTS on DAC, then ADC (tiles 0 and 2) with fixed target latencies DAC 1896 and ADC 1296, so
     the data-path delay does not depend on the bitstream; stop if the status is not OK or a
-    tile does not land on the target
+    tile does not land on the target. Then restart the NCO phases of all four tiles at one
+    SYSREF edge (PG269 "Use Case 1"), so the carrier phase is the same after every power-up
+    (since rf-clock 1.3.0.5; before, it took one of three values 120° apart)
 PL
  8. Read ID == 0x52434C4B and VERSION major == 1; BUILD_VERSION A.B.C equals the installed
     rf-clock (§14.1)
@@ -987,21 +989,22 @@ PYNQ 3.1.1's `xrfdc` does not wrap MTS. This module calls `libxrfdc.so` directly
 
 #### `setup_rfdc_and_mts(overlay, *, rfdc_name="rfdc", tiles=(0, 2), signal_tile=2, ref_tile=0, dac_target_latency=-1, adc_target_latency=-1)`
 
-Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC, and reads back the mixer settings of the signal tile. Usable directly as the `rfdc_setup` of `Bringup`.
+Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC, restarts the NCO phases at a SYSREF edge (`sync_nco_phase`, only if both MTS succeeded), and reads back the mixer settings of the signal tile. Usable directly as the `rfdc_setup` of `Bringup`.
 
-- Returns `RFDCSetupResult(dac, adc, started_after_startup_call, mixers)`.
+- Returns `RFDCSetupResult(dac, adc, started_after_startup_call, mixers, nco_synced)`.
 - Raises `RFDCError` if either MTS status is not OK; its `.result` still holds the result, so the latencies can be logged.
 - `*_target_latency = -1` aligns to the largest measured latency, which changes with the bitstream; `PL.open()` passes the fixed `board.DAC_TARGET_LATENCY` = 1896 and `board.ADC_TARGET_LATENCY` = 1296. A target below a tile's measured latency makes MTS report `TARGET_LOW`; then raise the target and recalibrate the loopback delay.
 
 | Other functions | Description |
 | --------------- | ----------- |
 | `run_mts(rfdc, kind, tiles=(0, 2), *, ref_tile=0, target_latency=-1)` | `kind` is `"DAC"` or `"ADC"`; returns `MTSResult` |
+| `sync_nco_phase(rfdc, tiles=(0, 2))` | PG269 "Use Case 1": with the SYSREF receivers off, sets each block-0 mixer's event source to SYSREF and arms ResetNCOPhase; turns the receivers on for one SYSREF edge (200 ns, whole NCO periods) and off again; sets the event sources back so later `UpdateEvent` calls work. Raises `RFDCError` if `XRFdc_MTS_Sysref_Config` fails |
 | `start_tiles(rfdc, tiles=(0, 2), *, settle=1.0, timeout=5.0)` | waits for TileState 0xF; calls StartUp if not started after `settle` s; returns whether StartUp was called |
 | `tile_states(rfdc)` | `{"ADC": [4 TileStates], "DAC": [...]}` |
 | `rfdc_driver(overlay, name="rfdc")` | the `xrfdc.RFdc` driver; built from the HWH if `xrfdc` was not imported before the overlay loaded |
 | `decode_mts_status(status)` | splits an MTS status into names, for example `["TARGET_LOW"]` |
 
-`MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`, `latency` (tiles 0–3), `offset` (tiles 0–3); `describe()` gives one line. `ok` requires status 0 and every tile on the target (`on_target`): the driver adds delay in whole steps (6 for both DAC and ADC), so a target that is not a whole number of steps away would miss without an error.
+`MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`, `latency` (tiles 0–3), `offset` (tiles 0–3), `dtc` (the SYSREF capture delay codes the driver picked, 0–127, and the number of capture windows it found, per tile, for the PLL and the T1 clock: `pll_code`, `pll_windows`, `t1_code`, `t1_windows`; they follow the tile clock's phase to SYSREF, which `latency` and `offset` do not); `describe()` gives one line. `ok` requires status 0 and every tile on the target (`on_target`): the driver adds delay in whole steps (6 for both DAC and ADC), so a target that is not a whole number of steps away would miss without an error.
 
 Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within the standard deviation (0.13–0.16 samples).
 
