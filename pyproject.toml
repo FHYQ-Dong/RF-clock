@@ -1,6 +1,6 @@
 [project]
 name = "rf-clock"
-version = "1.3.0.2"
+version = "1.3.0.3"
 description = "RF clock control library for Q-LATS Project. This library provides a Python interface for controlling the RF clock overlay on PYNQ platforms."
 readme = "README.md"
 authors = [

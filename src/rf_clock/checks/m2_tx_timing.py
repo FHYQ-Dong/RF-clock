@@ -9,6 +9,11 @@ PRN+RRC waveform into the TX buffer and send one burst after every PPS, at
   the requested tick) and lies exactly ``offset`` ticks after its PPS;
 - no TX fault.
 
+A burst whose arm reaches the PL too late (REJ_STALE: the target, the next
+PPS, is already less than MIN_LEAD_TICKS away because this process stalled)
+is counted as missed and the loop resynchronises on the next PPS.  Missed
+bursts are a host-side event, reported but not a FAIL.
+
 The analog half of M2 is outside this script: trigger a scope or a zero-span
 spectrum analyser on the FS725 1PPS and watch the DAC output (vout20, tile 2,
 the DAC_A connector): the burst must start at a fixed delay after the PPS, and
@@ -36,7 +41,7 @@ import time
 from .board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
 from rf_clock.pl import TX_LAYOUT, WaveformGenerator, abi
 from rf_clock.pl.beats import BeatPacker
-from rf_clock.pl.client import TargetMissed
+from rf_clock.pl.client import CommandRejected, TargetMissed
 
 R = abi.ABI.REG
 PPS_PERIOD = 100_000_000
@@ -136,7 +141,7 @@ def main() -> int:
     ctrl = pl.ctrl
     seq0 = ctrl.read32(R.TX_SEQ)
     print(f"{'n':>4} {'PPS_COUNT':>9} {'target':>16} {'actual-target':>13} {'actual-PPS':>10} {'TX_SEQ':>6}")
-    deltas, rels, bad = set(), set(), 0
+    deltas, rels, bad, missed = set(), set(), 0, 0
     restore = None
     if args.scope_nco is not None:
         log.record["scope_nco_mhz"] = args.scope_nco
@@ -147,7 +152,15 @@ def main() -> int:
             # Every PPS: the burst follows the PPS after pps0, and that PPS is
             # pps0 for the next burst (the burst ends well before the one after).
             target = pps0 + PPS_PERIOD + args.offset_ticks
-            ctrl.arm_tx(target, len(beats))              # TX_TARGET, TX_LENGTH, doorbell
+            try:
+                ctrl.arm_tx(target, len(beats))          # TX_TARGET, TX_LENGTH, doorbell
+            except CommandRejected as exc:
+                if exc.result != abi.ResultCode.REJ_STALE:
+                    raise
+                missed += 1                              # this process was too late: skip a PPS
+                print(f"{n:4d} {'':9s} {target:16d}  arm too late (REJ_STALE), burst missed", flush=True)
+                count0, pps0 = ctrl.wait_next_pps()
+                continue
             try:
                 actual = ctrl.wait_tx(timeout=2.5)       # TX_ACTUAL
             except TargetMissed as exc:
@@ -171,14 +184,16 @@ def main() -> int:
     fault_bits = ctrl.read32(R.FAULT_BITS)
     seq_done = ctrl.read32(R.TX_SEQ) - seq0
     mts = pl.rfdc.mts
-    passed = (mts.dac.ok and mts.adc.ok and bad == 0 and seq_done == args.bursts
+    passed = (mts.dac.ok and mts.adc.ok and bad == 0 and seq_done == args.bursts - missed
               and fault_bits == 0 and st.tx_state == abi.TxState.DONE)
-    log.record.update({"bursts": args.bursts, "bursts_done": seq_done, "actual_minus_target": sorted(deltas),
-                       "actual_minus_pps": sorted(rels), "fault_bits": fault_bits})
+    log.record.update({"bursts": args.bursts, "bursts_done": seq_done, "bursts_missed": missed,
+                       "actual_minus_target": sorted(deltas), "actual_minus_pps": sorted(rels),
+                       "fault_bits": fault_bits})
     print("summary:")
     print(f"  {mts.dac.describe()}")
     print(f"  {mts.adc.describe()}")
-    print(f"  bursts done           {seq_done} of {args.bursts}")
+    print(f"  bursts done           {seq_done} of {args.bursts}"
+          + (f" ({missed} missed: armed too late)" if missed else ""))
     print(f"  TX_ACTUAL - target    {sorted(deltas)}")
     print(f"  TX_ACTUAL - PPS_TICK  {sorted(rels)} (expected {args.offset_ticks})")
     print(f"  FAULT_BITS            0x{fault_bits:x}")
