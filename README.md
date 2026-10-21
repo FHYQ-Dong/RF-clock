@@ -124,6 +124,7 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | `src/rf_clock/checks/` | Board checks for milestones M1–M3 |
 | `src/rf_clock/examples/` | Annotated examples: fake PL, board bring-up, raw PYNQ and C++ access |
 | `src/rf_clock/correlator.py` | Cross-correlation delay estimation |
+| `src/rf_clock/twtt/` | Two-way time transfer between two boards (M4): slots, the PL loop, the link between the boards |
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
 | `experiments/` | Bench experiments, run on RF-clock-PC-ai: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9), one question each; `m3_common.py` holds what the M3 loopback series share; `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |

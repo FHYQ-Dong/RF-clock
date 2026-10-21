@@ -777,6 +777,7 @@ wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打�
 - Jupyter：PYNQ 的 Jupyter 就运行在这个环境里，直接导入装好的 rf_clock。
 - `~/RF-clock/.venv` 是 1.3.0.6 之前用的独立 venv（通过 `.pth` 文件看到 PYNQ 的包），里面已不装 rf-clock；用它启动的脚本（比如 `experiments/` 在板上运行的部分）导入的是 PYNQ 里那份。
 - PYNQ 镜像升级后，重新安装 wheel。
+- 两块板的系统时间经 NTP 跟随 RF-clock-PC-ai（那里的 chrony 为 192.168.2.0/24 提供时间；板上 `/etc/systemd/timesyncd.conf.d/rf-clock.conf` 设 `NTP=192.168.2.1`）。`rf_clock.twtt` 靠它为两块板的秒配对（§11.12）；板子断电后不保留时间。
 - 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
 
 模块一览：
@@ -796,6 +797,7 @@ wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打�
 | `rf_clock.pl.waveform` | `WaveformGenerator`：PRN + RRC 发射波形                                 |
 | `rf_clock.pl.beats`    | 256 bit beat 的打包和解包                                                 |
 | `rf_clock.correlator`  | 互相关时延估计（不依赖 PL）                                               |
+| `rf_clock.twtt`        | 两块板之间的双向时间比对（§11.12） |
 
 ## 10. 快速上手
 
@@ -1104,6 +1106,25 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 | `estimate_delay(rx, ref, *, guard=16)` | 上面两步合起来，返回`Peak`                                                               |
 
 `Peak` 字段：`index`（分数样本，参考波形在 rx 中的起点）、`integer_index`、`magnitude`、`peak_to_sidelobe`（及 `peak_to_sidelobe_db`）、`phase`。对默认 RRC 波形，抛物线插值的偏差在整个分数范围内不超过 0.002 个样本（无噪声仿真）。
+
+### 11.12 `rf_clock.twtt`（双向时间比对，1.3.0.7 起）
+
+计划第 4 节双向时间比对中一块板的那一侧，用于 M4（两块板共用一台 FS725，经衰减器交叉连接：A 的 DAC_A → B 的 ADC_B，B 的 DAC_A → A 的 ADC_B）。
+
+| 模块 | 内容 |
+| ---- | ---- |
+| `timing` | 时隙（`SLOTS`：AB 在 PPS 沿后 100 ms，BA 在 600 ms；RX 窗口比时隙早 `PRE_TICKS` = 1.25 µs 打开）、记录格式、`two_way()`（m_AB、m_BA、θ = (m_AB − m_BA)/2、单程延时 (m_AB + m_BA)/2）和 `Pairer`（按系统时间把 A、B 对同一个 PPS 沿的记录配对） |
+| `node` | PL 循环和启动命令：`PL.open()` 之后，每秒在 PPS 沿后立即按本节点的时隙收发（A 在 AB 发、在 BA 收，B 相反；AB 两个时隙都收发，即一块板经自己的回环线），对每个窗口做相关，每秒一条记录 |
+| `link` | 第二个进程，由 `node` 启动，不碰硬件：与另一块板的 TCP 连接（A 在 50725 端口监听，B 连接 `--peer` 并在断开后重连）、配对、日志 |
+
+```bash
+run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
+$run -m rf_clock.twtt.node A --seconds 600                       # 第一块板
+$run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # 第二块板
+$run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
+```
+
+日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。`experiments/m4_twtt.py` 从 RF-clock-PC-ai 在板上启动节点并汇总日志。
 
 ## 12. 异常与返回码
 

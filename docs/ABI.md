@@ -789,6 +789,7 @@ Notes:
 - Jupyter: PYNQ's Jupyter runs in that environment and imports rf_clock as installed.
 - `~/RF-clock/.venv`, the separate venv used before 1.3.0.6 (it sees PYNQ's packages through a `.pth` file), holds no rf-clock; scripts started with it, such as the board side of `experiments/`, import PYNQ's copy.
 - After a PYNQ image upgrade, install the wheel again.
+- Both boards' system clocks follow RF-clock-PC-ai by NTP (chrony there serves 192.168.2.0/24; on the boards `/etc/systemd/timesyncd.conf.d/rf-clock.conf` sets `NTP=192.168.2.1`). `rf_clock.twtt` needs it to pair the two boards' seconds (§11.12); the boards have no clock of their own across a power cycle.
 - Remote recovery: an access to the fabric domain while its clock is not running hangs the AXI bus and the board stops answering ping. Reset it from the machine at the other end of the JTAG cable: `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`; ssh is back after about 40 s, with PYNQ's base overlay in the PL.
 
 Modules:
@@ -808,6 +809,7 @@ Modules:
 | `rf_clock.pl.waveform` | `WaveformGenerator`: PRN + RRC transmit waveform |
 | `rf_clock.pl.beats`    | packing and unpacking of 256-bit beats |
 | `rf_clock.correlator`  | cross-correlation delay estimation (independent of the PL) |
+| `rf_clock.twtt`        | two-way time transfer between two boards (§11.12) |
 | `rf_clock.checks`      | board checks for milestones M1–M3 (§13) |
 | `rf_clock.examples`    | annotated examples |
 
@@ -1119,6 +1121,25 @@ Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy, 
 | `estimate_delay(rx, ref, *, guard=16)` | both steps; returns `Peak` |
 
 `Peak` fields: `index` (fractional samples; where the reference starts in rx), `integer_index`, `magnitude`, `peak_to_sidelobe` (and `peak_to_sidelobe_db`), `phase`. For the default RRC waveform the parabolic bias stays below 0.002 samples over the whole fractional range (noise-free simulation).
+
+### 11.12 `rf_clock.twtt` (two-way time transfer, since 1.3.0.7)
+
+One board's side of the two-way time transfer of plan section 4, for M4 (two boards on one FS725, cabled with attenuators: A's DAC_A → B's ADC_B, B's DAC_A → A's ADC_B).
+
+| Module | Content |
+| ------ | ------- |
+| `timing` | the slots (`SLOTS`: AB 100 ms and BA 600 ms after the PPS edge; an RX window opens `PRE_TICKS` = 1.25 µs before its slot), the record format, `two_way()` (m_AB, m_BA, θ = (m_AB − m_BA)/2, one-way delay (m_AB + m_BA)/2) and `Pairer` (A's and B's records of one PPS edge, matched by system time) |
+| `node` | the PL loop and the command: `PL.open()`, then every second, right after the PPS edge, the slots of the node (A transmits in AB and receives in BA, B the reverse; AB does both in both, one board through its own loopback cable), the correlation of each window, one record per second |
+| `link` | the second process, started by `node` and never touching the hardware: TCP to the other board (A listens on port 50725, B connects to `--peer` and reconnects), pairing, the log |
+
+```bash
+run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
+$run -m rf_clock.twtt.node A --seconds 600                       # first board
+$run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # second board
+$run -m rf_clock.twtt.node AB --seconds 60    # one board through its own loopback cable
+```
+
+The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial number, VCO bands, MTS T1 codes), the other board's `hello`, both boards' records (`local`, `peer`), a `result` for every paired second (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`; null when a slot failed or its correlation peak is below 10 dB PSL) and `event`s (connections, errors). θ is B's clock reading minus A's, without the non-reciprocity Δ. The two boards' records are paired by the system time of their PPS edges, so A and B need NTP-synchronized clocks (§9.1); the command refuses to start otherwise (`--no-ntp-check`). If the link process ends, the PL loop stops. `experiments/m4_twtt.py` runs the nodes on the boards from RF-clock-PC-ai and summarizes the logs.
 
 ## 12. Exceptions and result codes
 
