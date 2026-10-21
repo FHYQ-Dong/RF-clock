@@ -26,7 +26,7 @@ its measurements are laid out as PARAM_LAYOUT: P3/P4 Delay of the envelopes
 F1/F2 (Filter(Square(C2/C3))), P5 DeltaDelay F1 -> F2, P6/P7 their Width.
 C2 is DAC_A of S/N 887329260072A (.99), C3 that of S/N 887329260101 (.101).
 
-Run on RF-clock-PC-ai as root (the scope's USB node is root-only), with the
+Run on RF-clock-PC as root (the scope's USB node is root-only), with the
 project's ``instruments`` dependency group (``uv sync --only-group instruments
 --no-install-project``; the scope driver is ``tanglab_instruments.HDO9404``
 over pyusb); board commands run over ssh as the sudo user::
@@ -54,7 +54,7 @@ from pathlib import Path
 from tanglab_instruments import HDO9404
 
 ROOT = Path(__file__).resolve().parent.parent
-SCOPE = "USB0::0x05FF::0x1023::4404N30414::INSTR"  # HDO9404-MS on RF-clock-PC-ai's USB
+SCOPE = "USB0::0x05FF::0x1023::4404N30414::INSTR"  # HDO9404-MS on RF-clock-PC's USB
 BOARDS = {"99": "192.168.2.99", "101": "192.168.2.101"}
 TRACE_BOARD = {"F1": "99", "F2": "101"}  # F1 = Filter(Square(C2)), F2 = Filter(Square(C3))
 M2 = ("cd ~/RF-clock && (nohup setsid sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python "

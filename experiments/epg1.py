@@ -6,7 +6,7 @@ drives TRIG IN, output 1 goes to the PPS input (J7, 50 ohm) of board S/N
 the same way, is the scope's PPS reference.  Output 3 belongs to another
 experiment: this script never configures it.  This is the M0 bench set-up
 (plan section 9) the experiments here rely on, not an experiment itself.
-Run on the machine the EPG1 is plugged into (RF-clock-PC-ai), with the
+Run on the machine the EPG1 is plugged into (RF-clock-PC), with the
 project's ``instruments`` dependency group (``uv sync --only-group instruments
 --no-install-project`` there)::
 

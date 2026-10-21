@@ -9,7 +9,7 @@ theta must be 0 and the one-way delay the M3 loopback delay, which checks the
 slots, the timestamps and the two-way equations on the hardware before the second
 board is cabled.
 
-Run on RF-clock-PC-ai as the normal user, with the boards idle::
+Run on RF-clock-PC as the normal user, with the boards idle::
 
     .venv/bin/python experiments/m4_twtt.py self --seconds 60     # 887329260072A alone
     .venv/bin/python experiments/m4_twtt.py pair --seconds 600    # A = .99, B = .101

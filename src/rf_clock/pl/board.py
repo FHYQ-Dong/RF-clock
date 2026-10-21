@@ -62,6 +62,10 @@ LMX_LOCKED = 2  # rb_LD_VTUNE: 0 = tuning voltage low, 2 = locked, 3 = high
 # round (lmxdac, lmxadc; results/lmx-sync-loopback-20261019 section 2).
 LMX_CHIP_SELECT = {"adc": 1, "dac": 2}
 SPI_IOC_MESSAGE_1 = 0x40206B00  # _IOW('k', 0, struct spi_ioc_transfer)
+# How far (5.3 ps codes) a picked MTS capture code may move from the one recorded in
+# the board config before PL.open warns.  Windows repeat every 20 codes on the DAC
+# and 37 on the ADC, so half a window, where the choice turns ambiguous, is 10 codes.
+DTC_MARGIN = 6
 
 
 def clock_registers(name: str) -> list[int]:
@@ -192,6 +196,29 @@ def lmx_readback(spi_device: str | Path, r0: int) -> dict[str, int]:
             for name, (addr, shift, bits) in LMX_READBACK.items()}
 
 
+def mts_dtc_warnings(mts: RFDCSetupResult, config: BoardConfig | None) -> list[str]:
+    """What the MTS capture codes say about the board config's ``mts_dtc``."""
+    out = []
+    for kind, result in (("dac", mts.dac), ("adc", mts.adc)):
+        if not result.dtc_target:
+            out.append(f"MTS {kind.upper()} capture windows not set by the board config: MTS takes the window "
+                       f"nearest code 64, which can move the converter by a whole sample at the next power-up "
+                       f"(rf_clock.checks.mts_dtc)")
+            continue
+        for clock, target in result.dtc_target.items():
+            picked = result.dtc[f"{clock}_code"]
+            for tile in result.tiles:
+                if target[tile] >= 0 and abs(picked[tile] - target[tile]) > DTC_MARGIN:
+                    out.append(f"MTS {kind.upper()} tile {tile} {clock.upper()} capture code {picked[tile]} is "
+                               f"{abs(picked[tile] - target[tile])} codes from the recorded {target[tile]}: the "
+                               f"clock has moved toward a window boundary; record the codes again")
+    recorded = (config.mts_dtc.get("recorded") or {}).get("bands") if config else None
+    if recorded is not None and recorded != config.lmx_vco_band:
+        out.append(f"MTS capture codes recorded with VCO bands {recorded}, the board config forces "
+                   f"{config.lmx_vco_band}: record them again")
+    return out
+
+
 def read_lmx_vco(xrfclk: Any, vco_band: dict[str, int] | None = None) -> dict[str, LMXVCO]:
     """Each LMX2594's VCO after ``program_clocks(xrfclk, vco_band)``, by "adc"/"dac"."""
     r0 = clock_registers(f"LMX2594_{LMX_FREQ_MHZ}.txt")[-1]
@@ -273,7 +300,10 @@ class PL:
         this board's serial number (``BoardConfigError``).  Each LMX2594 runs in
         the VCO band the config forces, or else in the one its calibration
         picks, with a warning: that band can differ at the next power-up.
-        Either way both must lock (``BringupError``).
+        Either way both must lock (``BringupError``).  MTS picks its SYSREF
+        capture windows by the codes the config records, or else nearest code
+        64, with a warning, and warns too when a picked code has moved more
+        than ``DTC_MARGIN`` from its record.
         """
         say = progress or (lambda message: None)
         parts: dict[str, Any] = {}
@@ -337,7 +367,10 @@ class PL:
             try:
                 result = setup_rfdc_and_mts(
                     overlay, ref_tile=ref_tile,
-                    dac_target_latency=dac_target_latency, adc_target_latency=adc_target_latency)
+                    dac_target_latency=dac_target_latency, adc_target_latency=adc_target_latency,
+                    dtc_target={k: v for k, v in config.mts_dtc.items() if k in LMX_CHIP_SELECT} if config else None)
+                for warning in mts_dtc_warnings(result, config):
+                    warnings.warn(warning, stacklevel=4)
             except RFDCError as exc:
                 result = getattr(exc, "result", None)
                 raise

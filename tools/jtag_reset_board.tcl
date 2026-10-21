@@ -1,5 +1,5 @@
 # Remote hard reset of an RFSoC 4x2 through its JTAG cable.  Run it on the
-# host the cable is plugged into (RF-clock-ai for the RF-clock board):
+# host the cable is plugged into (RF-clock-PC for the RF-clock board):
 #
 #   source /tools/Xilinx/Vivado/2024.1/settings64.sh
 #   xsdb tools/jtag_reset_board.tcl 887329260072A

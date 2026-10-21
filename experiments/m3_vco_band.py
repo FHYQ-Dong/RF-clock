@@ -15,7 +15,7 @@ band 117 or 118, the DAC's 122 or 123, with or without a reboot; one band higher
 puts that converter 8-10 ps later, and forcing the band reproduces it.  The ADC's
 chip does not lock at 119.
 
-Run on RF-clock-PC-ai as the normal user, with the board idle::
+Run on RF-clock-PC as the normal user, with the board idle::
 
     .venv/bin/python experiments/m3_vco_band.py --runs 20                   # calibrated, read back
     .venv/bin/python experiments/m3_vco_band.py --adc-capctrl 117 --runs 4  # forced

@@ -14,7 +14,7 @@ later (results/lmx-sync-loopback-20261019 section 5).  The board config
              the calibration picks one of the top two bands that lock).
              ``--write`` saves the suggestion, the counts and the bands that lock
              in the board config, with this board's serial number, and starts a
-             new band table.
+             new band table; the MTS capture codes recorded for the old bands go.
 ``delays``   Wired loopback DAC_A -> ADC_B, as for M3.  For each LMX2594 and each
              band that locks within ``--span`` of its configured one, the other
              chip at its configured band: ``--runs`` power-ups (``PL.open``, each
@@ -146,7 +146,8 @@ def scan(args) -> int:
                              "writes": args.calibrations}}
         path = save_board_config(BoardConfig(serial=serial, label=label, lmx_vco_band=bands,
                                              band_table=table), args.config)
-        print(f"written to {path}; the next PL.open forces these bands")
+        print(f"written to {path}; the next PL.open forces these bands.  Record the MTS capture codes for "
+              "them next (rf_clock.checks.mts_dtc record --write)")
     return 0
 
 

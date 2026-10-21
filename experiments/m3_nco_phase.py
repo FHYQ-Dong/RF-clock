@@ -19,7 +19,7 @@ steps; restarting both at a SYSREF edge leaves one phase, on a tile event three.
 Since rf-clock 1.3.0.5 PL.open does the SYSREF restart itself (PG269 Use Case 1),
 so ``--nco-reset none`` now checks that fix, over reboots with ``--reboot``.
 
-Run on RF-clock-PC-ai as the normal user, with the board idle::
+Run on RF-clock-PC as the normal user, with the board idle::
 
     .venv/bin/python experiments/m3_nco_phase.py --reboot --runs 10      # PL.open alone
     .venv/bin/python experiments/m3_nco_phase.py --nco-reset both --nco-event tile --runs 12

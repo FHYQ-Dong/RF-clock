@@ -11,6 +11,13 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   ``{"adc": 117, "dac": 122}``; a chip left out calibrates its band
                   at every clock write, which moves its converter by 8-10 ps per band
                   (results/lmx-sync-loopback-20261019 section 5)
+``mts_dtc``       the SYSREF capture codes MTS picks its windows by, per converter and
+                  clock, 4 tiles each, ``{"dac": {"t1": [62, -1, 61, -1]}, "adc": {"t1":
+                  [...], "pll": [...]}}``, and when they were recorded (``recorded``:
+                  time, runs, the VCO bands); written by ``rf_clock.checks.mts_dtc``.
+                  Without them MTS takes the window nearest code 64, which can change
+                  by a whole sample between power-ups when two windows lie about as
+                  far from it (docs/ABI.md 7.1)
 ``band_table``    what ``vco_bands`` measured: per chip how often the calibration
                   picked each band (``calibrated``), the bands that lock
                   (``locked``) and, with the loopback cable, the DAC -> ADC loopback
@@ -64,12 +71,13 @@ class BoardConfig:
     label: str = ""
     lmx_vco_band: dict[str, int] = field(default_factory=dict)
     band_table: dict[str, Any] = field(default_factory=dict)
+    mts_dtc: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: Any, source: str = "board config") -> BoardConfig:
         if not isinstance(data, dict):
             raise BoardConfigError(f"{source}: not a JSON object")
-        unknown = set(data) - {"serial", "label", "lmx_vco_band", "band_table"}
+        unknown = set(data) - {"serial", "label", "lmx_vco_band", "band_table", "mts_dtc"}
         if unknown:
             raise BoardConfigError(f"{source}: unknown keys {sorted(unknown)}")
         serial = data.get("serial")
@@ -83,12 +91,21 @@ class BoardConfig:
         table = data.get("band_table", {})
         if not isinstance(table, dict):
             raise BoardConfigError(f"{source}: band_table must be an object")
+        dtc = data.get("mts_dtc", {})
+        if not isinstance(dtc, dict) or not all(
+                kind == "recorded" or (kind in LMX_SIDES and isinstance(clocks, dict) and set(clocks) <= {"t1", "pll"}
+                                       and all(isinstance(codes, list) and len(codes) == 4
+                                               and all(type(c) is int and -1 <= c <= 127 for c in codes)
+                                               for codes in clocks.values()))
+                for kind, clocks in dtc.items()):
+            raise BoardConfigError(f"{source}: mts_dtc must map adc/dac to t1/pll lists of 4 codes -1..127, "
+                                   f"not {dtc!r}")
         return cls(serial=serial, label=str(data.get("label", "")), lmx_vco_band=dict(bands),
-                   band_table=table)
+                   band_table=table, mts_dtc=dtc)
 
     def to_json(self) -> dict[str, Any]:
         return {"serial": self.serial, "label": self.label, "lmx_vco_band": self.lmx_vco_band,
-                "band_table": self.band_table}
+                "band_table": self.band_table, "mts_dtc": self.mts_dtc}
 
 
 def config_path() -> Path:

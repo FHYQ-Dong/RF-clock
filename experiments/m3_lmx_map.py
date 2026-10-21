@@ -12,7 +12,7 @@ Outcome (results/lmx-sync-loopback-20261019 section 2): spi0.1 ("lmxdac")
 clocks the ADC tiles and spi0.2 ("lmxadc") the DAC tiles; the names are swapped,
 as the schematic (docs/rfsoc4x2_sch.pdf) and the BSP's MIO table confirm.
 
-Run on RF-clock-PC-ai as the normal user, with the board idle::
+Run on RF-clock-PC as the normal user, with the board idle::
 
     .venv/bin/python experiments/m3_lmx_map.py
 

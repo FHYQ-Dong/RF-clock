@@ -16,7 +16,7 @@ alike, one RUN restart per step) and logs PPS_TICK mod 1e8 for every edge on eac
 board.  The delay at which half the edges land one tick later is how far the edge
 is from the next sampling edge at delay 0.
 
-Run on RF-clock-PC-ai, the EPG1's host, with the project's ``instruments``
+Run on RF-clock-PC, the EPG1's host, with the project's ``instruments``
 dependency group (``epg1.py`` next to this script drives the EPG1 through
 ``tanglab_instruments``)::
 

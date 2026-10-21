@@ -47,14 +47,17 @@ Releases (on GitHub and on the group's Gitea) carry a wheel that contains the li
 
 ```bash
 run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
-$run -m rf_clock.checks.vco_bands scan --write  # once per board: the board config
+$run -m rf_clock.checks.vco_bands scan --write  # once per board: the board config,
+$run -m rf_clock.checks.mts_dtc record --write   # then its MTS capture windows
 $run -m rf_clock.checks.m1_check 60             # tick against the PPS
 $run -m rf_clock.checks.m2_tx_timing 10         # MTS and timed bursts
 $run -m rf_clock.checks.m3_loopback 20          # loopback delay by correlation
 $run -m rf_clock.examples.pl.03_pynq_bringup    # one burst and one RX window
 ```
 
-The board config, `/etc/rf-clock/board.json`, names its board by serial number and fixes the VCO band of each LMX2594, which otherwise can change from one power-up to the next and move a converter by 8-10 ps; without it `PL.open()` warns ([docs/ABI.md §11.1](docs/ABI.md)).
+The board config, `/etc/rf-clock/board.json`, names its board by serial number and fixes the VCO band of each LMX2594 and the SYSREF capture window of each MTS tile, which otherwise can change from one power-up to the next and move a converter by 8-10 ps or by a whole sample; without them `PL.open()` warns ([docs/ABI.md §11.1](docs/ABI.md)).
+
+A new board, from the SD card to the two-way time transfer, step by step with what each step must show: [docs/board_setup.md](docs/board_setup.md).
 
 In your own code:
 
@@ -108,6 +111,7 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | [plan/RF_clock_modules.md](plan/RF_clock_modules.md) ([中文](plan/RF_clock_modules_zh.md)) | Design plan |
 | [plan/checklist.md](plan/checklist.md) ([中文](plan/checklist_zh.md)) | Open items, with evidence for each closed one |
 | [docs/ABI.md](docs/ABI.md) ([中文](docs/ABI_zh.md)) | ARM ↔ PL programming manual: registers, timing, power-up, the Python library, board setup, releases |
+| [docs/board_setup.md](docs/board_setup.md) ([中文](docs/board_setup_zh.md)) | From a new board to one in service: system, installation, wiring, the checks and per-board calibrations in order, what to redo after a change |
 | [src/rf_clock/clocks/files/README.md](src/rf_clock/clocks/files/README.md) | Clock plan and the LMK/LMX register files |
 
 ## Layout
@@ -127,7 +131,8 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | `src/rf_clock/twtt/` | Two-way time transfer between two boards (M4): slots, the PL loop, the link between the boards |
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
-| `experiments/` | Bench experiments, run on RF-clock-PC-ai: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9), one question each; `m3_common.py` holds what the M3 loopback series share; `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |
+| `boards/` | A copy of each board's config (`/etc/rf-clock/board.json`): reference and backup |
+| `experiments/` | Bench experiments, run on RF-clock-PC: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9), one question each; `m3_common.py` holds what the M3 loopback series share; `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
 | `.gitea/workflows/release.yml` | The same for a Gitea release, plus an upload to the Gitea PyPI registry (Gitea Actions) |
 

@@ -2,7 +2,7 @@
 
 Bench tool, not an experiment: it measured the DAC output spectrum (checklist
 "DAC outputs 5.8 GHz"; results/dac-spectrum-20261017) and serves any later
-spectrum check.  Run on RF-clock-PC-ai, where the analyzer is plugged in, as
+spectrum check.  Run on RF-clock-PC, where the analyzer is plugged in, as
 root, with the project's ``instruments`` dependency group; the driver is
 ``tanglab_instruments.SA124B`` over the obsolete Linux SA API 3.0.11 (see
 results/dac-spectrum-20261017/REPORT.md for the setup and the udev rule)::

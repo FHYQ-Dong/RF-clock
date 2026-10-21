@@ -18,7 +18,7 @@ The current design is in `plan/RF_clock_modules.md` (Chinese: `plan/RF_clock_mod
 
 - **Calibrated constants are explicit:** non-reciprocity Δ, PPS sub-tick phase and RFDC latency are measured and stored with a version. Never subtract a guessed constant.
 
-- **What belongs to one board lives in its board config:** `/etc/rf-clock/board.json` (`rf_clock.pl.board_config`, docs/ABI.md §11.1), named by the board's AT24MAC402 serial number; `PL.open()` refuses a config for another board. Each LMX2594's VCO band is forced from it, because the calibrated band can change at every clock write and move a converter by 8-10 ps. Never put one board's value in the package.
+- **What belongs to one board lives in its board config:** `/etc/rf-clock/board.json` (`rf_clock.pl.board_config`, docs/ABI.md §11.1), named by the board's AT24MAC402 serial number; `PL.open()` refuses a config for another board. Each LMX2594's VCO band is forced from it, because the calibrated band can change at every clock write and move a converter by 8-10 ps, and MTS picks its SYSREF capture windows by the codes it records, because the window nearest code 64 can change by a whole sample. Never put one board's value in the package.
 
 - **One register map:** `PL/src/p_regs.vh` (addresses, bit fields) and `PL/src/p_defs.vh` (states, result codes, flags) are the RTL source for the ARM-visible interface; `docs/ABI.md` documents it for software. RTL and testbenches use these names, never raw offsets. Any change updates all three and bumps `VERSION` per `docs/ABI.md` §14.
 
@@ -38,7 +38,7 @@ Design advice must be checked against the constraints above. Suggestions that re
 
 ## Remote development and synchronization
 
-- **Remote development machine:** `RF-clock-ai`.
-- **Vivado environment:** source `/tools/Xilinx/Vivado/2024.1/settings64.sh` before invoking Vivado on `RF-clock-ai`.
-- **Syncthing:** except for Git metadata, Python caches, `.venv`, and similar excluded directories, the other source code and documentation are synchronized automatically with `~/Program/RF-clock` on `RF-clock-ai`.
+- **Remote development machine:** RF-clock-PC, reached from the development machine as the ssh alias `RF-clock-PC-ai` (an SSH key for AI tools). Documents call it RF-clock-PC.
+- **Vivado environment:** source `/tools/Xilinx/Vivado/2024.1/settings64.sh` before invoking Vivado on `RF-clock-PC`.
+- **Syncthing:** except for Git metadata, Python caches, `.venv`, and similar excluded directories, the other source code and documentation are synchronized automatically with `~/Program/RF-clock` on `RF-clock-PC`.
 - Do not assume that generated build products or excluded cache directories are synchronized; verify their location on the machine where they are needed.

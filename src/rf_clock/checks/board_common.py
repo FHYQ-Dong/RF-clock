@@ -6,7 +6,7 @@ The checks run on the RFSoC 4x2 as root, for example::
 
 (xrfclk needs ``BOARD``; PYNQ needs ``XILINX_XRT``.)  The overlay is the one
 packaged with rf-clock unless ``--bitstream`` names another.  If the board hangs,
-recover it from RF-clock-ai with ``tools/jtag_reset_board.tcl``.
+recover it from RF-clock-PC with ``tools/jtag_reset_board.tcl``.
 """
 
 from __future__ import annotations

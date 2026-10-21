@@ -658,7 +658,9 @@ RFDC
  6. 等 ADC、DAC 的 tile 0 和 tile 2 都进入启动完成状态（TileState 0xF）；pl_resetn0 之后
     IP 会自行重新启动，超时才调用 StartUp
  7. 先 DAC、后 ADC 执行 MTS（tile 0、2），目标延时固定为 DAC 1896、ADC 1296，使数据通路
-    延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止。然后在同一个 SYSREF 沿上
+    延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止。每个 tile 在其捕获延迟
+    （DTC）中离板级配置所记码最近的窗口里采 SYSREF（rf-clock 1.3.0.8 起；没有记录时取离码 64
+    最近的窗口，两个窗口离 64 差不多远时，上电之间可能整整差一个采样）。然后在同一个 SYSREF 沿上
     让四个 tile 的 NCO 重新起相（PG269 "Use Case 1"），使每次上电后载波相位都相同（rf-clock
     1.3.0.5 起；此前它会落在相差 120° 的三个值之一）
 PL
@@ -777,7 +779,7 @@ wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打�
 - Jupyter：PYNQ 的 Jupyter 就运行在这个环境里，直接导入装好的 rf_clock。
 - `~/RF-clock/.venv` 是 1.3.0.6 之前用的独立 venv（通过 `.pth` 文件看到 PYNQ 的包），里面已不装 rf-clock；用它启动的脚本（比如 `experiments/` 在板上运行的部分）导入的是 PYNQ 里那份。
 - PYNQ 镜像升级后，重新安装 wheel。
-- 两块板的系统时间经 NTP 跟随 RF-clock-PC-ai（那里的 chrony 为 192.168.2.0/24 提供时间；板上 `/etc/systemd/timesyncd.conf.d/rf-clock.conf` 设 `NTP=192.168.2.1`）。`rf_clock.twtt` 靠它为两块板的秒配对（§11.12）；板子断电后不保留时间。
+- 两块板的系统时间经 NTP 跟随 RF-clock-PC（那里的 chrony 为 192.168.2.0/24 提供时间；板上 `/etc/systemd/timesyncd.conf.d/rf-clock.conf` 设 `NTP=192.168.2.1`）。`rf_clock.twtt` 靠它为两块板的秒配对（§11.12）；板子断电后不保留时间。
 - 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
 
 模块一览：
@@ -878,6 +880,7 @@ client.validate()
 | `serial` | 本板 AT24MAC402 EEPROM 的 128 位序列号（PS I2C1，地址 0x58，偏移 0x80），32 个十六进制数字；不是本板的就由 `PL.open()` 抛 `BoardConfigError` |
 | `label` | 自由文字，例如本板的 S/N |
 | `lmx_vco_band` | 每片 LMX2594 强制使用的 VCO 档位（VCO_CAPCTRL，0–183），`{"adc": 117, "dac": 122}`（§7.1 第 2 步） |
+| `mts_dtc` | 由 `rf_clock.checks.mts_dtc`（§13）写入：MTS 选窗所依据的 SYSREF 捕获码（§7.1 第 7 步），按转换器（`dac`、`adc`）和时钟（`t1`；ADC 另有 `pll`），每个 tile 0–3 一个（-1 为不用），以及 `recorded`（时间、上电次数、对应的 VCO 档位）。选到的码离记录超过 6 个码（约 32 ps）、记录时的 VCO 档位与现在不同、或没有记录时，`PL.open()` 发出警告 |
 | `band_table` | 由 `rf_clock.checks.vco_bands`（§13）写入：每片芯片校准选中各档位的次数（`calibrated`）、能锁定的档位（`locked`），以及每个档位下 DAC → ADC 回环延时的变化，单位 ps（`loopback_ps`），相对两片都在 `measured.reference` 时；另记扫描（`scanned`）和测量（`measured`）的时间与芯片温度 |
 
 没有这个文件，或文件没写某片芯片时，那片 LMX2594 用校准自选的档位，`PL.open()` 发出警告（`UserWarning`），`pl.board.lmx_vco` 记下这个档位：本板的频率落在相邻两档都够得着的地方时，校准每次上电在两档之间任选其一，而高一档会让那个转换器的时钟晚 8–10 ps（results/lmx-sync-loopback-20261019 第 5 节）。指定的文件不存在、格式不对或含未知的键，抛 `BoardConfigError`。无论哪种情况，有一片芯片没锁定都抛 `BringupError`。档位表不被 `PL.open()` 使用，它记录的是每个档位的代价。
@@ -1124,7 +1127,7 @@ $run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # 第二块板
 $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 ```
 
-日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。`experiments/m4_twtt.py` 从 RF-clock-PC-ai 在板上启动节点并汇总日志。
+日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。`experiments/m4_twtt.py` 从 RF-clock-PC 在板上启动节点并汇总日志。
 
 ## 12. 异常与返回码
 
@@ -1161,6 +1164,7 @@ $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 | `m1_check`     | M1：tick 与 PPS    | `[秒数] [--no-clocks]`；每秒一行，结束时 PASS/FAIL                                                                                                                         |
 | `m2_tx_timing` | M2：MTS 与定时 TX  | `[突发数] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`；每个 PPS 发一个突发；每次运行的 MTS 延时追加到 `m2_runs.jsonl` |
 | `m3_loopback`  | M3：环回、RX、相关 | `[次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl`             |
+| `mts_dtc`      | 板级配置（§11.1）  | `record [--write] [--runs N]` 不用已记录的码上电 N 次（默认 6），按转换器、时钟和 tile 取被选中次数最多的窗口；`--write` 把它的码存进板级配置。`check [--runs N]` 用记录的码上电，报告每个选到的码离记录多远。在 `vco_bands scan --write` 之后运行（它会丢掉这些码，因为码与档位有关） |
 | `vco_bands`    | 板级配置（§11.1）  | `scan [--write] [--label S/N] [--calibrations N]` 写 N 次时钟（默认 20），建议每片 LMX2594 校准最常选的档位，使芯片保持在校准自己的工作点上；再从它向两边逐档强制，直到锁不住，以显示两边的余量；`--write` 把建议的档位、各档次数、能锁定的档位和本板序列号存进板级配置。`delays [--write] [--span N] [--runs N] [--captures N]`，需接回环线 DAC_A → ADC_B：用载波相位测配置档位两边各 N 档（默认 2）以内每个档位的回环延时，每次上电在单独的进程里；`--write` 存入档位表；记录追加到 `vco_bands_runs.jsonl` |
 
 M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
@@ -1219,7 +1223,7 @@ rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手�
 
 ```text
 1. pyproject.toml：version 的 C 加 1、D 清零（改了寄存器则按上表改 A.B）
-2. RF-clock-ai：vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
+2. RF-clock-PC：vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
        -tclargs ~/build/<新目录> ~/ref/RFSoC4x2-BSP/board_files impl
 3. python3 tools/package_overlay.py ~/build/<新目录>
    （要求 impl 完成、时序满足、status.txt 的 build_version 与 pyproject.toml 相同）

@@ -98,6 +98,9 @@ class MTSResult:
     # capture windows it found, per tile 0..3, for the PLL and the T1 clock: they
     # follow the tile clock's phase to SYSREF, which latency and offset do not.
     dtc: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # The codes the windows were picked by ("t1", "pll"), from the board config;
+    # empty: the driver's own choice, the window nearest code 64.
+    dtc_target: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def on_target(self) -> bool:
@@ -221,13 +224,24 @@ def run_mts(
     *,
     ref_tile: int = 0,
     target_latency: int = -1,
+    dtc_target: dict[str, Any] | None = None,
 ) -> MTSResult:
-    """Run XRFdc_MultiConverter_Sync for the ADC or DAC ``tiles``."""
+    """Run XRFdc_MultiConverter_Sync for the ADC or DAC ``tiles``.
+
+    ``dtc_target`` ({"t1": 4 codes, "pll": 4 codes}, either optional) makes the
+    driver pick, in each tile, the SYSREF capture window nearest that code instead
+    of the one nearest code 64 (``XRFdc_MultiConverter_Init`` with codes: the
+    "reload" scan).  Windows repeat every clock period, so the codes recorded
+    once keep the same window, and so the same latency to the sample, at every
+    power-up while the clock stays within half a window of them.
+    """
     if kind not in ("ADC", "DAC"):
         raise ValueError("kind must be 'ADC' or 'DAC'")
     ffi, lib = _mts_api()
     config = ffi.new("XRFdc_MultiConverter_Sync_Config*")
-    lib.XRFdc_MultiConverter_Init(config, ffi.NULL, ffi.NULL)
+    target = {clock: tuple(int(c) for c in codes) for clock, codes in (dtc_target or {}).items()}
+    codes = {clock: ffi.new("int[4]", list(target[clock])) if clock in target else ffi.NULL for clock in ("pll", "t1")}
+    lib.XRFdc_MultiConverter_Init(config, codes["pll"], codes["t1"])
     config.Tiles = sum(1 << t for t in tiles)
     config.RefTile = int(ref_tile)
     config.Target_Latency = int(target_latency)
@@ -244,6 +258,7 @@ def run_mts(
         latency=tuple(int(config.Latency[t]) for t in range(4)),
         offset=tuple(int(config.Offset[t]) for t in range(4)),
         dtc=dtc,
+        dtc_target=target,
     )
 
 
@@ -305,17 +320,23 @@ def setup_rfdc_and_mts(
     ref_tile: int = 0,
     dac_target_latency: int = -1,
     adc_target_latency: int = -1,
+    dtc_target: dict[str, dict[str, Any]] | None = None,
 ) -> RFDCSetupResult:
     """Start the ADC/DAC tiles, run DAC then ADC MTS (``docs/ABI.md`` 7.1) and,
     if both succeed, restart the NCO phases at a SYSREF edge (``sync_nco_phase``).
+    ``dtc_target`` ({"dac": ..., "adc": ...}) passes each converter's capture codes
+    to ``run_mts``.
 
     Raises RFDCError if either sync reports a non-OK status; the error carries
     the result so the latencies can still be logged.
     """
     rfdc = rfdc_driver(overlay, rfdc_name)
     called = start_tiles(rfdc, tiles)
-    dac = run_mts(rfdc, "DAC", tiles, ref_tile=ref_tile, target_latency=dac_target_latency)
-    adc = run_mts(rfdc, "ADC", tiles, ref_tile=ref_tile, target_latency=adc_target_latency)
+    dtc_target = dtc_target or {}
+    dac = run_mts(rfdc, "DAC", tiles, ref_tile=ref_tile, target_latency=dac_target_latency,
+                  dtc_target=dtc_target.get("dac"))
+    adc = run_mts(rfdc, "ADC", tiles, ref_tile=ref_tile, target_latency=adc_target_latency,
+                  dtc_target=dtc_target.get("adc"))
     nco_synced = dac.ok and adc.ok
     if nco_synced:
         sync_nco_phase(rfdc, tiles)

@@ -668,9 +668,13 @@ RFDC
     restarts by itself, and StartUp is called only on a timeout
  7. MTS on DAC, then ADC (tiles 0 and 2) with fixed target latencies DAC 1896 and ADC 1296, so
     the data-path delay does not depend on the bitstream; stop if the status is not OK or a
-    tile does not land on the target. Then restart the NCO phases of all four tiles at one
-    SYSREF edge (PG269 "Use Case 1"), so the carrier phase is the same after every power-up
-    (since rf-clock 1.3.0.5; before, it took one of three values 120° apart)
+    tile does not land on the target. Each tile captures SYSREF in the window of its
+    capture delay (DTC) nearest the code the board config records for it (since rf-clock
+    1.3.0.8; without a record the window nearest code 64, which can change by a whole sample
+    from one power-up to the next where two windows lie about as far from 64). Then restart
+    the NCO phases of all four tiles at one SYSREF edge (PG269 "Use Case 1"), so the carrier
+    phase is the same after every power-up (since rf-clock 1.3.0.5; before, it took one of
+    three values 120° apart)
 PL
  8. Read ID == 0x52434C4B and VERSION major == 1; BUILD_VERSION A.B.C equals the installed
     rf-clock (§14.1)
@@ -789,7 +793,7 @@ Notes:
 - Jupyter: PYNQ's Jupyter runs in that environment and imports rf_clock as installed.
 - `~/RF-clock/.venv`, the separate venv used before 1.3.0.6 (it sees PYNQ's packages through a `.pth` file), holds no rf-clock; scripts started with it, such as the board side of `experiments/`, import PYNQ's copy.
 - After a PYNQ image upgrade, install the wheel again.
-- Both boards' system clocks follow RF-clock-PC-ai by NTP (chrony there serves 192.168.2.0/24; on the boards `/etc/systemd/timesyncd.conf.d/rf-clock.conf` sets `NTP=192.168.2.1`). `rf_clock.twtt` needs it to pair the two boards' seconds (§11.12); the boards have no clock of their own across a power cycle.
+- Both boards' system clocks follow RF-clock-PC by NTP (chrony there serves 192.168.2.0/24; on the boards `/etc/systemd/timesyncd.conf.d/rf-clock.conf` sets `NTP=192.168.2.1`). `rf_clock.twtt` needs it to pair the two boards' seconds (§11.12); the boards have no clock of their own across a power cycle.
 - Remote recovery: an access to the fabric domain while its clock is not running hangs the AXI bus and the board stops answering ping. Reset it from the machine at the other end of the JTAG cable: `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`; ssh is back after about 40 s, with PYNQ's base overlay in the PL.
 
 Modules:
@@ -892,6 +896,7 @@ On failure the original exception (`BringupError`, `BoardConfigError`, `RFDCErro
 | `serial` | the 128-bit serial number of the board's AT24MAC402 EEPROM (PS I2C1, address 0x58, offset 0x80), 32 hex digits; `PL.open()` raises `BoardConfigError` if it is not this board's |
 | `label` | free text, for example the board's S/N |
 | `lmx_vco_band` | the VCO band (VCO_CAPCTRL, 0-183) to force on each LMX2594, `{"adc": 117, "dac": 122}` (§7.1 step 2) |
+| `mts_dtc` | written by `rf_clock.checks.mts_dtc` (§13): the SYSREF capture codes MTS picks its windows by (§7.1 step 7), per converter (`dac`, `adc`) and clock (`t1`; `pll` on the ADC), one per tile 0-3 (-1 unused), and `recorded` (time, power-ups, the VCO bands they belong to). `PL.open()` warns when a picked code is more than 6 codes (about 32 ps) from its record, when the record was made with other VCO bands, or when there is none |
 | `band_table` | written by `rf_clock.checks.vco_bands` (§13): per chip how often the calibration picked each band (`calibrated`), the bands that lock (`locked`) and the DAC → ADC loopback delay of each band in ps (`loopback_ps`), relative to both chips at `measured.reference`; with the date and die temperature of the scan (`scanned`) and of the measurement (`measured`) |
 
 Without the file, or for a chip the file leaves out, the LMX2594 keeps the band its calibration picks, `PL.open()` warns (`UserWarning`) and `pl.board.lmx_vco` records the band: where the board's frequency lies in reach of two bands, the calibration picks one or the other from one power-up to the next, and one band higher puts that converter's clock 8-10 ps later (results/lmx-sync-loopback-20261019 §5). A named file that does not exist, a malformed file or one with an unknown key raises `BoardConfigError`. Either way a chip that does not lock raises `BringupError`. The band table is not applied by `PL.open()`; it records what each band costs.
@@ -1139,7 +1144,7 @@ $run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # second board
 $run -m rf_clock.twtt.node AB --seconds 60    # one board through its own loopback cable
 ```
 
-The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial number, VCO bands, MTS T1 codes), the other board's `hello`, both boards' records (`local`, `peer`), a `result` for every paired second (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`; null when a slot failed or its correlation peak is below 10 dB PSL) and `event`s (connections, errors). θ is B's clock reading minus A's, without the non-reciprocity Δ. The two boards' records are paired by the system time of their PPS edges, so A and B need NTP-synchronized clocks (§9.1); the command refuses to start otherwise (`--no-ntp-check`). If the link process ends, the PL loop stops. `experiments/m4_twtt.py` runs the nodes on the boards from RF-clock-PC-ai and summarizes the logs.
+The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial number, VCO bands, MTS T1 codes), the other board's `hello`, both boards' records (`local`, `peer`), a `result` for every paired second (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`; null when a slot failed or its correlation peak is below 10 dB PSL) and `event`s (connections, errors). θ is B's clock reading minus A's, without the non-reciprocity Δ. The two boards' records are paired by the system time of their PPS edges, so A and B need NTP-synchronized clocks (§9.1); the command refuses to start otherwise (`--no-ntp-check`). If the link process ends, the PL loop stops. `experiments/m4_twtt.py` runs the nodes on the boards from RF-clock-PC and summarizes the logs.
 
 ## 12. Exceptions and result codes
 
@@ -1176,6 +1181,7 @@ Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 X
 | `m1_check`     | M1: tick and PPS | `[seconds] [--no-clocks]`; one line per second, PASS/FAIL at the end |
 | `m2_tx_timing` | M2: MTS and timed TX | `[bursts] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`; one burst after every PPS; the MTS latencies of each run go to `m2_runs.jsonl` |
 | `m3_loopback`  | M3: loopback, RX, correlation | `[captures]` measures the loopback delay; `--lane-check` locates single-lane impulses to verify the beat layout; `--stress [--stress-beats N]` tests long windows under DDR load; results go to `m3_runs.jsonl` |
+| `mts_dtc`      | board config (§11.1) | `record [--write] [--runs N]` powers up N times (default 6) without the recorded codes and, per converter, clock and tile, takes the window picked most often; `--write` stores its codes in the board config. `check [--runs N]` powers up with them and reports how far each picked code lies from its record. Run it after `vco_bands scan --write`, which drops the codes (they depend on the bands) |
 | `vco_bands`    | board config (§11.1) | `scan [--write] [--label S/N] [--calibrations N]` writes the clocks N times (default 20) and suggests the band each LMX2594's calibration picks most often, so that the chip stays at the calibration's own operating point; it then forces the bands below and above it until one does not lock, to show the margin; `--write` saves the suggestion, the counts, the bands that lock and this board's serial number in the board config. `delays [--write] [--span N] [--runs N] [--captures N]`, with the loopback cable DAC_A → ADC_B: the loopback delay of each band within N (default 2) of the configured one from the carrier phase, over power-ups in separate processes; `--write` saves the band table; records go to `vco_bands_runs.jsonl` |
 
 M2 and M3 also record the board serial number and both LMX2594's VCO bands. The M1-M3 checks take `--bitstream PATH` (default: the packaged overlay), `--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks when they were written since boot), `--pps-trig` and `--pps-invert`.
@@ -1235,7 +1241,7 @@ Releasing a new bitstream:
 ```text
 1. pyproject.toml: increment C of the version and reset D (change A.B as in the table
    if the registers changed)
-2. RF-clock-ai: vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
+2. RF-clock-PC: vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl \
        -tclargs ~/build/<new directory> ~/ref/RFSoC4x2-BSP/board_files impl
 3. python3 tools/package_overlay.py ~/build/<new directory>
    (requires impl complete, timing met, and the status.txt build_version equal to

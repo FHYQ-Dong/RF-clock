@@ -22,7 +22,7 @@ positions of its four and the ADC two adjacent ones; the old writing after a
 reboot moved both chips by pairs of VCO periods only, the DAC between the
 scope's two states 52.5 ps apart.
 
-Run on RF-clock-PC-ai as the normal user, with the board idle::
+Run on RF-clock-PC as the normal user, with the board idle::
 
     .venv/bin/python experiments/m3_lmx_sync.py --runs 10                   # both synchronized
     .venv/bin/python experiments/m3_lmx_sync.py --dac-lmx nosync --runs 20
