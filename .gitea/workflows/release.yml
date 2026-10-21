@@ -19,15 +19,22 @@ jobs:
       - name: Install Git LFS
         run: command -v git-lfs || (apt-get update -q && apt-get install -yq git-lfs)
 
-      - uses: actions/checkout@v7.0.1
-        with:
-          lfs: true        # the overlay (.bit/.hwh/.xsa) is stored in Git LFS
-          fetch-depth: 0   # previous tag and commits for the notes
-
-      # actions/checkout can leave the pushed tag lightweight
-      # (actions/checkout#290); refetch it so the tag message is there.
-      - name: Fetch the tag message
-        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+      # Not actions/checkout: it clones from scheme://host:port of the server URL
+      # and drops the /gitea/ sub-path this Gitea is served under.  All branches
+      # and tags (annotated, with their messages) for the notes; the overlay
+      # (.bit/.hwh/.xsa) is stored in Git LFS.
+      - name: Check out the tag
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git init -q .
+          git config http.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          git fetch -q origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*"
+          git checkout -q "refs/tags/${GITHUB_REF_NAME}"
+          git lfs install --local
+          git lfs pull
 
       - uses: astral-sh/setup-uv@v10.3.0
         with:

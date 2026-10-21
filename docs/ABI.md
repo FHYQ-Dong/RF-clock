@@ -652,7 +652,12 @@ Clocks
  2. Write this project's LMK04828 / LMX2594 register files (rf_clock/clocks/files/) to the
     clock chips through xrfclk (lmk_freq = 100.0, lmx_freq = 480.0). The LMK runs in nested
     zero-delay mode (PLL1 feedback from DCLKout8 = PL_CLK), so the 100 MHz tick has the same
-    phase to the FS725 10 MHz and PPS after every power-up
+    phase to the FS725 10 MHz and PPS after every power-up. Each LMX2594 whose VCO band the
+    board config forces (§11.1) is then rewritten with R8 VCO_CAPCTRL_FORCE = 1 and the band
+    in R19, and both get their phase SYNC (R0 VCO_PHASE_SYNC 0 -> 1). After 1 s read back
+    each LMX2594's VCO (R110-R112) and stop if one is not locked (since rf-clock 1.3.0.6).
+    A band left to the calibration can differ at the next power-up and moves its converter
+    by 8-10 ps
  3. On site: the PLL1, PLL2 and both LMX (ADC/DAC) LEDs are lit
  4. Hold pl_resetn0 (EMIO GPIO 95) low for about 10 ms and release it: resets the fabric MMCM
     and every proc_sys_reset
@@ -761,34 +766,29 @@ Offsets from the P2 base.
 
 | Where | How |
 | ----- | --- |
-| Board (PYNQ 3.1.1) | Project environment `~/RF-clock/.venv` (§9.1), run as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m <module>`. `xrfclk` needs `BOARD`, PYNQ needs `XILINX_XRT` |
+| Board (PYNQ 3.1.1) | PYNQ's environment `/usr/local/share/pynq-venv` (§9.1), run as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m <module>`. `xrfclk` needs `BOARD`, PYNQ needs `XILINX_XRT` |
 | Development machine | Test the protocol logic against fake registers (`MemoryMMIO`, `tests/`). `uv sync` installs the board's `pynq==3.1.1` as a dev dependency, for IDE completion and offline HWH parsing only; it cannot drive hardware and is not a runtime dependency (the board uses its own copy) |
 
 ### 9.1 Board environment
 
-The board has no internet access. PYNQ's own environment `/usr/local/share/pynq-venv` (Python 3.10, pynq 3.1.1, numpy 1.21.5) is left untouched; the project uses a separate venv that sees PYNQ's packages read-only through a `.pth` file, so packages are found in the order venv → PYNQ environment → system, the same order PYNQ itself uses.
+The board has no internet access. rf-clock is installed into PYNQ's own environment `/usr/local/share/pynq-venv` (Python 3.10, pynq 3.1.1, numpy 1.21.5), where PYNQ's Jupyter and everyone else on the board find it. Its only dependency, numpy, is PYNQ's own (`pyproject.toml` pins the same 1.21.5), so it is installed without dependencies and nothing else in that environment changes.
 
-Create the environment (on the board, in the project directory, with `~/.local/bin/uv`):
+Install or update, as root (the environment belongs to root):
 
 ```bash
-uv venv --offline --python /usr/bin/python3.10 --system-site-packages .venv
-NEW_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_venv.pth"
+sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index rf_clock-<version>-py3-none-any.whl
 ```
 
-Install rf-clock, one of:
-
-- from a released wheel (§14.1): `uv pip install --python .venv/bin/python --no-deps rf_clock-<version>-py3-none-any.whl`
-- from the repository (development, editable): `uv pip install --python .venv/bin/python --no-deps -e .`
+The wheel is a release's (§14.1) or, for a development version, built on the board from the repository: `~/.local/bin/uv build --wheel --offline -o /tmp/rfw` (offline, because uv_build is in the board's uv cache).
 
 Notes:
 
-- Use `--no-deps`: numpy comes from PYNQ (1.21.5, as in `pyproject.toml`) and must not be installed a second time into the venv; the board is offline as well. Do not run `uv sync` on the board either: it syncs the whole environment to the lock file.
-- An editable install records the version at install time; reinstall after changing `pyproject.toml` (§14.1).
+- `--no-deps --no-index`: never install or upgrade anything else in PYNQ's environment; the board is offline as well. Do not install rf-clock there editable: everyone on the board would run whatever the working tree holds. Do not run `uv sync` on the board either.
 - The clock register files are inside the package (`rf_clock/clocks/files/`); `PL.open()` hands them to xrfclk, so nothing is copied into xrfclk's directory.
-- The `BOARD` variable (`RFSoC4x2`) is set by `/etc/profile.d/boardname.sh`, in login shells only, and `xrfclk` reads it at import. `/dev/mem`, bitstream download and the SPI clock chips need root, and `sudo` clears the environment, hence `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`.
-- Jupyter (PYNQ's, running as root): `sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`.
-- After a PYNQ image upgrade the `.pth` follows the new environment.
+- The `BOARD` variable (`RFSoC4x2`) is set by `/etc/profile.d/boardname.sh`, in login shells only, and `xrfclk` reads it at import. `/dev/mem`, bitstream download and the SPI clock chips need root, and `sudo` clears the environment, hence `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python ...`.
+- Jupyter: PYNQ's Jupyter runs in that environment and imports rf_clock as installed.
+- `~/RF-clock/.venv`, the separate venv used before 1.3.0.6 (it sees PYNQ's packages through a `.pth` file), holds no rf-clock; scripts started with it, such as the board side of `experiments/`, import PYNQ's copy.
+- After a PYNQ image upgrade, install the wheel again.
 - Remote recovery: an access to the fabric domain while its clock is not running hangs the AXI bus and the board stops answering ping. Reset it from the machine at the other end of the JTAG cable: `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`; ssh is back after about 40 s, with PYNQ's base overlay in the PL.
 
 Modules:
@@ -796,6 +796,7 @@ Modules:
 | Module                 | Content |
 | ---------------------- | ------- |
 | `rf_clock.pl.board`    | `PL`: power-up, and the hardware blocks (ctrl, tx_buffer, rx_dma, rfdc, clock_gpio) |
+| `rf_clock.pl.board_config` | the per-board config file and the board serial number (§11.1) |
 | `rf_clock.pl.abi`      | addresses, bit numbers and codes generated from the RTL |
 | `rf_clock.pl.overlay`  | path of the packaged overlay, its manifest and the version checks (§14.1) |
 | `rf_clock.pl.mmio`     | MMIO protocol and implementations (PYNQ / in-memory fake) |
@@ -864,8 +865,9 @@ client.validate()
 | `clock_gpio` | MMIO                 | clock-status GPIO (`pl_clk0`), bit 0 = fabric MMCM locked |
 | `overlay`    | PYNQ `Overlay`       | |
 | `bringup`    | `BringupResult`      | faults found and cleared at power-up (`initial_fault_bits`, `initial_fault_info`) |
+| `board`      | `BoardSetup`         | `serial`: the board's AT24MAC402 serial number; `config`: its board config or `None`; `lmx_vco`: per `"adc"`/`"dac"` the LMX2594's VCO read back (`band`, `forced`, `locked`, `capctrl`, `vco_sel`, `daciset`, `ld_vtune`), empty after `write_clocks=False` |
 
-#### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, progress=None)`
+#### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, board_config=None, progress=None)`
 
 Runs every power-up step of §7.1. The fixed hardware choices are defaults: the packaged overlay `rf_clock/overlay/rf_clock.bit` (§14.1); the clock files `LMK04828_100.0.txt` and `LMX2594_480.0.txt` from `rf_clock/clocks/files/`, written through xrfclk (no copies in xrfclk's directory needed); `pl_resetn0`; RFDC tiles 0 and 2 started and synchronized.
 
@@ -876,9 +878,21 @@ Runs every power-up step of §7.1. The fixed hardware choices are defaults: the 
 | `pps_source_trig`, `pps_invert`   | written to `PPS_CONFIG` (§4.4.5) |
 | `ref_tile`, `*_target_latency`    | MTS parameters (§11.6); targets default to DAC 1896 and ADC 1296 (§7.1); -1 aligns to the largest measured latency |
 | `check_version=False`             | skip the manifest and `BUILD_VERSION` checks of §14.1 (bitstreams before 1.2) |
+| `board_config`                    | a `BoardConfig`, or the path of a board config file, instead of the default file (below) |
 | `progress`                        | called with one line per step, for example `print` |
 
-On failure the original exception (`BringupError`, `RFDCError`, `VersionMismatch`, ...) propagates, carrying `.overlay` and, once MTS ran, `.mts`. On a development machine, `PL(ctrl=..., tx_buffer=..., ...)` builds one from fakes.
+On failure the original exception (`BringupError`, `BoardConfigError`, `RFDCError`, `VersionMismatch`, ...) propagates, carrying `.overlay` and, once MTS ran, `.mts`. On a development machine, `PL(ctrl=..., tx_buffer=..., ...)` builds one from fakes.
+
+**Board config** (`rf_clock.pl.board_config`, since 1.3.0.6). What belongs to one board rather than to the design is in a JSON file on that board, `/etc/rf-clock/board.json`, or the file named by the environment variable `RF_CLOCK_BOARD_CONFIG`. `PL.open()` reads it before loading the overlay:
+
+| Key | Content |
+| --- | ------- |
+| `serial` | the 128-bit serial number of the board's AT24MAC402 EEPROM (PS I2C1, address 0x58, offset 0x80), 32 hex digits; `PL.open()` raises `BoardConfigError` if it is not this board's |
+| `label` | free text, for example the board's S/N |
+| `lmx_vco_band` | the VCO band (VCO_CAPCTRL, 0-183) to force on each LMX2594, `{"adc": 117, "dac": 122}` (§7.1 step 2) |
+| `band_table` | written by `rf_clock.checks.vco_bands` (§13): per chip how often the calibration picked each band (`calibrated`), the bands that lock (`locked`) and the DAC → ADC loopback delay of each band in ps (`loopback_ps`), relative to both chips at `measured.reference`; with the date and die temperature of the scan (`scanned`) and of the measurement (`measured`) |
+
+Without the file, or for a chip the file leaves out, the LMX2594 keeps the band its calibration picks, `PL.open()` warns (`UserWarning`) and `pl.board.lmx_vco` records the band: where the board's frequency lies in reach of two bands, the calibration picks one or the other from one power-up to the next, and one band higher puts that converter's clock 8-10 ps later (results/lmx-sync-loopback-20261019 §5). A named file that does not exist, a malformed file or one with an unknown key raises `BoardConfigError`. Either way a chip that does not lock raises `BringupError`. The band table is not applied by `PL.open()`; it records what each band costs.
 
 ### 11.2 `rf_clock.pl.abi`
 
@@ -1120,7 +1134,8 @@ Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy, 
 | `RXWindowInvalid` | `PLClientError` | `wait_rx`: invalid window (`.flags`, `.result`); discard the measurement |
 | `TargetMissed` | `PLClientError` | `wait_tx`/`wait_rx`: `*_ACTUAL` ≠ target (`.target`, `.actual`) |
 | `RXDMAError` | `RuntimeError` | DMA bytes ≠ `RX_BEATS × 32` |
-| `BringupError` | `RuntimeError` | a power-up step timed out |
+| `BringupError` | `RuntimeError` | a power-up step timed out, or an LMX2594 did not lock |
+| `BoardConfigError` | `BringupError` | the board config is malformed, is missing where named, or is for another board (§11.1) |
 | `RFDCError` | `RuntimeError` | a tile did not start, or an MTS status is not OK |
 | `VersionMismatch` | `RuntimeError` | overlay or `BUILD_VERSION` A.B.C differs from the installed rf-clock, or a file does not match the manifest (§14.1) |
 
@@ -1133,15 +1148,16 @@ Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy, 
 
 ## 13. Board checks (`rf_clock.checks`)
 
-Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<module> ...`; `--help` lists every option. Records are appended to `m2_runs.jsonl` and `m3_runs.jsonl` in the current directory. If the board hangs, reset it remotely with `tools/jtag_reset_board.tcl` (§9.1).
+Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.checks.<module> ...`; `--help` lists every option. Records are appended to `m2_runs.jsonl` and `m3_runs.jsonl` in the current directory. If the board hangs, reset it remotely with `tools/jtag_reset_board.tcl` (§9.1).
 
 | Module         | Milestone | Usage |
 | -------------- | --------- | ----- |
 | `m1_check`     | M1: tick and PPS | `[seconds] [--no-clocks]`; one line per second, PASS/FAIL at the end |
 | `m2_tx_timing` | M2: MTS and timed TX | `[bursts] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`; one burst after every PPS; the MTS latencies of each run go to `m2_runs.jsonl` |
 | `m3_loopback`  | M3: loopback, RX, correlation | `[captures]` measures the loopback delay; `--lane-check` locates single-lane impulses to verify the beat layout; `--stress [--stress-beats N]` tests long windows under DDR load; results go to `m3_runs.jsonl` |
+| `vco_bands`    | board config (§11.1) | `scan [--write] [--label S/N] [--calibrations N]` writes the clocks N times (default 20) and suggests the band each LMX2594's calibration picks most often, so that the chip stays at the calibration's own operating point; it then forces the bands below and above it until one does not lock, to show the margin; `--write` saves the suggestion, the counts, the bands that lock and this board's serial number in the board config. `delays [--write] [--span N] [--runs N] [--captures N]`, with the loopback cable DAC_A → ADC_B: the loopback delay of each band within N (default 2) of the configured one from the carrier phase, over power-ups in separate processes; `--write` saves the band table; records go to `vco_bands_runs.jsonl` |
 
-All three take `--bitstream PATH` (default: the packaged overlay), `--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks when they were written since boot), `--pps-trig` and `--pps-invert`.
+M2 and M3 also record the board serial number and both LMX2594's VCO bands. The M1-M3 checks take `--bitstream PATH` (default: the packaged overlay), `--no-version-check` (bitstreams before 1.2), `--no-clocks` (skip the clocks when they were written since boot), `--pps-trig` and `--pps-invert`.
 
 For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: the DAC is switched to IMR low-pass in Nyquist zone 1 for the run; `--scope-nco 100` moves the output to 100 MHz and `--scope-nco 0` bypasses the mixer so the DAC outputs the I samples; the settings are restored at the end. To measure PPS → burst start, use `--scope-nco 0 --waveform square --offset-ticks 0`: the first edge of the square wave does not depend on any NCO phase (180.00 ns on 2026-10-14, unchanged over five restarts; DAC_A is inverted relative to I, so the first edge falls).
 
@@ -1191,7 +1207,7 @@ Change the version before building; the build script writes it into `BUILD_VERSI
 
 Only D may differ: a Python-only release keeps using the existing bitstream.
 
-An editable install records the version at install time; reinstall after changing `pyproject.toml` (on the board `uv pip install --no-deps -e .`; on the development machine `uv run` reinstalls by itself).
+An editable install records the version at install time; on the development machine `uv run` reinstalls it by itself after `pyproject.toml` changes.  On the board rf-clock is installed from a wheel into PYNQ's environment (§9.1), so a new version means a new wheel.
 
 Releasing a new bitstream:
 
@@ -1203,8 +1219,8 @@ Releasing a new bitstream:
 3. python3 tools/package_overlay.py ~/build/<new directory>
    (requires impl complete, timing met, and the status.txt build_version equal to
    pyproject.toml)
-4. Commit, then tag and push (below); on the board install the new wheel, or sync src/ and
-   uv pip install --no-deps -e .
+4. Commit, then tag and push (below); on the board install the new wheel into PYNQ's
+   environment (§9.1)
 ```
 
 Release: pushing a tag `vA.B.C.D` runs the GitHub Action `.github/workflows/release.yml`. It checks with `tools/release_notes.py` (the tag is `v` + the `pyproject.toml` version; the overlay files are not LFS pointers, match the manifest and have the same A.B.C), runs `uv build`, and creates a GitHub Release with the wheel, the sdist and `manifest.json`. The release notes hold the tag message, the overlay build record, the commits since the previous tag and the install steps.
@@ -1214,7 +1230,7 @@ git tag -a v1.3.0.1 -m "what changed"
 git push origin v1.3.0.1
 ```
 
-The group's Gitea server runs the same steps from `.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores `.github/workflows`) on its own runner and creates a Gitea release with the same files through the Gitea API. It also uploads the wheel and sdist to the repository owner's Gitea PyPI registry, which needs an Actions secret `PACKAGE_TOKEN` (an access token with package write access; the job's own token may not write packages). To install, use a Gitea access token that may read packages:
+The group's Gitea server runs the same steps from `.gitea/workflows/release.yml` (Gitea reads `.gitea/workflows` and ignores `.github/workflows`) on its own runner and creates a Gitea release with the same files through the Gitea API. It also uploads the wheel and sdist to the repository owner's Gitea PyPI registry, which needs an Actions secret `PACKAGE_TOKEN` (an access token with package write access; the job's own token may not write packages). The server is reached at `http://kinabalu2.stdusr.yale.internal/gitea/`, and `actions/checkout` cannot clone from a server under a sub-path (it keeps only scheme, host and port), so the Gitea workflow checks out with git itself since 1.3.0.6; 1.3.0.3-1.3.0.5 have no Gitea release, only GitHub ones. To install, use a Gitea access token that may read packages:
 
 ```text
 uv pip install --no-deps --index-url http://<user>:<token>@<gitea>/api/packages/<owner>/pypi/simple rf-clock==1.3.0.2

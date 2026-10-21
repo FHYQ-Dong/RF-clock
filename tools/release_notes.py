@@ -84,10 +84,10 @@ def notes(tag: str, version: str, manifest: dict) -> str:
         "",
         "## Install on the RFSoC 4x2",
         "",
-        "Copy the wheel to the board, then in the project environment (docs/ABI.md 9):",
+        "Copy the wheel to the board and install it into PYNQ's environment (docs/ABI.md 9.1):",
         "",
         "```bash",
-        f"uv pip install --no-deps {wheel}",
+        f"sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index {wheel}",
         "```",
         "",
     ]

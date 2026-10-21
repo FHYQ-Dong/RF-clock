@@ -3,7 +3,7 @@ a window from the same tick.
 
 Run on the RFSoC 4x2 as root:
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.examples.pl.03_pynq_bringup
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.examples.pl.03_pynq_bringup
 
 PL.open() runs every power-up step of docs/ABI.md section 7.1 (overlay,
 LMK/LMX, pl_resetn0, RFDC and MTS, PPS lock).  The object it returns holds one

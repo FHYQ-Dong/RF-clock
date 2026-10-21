@@ -2,7 +2,7 @@
 
 The checks run on the RFSoC 4x2 as root, for example::
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m1_check 60
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.checks.m1_check 60
 
 (xrfclk needs ``BOARD``; PYNQ needs ``XILINX_XRT``.)  The overlay is the one
 packaged with rf-clock unless ``--bitstream`` names another.  If the board hangs,
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+from dataclasses import asdict
 
 from rf_clock.pl import PL
 from rf_clock.pl.board import ADC_TARGET_LATENCY, DAC_TARGET_LATENCY
@@ -112,6 +113,11 @@ def open_pl(args, log: RunLog) -> PL | None:
     log.record["tile_startup_call_needed"] = mts.started_after_startup_call
     log.record["nco_synced"] = mts.nco_synced
     log.record["mixers"] = mts.mixers
+    log.record["board"] = {
+        "serial": pl.board.serial,
+        "label": pl.board.config.label if pl.board.config else None,
+        "lmx_vco": {side: {**asdict(v), "band": v.band} for side, v in pl.board.lmx_vco.items()},
+    }
     for kind, settings in mts.mixers.items():
         print(f"{kind} tile 2 block 0 mixer: Freq {settings.get('Freq')} MHz, "
               f"MixerType {settings.get('MixerType')}, MixerMode {settings.get('MixerMode')}")

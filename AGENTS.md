@@ -18,11 +18,19 @@ The current design is in `plan/RF_clock_modules.md` (Chinese: `plan/RF_clock_mod
 
 - **Calibrated constants are explicit:** non-reciprocity Δ, PPS sub-tick phase and RFDC latency are measured and stored with a version. Never subtract a guessed constant.
 
+- **What belongs to one board lives in its board config:** `/etc/rf-clock/board.json` (`rf_clock.pl.board_config`, docs/ABI.md §11.1), named by the board's AT24MAC402 serial number; `PL.open()` refuses a config for another board. Each LMX2594's VCO band is forced from it, because the calibrated band can change at every clock write and move a converter by 8-10 ps. Never put one board's value in the package.
+
 - **One register map:** `PL/src/p_regs.vh` (addresses, bit fields) and `PL/src/p_defs.vh` (states, result codes, flags) are the RTL source for the ARM-visible interface; `docs/ABI.md` documents it for software. RTL and testbenches use these names, never raw offsets. Any change updates all three and bumps `VERSION` per `docs/ABI.md` §14.
 
 - **English documents are the reference:** each Chinese translation (`*_zh.md`) is updated in the same change; docstrings and code comments are English.
 
 - **The overlay ships with the package:** `src/rf_clock/overlay/` holds `rf_clock.bit`/`.hwh` and `rf_clock_hw.xsa` (Git LFS) and `manifest.json`, copied from a build directory by `tools/package_overlay.py`. The package version is `A.B.C.D`: A.B equals the register map `VERSION`, C counts bitstreams built for it, D counts Python-only releases. The build script writes it into P2 `BUILD_VERSION`, and `PL.open()` refuses a bitstream whose A.B.C differs from the installed package. Bump C (reset D) before building a new bitstream, and A.B together with `VERSION`; Python-only changes bump D (`docs/ABI.md` §14.1).
+
+## Documents
+
+- **Mechanisms are explained as a complete chain:** a report's phenomenon and mechanism go from the cause to the measured quantity link by link, without skipping a step the reader needs to follow it (for example: VCO band → tuning voltage → LMX2594 output phase → tile sample clock against SYSREF → MTS capture codes and the loopback time). Each link starts from the previous link's effect as its cause ("that output moved, so the tile PLLs locked to it move the sample clocks …"), rather than listing facts side by side. Say which links were measured and which are inferred.
+- **A verified finding is written in one order, so that it reads straight through:** the phenomenon; the background knowledge needed to follow it; the complete causal chain that produces it; the experiments that test that chain; their results.
+- **Markdown is not hard-wrapped:** each paragraph and each list item is one line, broken only where it ends; the renderer wraps. Tables, code blocks and headings are written as usual.
 
 ## Review rule
 

@@ -1,6 +1,6 @@
 """Raw PYNQ access to the RF-clock PL, without rf_clock.pl (docs/ABI.md appendix A.2).
 
-    sudo env XILINX_XRT=/usr .venv/bin/python -m rf_clock.examples.native.raw_pynq
+    sudo env XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.examples.native.raw_pynq
 
 Needs the rf_clock overlay loaded and the fabric clock running.  Reads ID,
 VERSION and TICK, times MMIO.read, then writes a test pattern over the TX

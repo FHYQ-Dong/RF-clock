@@ -43,15 +43,18 @@ Building the bitstream needs Vivado 2024.1 and the [RealDigitalOrg RFSoC4x2-BSP]
 
 ### On the board
 
-Releases (on GitHub and on the group's Gitea) carry a wheel that contains the library, the bitstream, the clock register files, the examples and the board checks; nothing else from the repository is needed. Create the environment once and install the wheel as described in [docs/ABI.md §9.1](docs/ABI.md), then, as root:
+Releases (on GitHub and on the group's Gitea) carry a wheel that contains the library, the bitstream, the clock register files, the examples and the board checks; nothing else from the repository is needed. Install the wheel into PYNQ's own environment as described in [docs/ABI.md §9.1](docs/ABI.md), then, as root:
 
 ```bash
-run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python"
+run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
+$run -m rf_clock.checks.vco_bands scan --write  # once per board: the board config
 $run -m rf_clock.checks.m1_check 60             # tick against the PPS
 $run -m rf_clock.checks.m2_tx_timing 10         # MTS and timed bursts
 $run -m rf_clock.checks.m3_loopback 20          # loopback delay by correlation
 $run -m rf_clock.examples.pl.03_pynq_bringup    # one burst and one RX window
 ```
+
+The board config, `/etc/rf-clock/board.json`, names its board by serial number and fixes the VCO band of each LMX2594, which otherwise can change from one power-up to the next and move a converter by 8-10 ps; without it `PL.open()` warns ([docs/ABI.md §11.1](docs/ABI.md)).
 
 In your own code:
 

@@ -21,7 +21,7 @@ that delay must not change across restarts.  Each run appends its MTS
 latencies to ``--log`` so restarts (each one rewrites the clocks and redoes
 MTS) can be compared.
 
-    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.m2_tx_timing 10
+    sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.checks.m2_tx_timing 10
 
 The RF output (3.8 GHz and its 5.8 GHz image) is beyond a low-bandwidth
 scope; ``--scope-nco 100`` moves it to 100 MHz for the run.  The NCO phase at

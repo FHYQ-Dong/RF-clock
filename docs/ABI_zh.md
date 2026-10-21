@@ -647,7 +647,10 @@ t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
  2. 用 xrfclk 把本项目的 LMK04828 / LMX2594 寄存器文件（`rf_clock/clocks/files/`）写入时钟芯片。
     LMK 用嵌套零延时模式（PLL1 反馈取 DCLKout8 = PL_CLK），使 100 MHz tick 相对 FS725 10 MHz/PPS
     的相位每次上电都相同
-    （lmk_freq = 100.0，lmx_freq = 480.0）
+    （lmk_freq = 100.0，lmx_freq = 480.0）。板级配置（§11.1）强制了 VCO 档位的 LMX2594 随后
+    重写一遍，R8 VCO_CAPCTRL_FORCE = 1、档位写在 R19；两片 LMX2594 再做相位 SYNC（R0
+    VCO_PHASE_SYNC 0 -> 1）。1 s 后回读每片 LMX2594 的 VCO（R110–R112），有一片没锁定就停止
+    （rf-clock 1.3.0.6 起）。留给校准自选的档位下次上电可能不同，每差一档对应的转换器移动 8–10 ps
  3. 现场可看：PLL1、PLL2 和两个 LMX（ADC/DAC）LED 都亮
  4. 拉低 pl_resetn0（EMIO GPIO 95）约 10 ms 再释放：复位 fabric MMCM 和各 proc_sys_reset
  5. 轮询时钟状态 GPIO bit0，1 s 内变为 1；为 0 时不得访问 P2 和 TX buffer
@@ -751,34 +754,29 @@ PL
 
 | 场合               | 怎么用                                                                                                                                                                                             |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 板上（PYNQ 3.1.1） | 项目环境`~/RF-clock/.venv`（§9.1），以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m <模块>`。`xrfclk` 需要 `BOARD`，PYNQ 需要 `XILINX_XRT` |
+| 板上（PYNQ 3.1.1） | PYNQ 的环境 `/usr/local/share/pynq-venv`（§9.1），以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m <模块>`。`xrfclk` 需要 `BOARD`，PYNQ 需要 `XILINX_XRT` |
 | 开发机             | 用`MemoryMMIO` 作假寄存器测试协议逻辑（`tests/`）。`uv sync` 会装与板子同版本的 `pynq==3.1.1`（dev 依赖），只用于 IDE 补全和离线读 HWH，不能控制硬件；它不是运行依赖，板上用系统自带的那份 |
 
 ### 9.1 板上环境
 
-板子不联网。不改动 PYNQ 自己的环境 `/usr/local/share/pynq-venv`（Python 3.10，pynq 3.1.1，numpy 1.21.5）；项目用一个独立的 venv，通过 `.pth` 文件只读地看到 PYNQ 环境里的包，所以包的查找顺序是：venv → PYNQ 环境 → 系统包，与 PYNQ 自己一致。
+板子不联网。rf-clock 装在 PYNQ 自己的环境 `/usr/local/share/pynq-venv` 里（Python 3.10，pynq 3.1.1，numpy 1.21.5），PYNQ 的 Jupyter 和板上其他人都直接用它。它唯一的依赖 numpy 就用 PYNQ 那份（`pyproject.toml` 固定的也是 1.21.5），所以安装时不带依赖，这个环境里的其他东西都不变。
 
-建环境（在板上，项目目录下，需要 `~/.local/bin/uv`）：
+安装或更新，以 root 执行（这个环境属于 root）：
 
 ```bash
-uv venv --offline --python /usr/bin/python3.10 --system-site-packages .venv
-NEW_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_venv.pth"
+sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index rf_clock-<版本>-py3-none-any.whl
 ```
 
-装 rf-clock，二选一：
-
-- 从发布的 wheel（§14.1）：`uv pip install --python .venv/bin/python --no-deps rf_clock-<版本>-py3-none-any.whl`
-- 从仓库（开发时，可编辑）：`uv pip install --python .venv/bin/python --no-deps -e .`
+wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打包：`~/.local/bin/uv build --wheel --offline -o /tmp/rfw`（能离线打包，因为 uv_build 在板上的 uv 缓存里）。
 
 要点：
 
-- 用 `--no-deps`：numpy 用 PYNQ 那份（与 `pyproject.toml` 的 1.21.5 一致），不要在 venv 里另装一份；板子也不联网。也不要在板上用 `uv sync`，它会按锁文件同步整个环境。
-- 可编辑安装记录的是安装那一刻的版本号，改了 `pyproject.toml` 要重装（§14.1）。
+- 用 `--no-deps --no-index`：不往 PYNQ 环境里装、也不升级任何别的包；板子也不联网。不要在那里做可编辑安装：那样板上所有人跑的都是工作目录里当时的代码。也不要在板上用 `uv sync`。
 - 时钟寄存器文件在包里（`rf_clock/clocks/files/`），由 `PL.open()` 交给 xrfclk 写入，不需要拷进 xrfclk 的目录。
-- `BOARD` 环境变量（`RFSoC4x2`）由 `/etc/profile.d/boardname.sh` 设置，只在登录 shell 里有；`xrfclk` 在 import 时就读它。访问 `/dev/mem`、下载比特流、写 SPI 时钟芯片都需要 root，而 `sudo` 会清掉环境变量，所以写成 `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python ...`。
-- Jupyter（PYNQ 自带，以 root 运行）：`sudo .venv/bin/python -m ipykernel install --name rf-clock --display-name "RF-clock"`。
-- PYNQ 镜像升级后 `.pth` 自动跟随新环境。
+- `BOARD` 环境变量（`RFSoC4x2`）由 `/etc/profile.d/boardname.sh` 设置，只在登录 shell 里有；`xrfclk` 在 import 时就读它。访问 `/dev/mem`、下载比特流、写 SPI 时钟芯片都需要 root，而 `sudo` 会清掉环境变量，所以写成 `sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python ...`。
+- Jupyter：PYNQ 的 Jupyter 就运行在这个环境里，直接导入装好的 rf_clock。
+- `~/RF-clock/.venv` 是 1.3.0.6 之前用的独立 venv（通过 `.pth` 文件看到 PYNQ 的包），里面已不装 rf-clock；用它启动的脚本（比如 `experiments/` 在板上运行的部分）导入的是 PYNQ 里那份。
+- PYNQ 镜像升级后，重新安装 wheel。
 - 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
 
 模块一览：
@@ -786,6 +784,7 @@ echo /usr/local/share/pynq-venv/lib/python3.10/site-packages > "$NEW_SITE/pynq_v
 | 模块                     | 内容                                                                      |
 | ------------------------ | ------------------------------------------------------------------------- |
 | `rf_clock.pl.board`    | `PL`：上电，并持有各硬件部件（ctrl、tx_buffer、rx_dma、rfdc、clock_gpio） |
+| `rf_clock.pl.board_config` | 每块板的配置文件和本板序列号（§11.1） |
 | `rf_clock.pl.abi`      | 由 RTL 生成的地址、位号和编码                                             |
 | `rf_clock.pl.overlay`  | 随包的 overlay 路径、manifest 和版本检查（§14.1）                        |
 | `rf_clock.pl.mmio`     | MMIO 接口和实现（PYNQ / 内存假件）                                        |
@@ -852,8 +851,9 @@ client.validate()
 | `clock_gpio` | MMIO                    | 时钟状态 GPIO（`pl_clk0`），bit0 = fabric MMCM 已锁定                                                                            |
 | `overlay`    | PYNQ`Overlay`         |                                                                                                                                    |
 | `bringup`    | `BringupResult`       | 上电时发现并清除的故障（`initial_fault_bits`、`initial_fault_info`）                                                           |
+| `board`      | `BoardSetup`          | `serial`：本板 AT24MAC402 的序列号；`config`：板级配置，没有时为 `None`；`lmx_vco`：按 `"adc"`/`"dac"` 给出回读的 LMX2594 VCO（`band`、`forced`、`locked`、`capctrl`、`vco_sel`、`daciset`、`ld_vtune`），`write_clocks=False` 时为空 |
 
-#### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, progress=None)`
+#### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, board_config=None, progress=None)`
 
 按 §7.1 完成全部上电步骤。固定的硬件选择都是默认值：overlay 为随包的 `rf_clock/overlay/rf_clock.bit`（§14.1）；时钟用包里 `rf_clock/clocks/files/` 的 `LMK04828_100.0.txt` 和 `LMX2594_480.0.txt`（经 xrfclk 写入，板上不必把文件拷进 xrfclk 目录）；`pl_resetn0` 复位；RFDC tile 0、2 启动和 MTS。
 
@@ -864,9 +864,21 @@ client.validate()
 | `pps_source_trig`、`pps_invert` | 写入`PPS_CONFIG`（§4.4.5）                                            |
 | `ref_tile`、`*_target_latency`  | MTS 参数（§11.6）；目标延时默认 DAC 1896、ADC 1296（§7.1），-1 为对齐到实测最大值 |
 | `check_version=False`             | 不做 §14.1 的 manifest 和`BUILD_VERSION` 检查（1.2 之前的 bitstream） |
+| `board_config`                    | 一个 `BoardConfig`，或一个板级配置文件的路径，代替默认文件（见下）     |
 | `progress`                        | 每一步回调一行文字，如`print`                                          |
 
-失败时抛出原异常（`BringupError`、`RFDCError`、`VersionMismatch` 等），异常上带 `.overlay`，MTS 跑过时还带 `.mts`。开发机上可以直接 `PL(ctrl=..., tx_buffer=..., ...)` 用假件构造。
+失败时抛出原异常（`BringupError`、`BoardConfigError`、`RFDCError`、`VersionMismatch` 等），异常上带 `.overlay`，MTS 跑过时还带 `.mts`。开发机上可以直接 `PL(ctrl=..., tx_buffer=..., ...)` 用假件构造。
+
+**板级配置**（`rf_clock.pl.board_config`，1.3.0.6 起）。属于某一块板、而不属于设计的东西，放在这块板上的一个 JSON 文件里：`/etc/rf-clock/board.json`，或环境变量 `RF_CLOCK_BOARD_CONFIG` 指定的文件。`PL.open()` 在加载 overlay 之前读它：
+
+| 键 | 内容 |
+| --- | --- |
+| `serial` | 本板 AT24MAC402 EEPROM 的 128 位序列号（PS I2C1，地址 0x58，偏移 0x80），32 个十六进制数字；不是本板的就由 `PL.open()` 抛 `BoardConfigError` |
+| `label` | 自由文字，例如本板的 S/N |
+| `lmx_vco_band` | 每片 LMX2594 强制使用的 VCO 档位（VCO_CAPCTRL，0–183），`{"adc": 117, "dac": 122}`（§7.1 第 2 步） |
+| `band_table` | 由 `rf_clock.checks.vco_bands`（§13）写入：每片芯片校准选中各档位的次数（`calibrated`）、能锁定的档位（`locked`），以及每个档位下 DAC → ADC 回环延时的变化，单位 ps（`loopback_ps`），相对两片都在 `measured.reference` 时；另记扫描（`scanned`）和测量（`measured`）的时间与芯片温度 |
+
+没有这个文件，或文件没写某片芯片时，那片 LMX2594 用校准自选的档位，`PL.open()` 发出警告（`UserWarning`），`pl.board.lmx_vco` 记下这个档位：本板的频率落在相邻两档都够得着的地方时，校准每次上电在两档之间任选其一，而高一档会让那个转换器的时钟晚 8–10 ps（results/lmx-sync-loopback-20261019 第 5 节）。指定的文件不存在、格式不对或含未知的键，抛 `BoardConfigError`。无论哪种情况，有一片芯片没锁定都抛 `BringupError`。档位表不被 `PL.open()` 使用，它记录的是每个档位的代价。
 
 ### 11.2 `rf_clock.pl.abi`
 
@@ -1107,7 +1119,8 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 | `RXWindowInvalid`                      | `PLClientError` | `wait_rx`：窗口作废（`.flags`、`.result`），丢弃这次测量                                    |
 | `TargetMissed`                         | `PLClientError` | `wait_tx`/`wait_rx`：`*_ACTUAL` ≠ target（`.target`、`.actual`）                            |
 | `RXDMAError`                           | `RuntimeError`  | DMA 字节数 ≠ `RX_BEATS × 32`                                                                |
-| `BringupError`                         | `RuntimeError`  | 上电流程某一步超时                                                                         |
+| `BringupError`                         | `RuntimeError`  | 上电流程某一步超时，或有 LMX2594 没锁定                                                    |
+| `BoardConfigError`                     | `BringupError`  | 板级配置格式不对、指定了却不存在，或属于另一块板（§11.1）                                  |
 | `RFDCError`                            | `RuntimeError`  | tile 未启动或 MTS 状态非 OK                                                                |
 | `VersionMismatch`                      | `RuntimeError`  | overlay 或`BUILD_VERSION` 与安装的 rf-clock A.B.C 不同，或文件与 manifest 不符（§14.1） |
 
@@ -1120,15 +1133,16 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 
 ## 13. 板上检查（`rf_clock.checks`）
 
-随包安装，在板上以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python -m rf_clock.checks.<模块> ...`，`--help` 查看全部选项。记录追加到当前目录下的 `m2_runs.jsonl`、`m3_runs.jsonl`。卡死时用 `tools/jtag_reset_board.tcl` 远程复位（§9.1）。
+随包安装，在板上以 root 运行：`sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.checks.<模块> ...`，`--help` 查看全部选项。记录追加到当前目录下的 `m2_runs.jsonl`、`m3_runs.jsonl`。卡死时用 `tools/jtag_reset_board.tcl` 远程复位（§9.1）。
 
 | 模块           | 里程碑             | 用法                                                                                                                                                                         |
 | -------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `m1_check`     | M1：tick 与 PPS    | `[秒数] [--no-clocks]`；每秒一行，结束时 PASS/FAIL                                                                                                                         |
 | `m2_tx_timing` | M2：MTS 与定时 TX  | `[突发数] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`；每个 PPS 发一个突发；每次运行的 MTS 延时追加到 `m2_runs.jsonl` |
 | `m3_loopback`  | M3：环回、RX、相关 | `[次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl`             |
+| `vco_bands`    | 板级配置（§11.1）  | `scan [--write] [--label S/N] [--calibrations N]` 写 N 次时钟（默认 20），建议每片 LMX2594 校准最常选的档位，使芯片保持在校准自己的工作点上；再从它向两边逐档强制，直到锁不住，以显示两边的余量；`--write` 把建议的档位、各档次数、能锁定的档位和本板序列号存进板级配置。`delays [--write] [--span N] [--runs N] [--captures N]`，需接回环线 DAC_A → ADC_B：用载波相位测配置档位两边各 N 档（默认 2）以内每个档位的回环延时，每次上电在单独的进程里；`--write` 存入档位表；记录追加到 `vco_bands_runs.jsonl` |
 
-三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
+M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
 
 带宽不够看射频的示波器用 `m2_tx_timing --scope-nco`：DAC 临时改为 IMR 低通、1 区，`--scope-nco 100` 把输出搬到 100 MHz，`--scope-nco 0` 旁路混频器、直接输出 I 样本；结束时恢复。量"PPS → 突发起点" 用 `--scope-nco 0 --waveform square --offset-ticks 0`：方波的第一个边沿与 NCO 相位无关（2026-10-14 测得 180.00 ns，重启 5 次不变；DAC_A 输出相对 I 反相，第一个边沿是下降沿）。
 
@@ -1178,7 +1192,7 @@ rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手�
 
 只有 D 可以不同：只改 Python 的发布继续用原来的 bitstream。
 
-可编辑安装记录的是安装那一刻的版本，改了 `pyproject.toml` 要重新安装（板上 `uv pip install --no-deps -e .`；开发机上 `uv run` 会自动重装）。
+可编辑安装记录的是安装那一刻的版本；开发机上改了 `pyproject.toml` 后 `uv run` 会自动重装。板上的 rf-clock 是用 wheel 装进 PYNQ 环境的（§9.1），所以新版本就要装新的 wheel。
 
 发布一个新 bitstream：
 
@@ -1188,7 +1202,7 @@ rf-clock 的版本号有四段 `A.B.C.D`（PEP 440 允许任意段数），手�
        -tclargs ~/build/<新目录> ~/ref/RFSoC4x2-BSP/board_files impl
 3. python3 tools/package_overlay.py ~/build/<新目录>
    （要求 impl 完成、时序满足、status.txt 的 build_version 与 pyproject.toml 相同）
-4. 提交，打 tag 并推送（见下）；板上安装新 wheel，或同步 src/ 后 uv pip install --no-deps -e .
+4. 提交，打 tag 并推送（见下）；在板上把新 wheel 装进 PYNQ 环境（§9.1）
 ```
 
 发布：推送 `vA.B.C.D` 形式的 tag 时，GitHub Action（`.github/workflows/release.yml`）先用 `tools/release_notes.py` 校验（tag 等于 `v` + `pyproject.toml` 的版本；overlay 不是 LFS 指针、与 manifest 一致、A.B.C 相同），再 `uv build`，并建立 GitHub Release，附上 wheel、sdist 和 `manifest.json`。发布说明由 tag 的说明文字、overlay 构建记录、上一个 tag 以来的提交和安装步骤组成。
@@ -1198,7 +1212,7 @@ git tag -a v1.3.0.1 -m "说明这次改了什么"
 git push origin v1.3.0.1
 ```
 
-组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取 `.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release，同时把 wheel 和 sdist 上传到仓库所有者的 Gitea PyPI 软件包仓库。上传需要一个名为 `PACKAGE_TOKEN` 的 Actions 密钥（有软件包写入权限的访问令牌；任务自带的令牌不能写入软件包）。用一个有读取软件包权限的 Gitea 访问令牌即可安装：
+组里的 Gitea 服务器用自己的 runner 执行 `.gitea/workflows/release.yml` 中相同的步骤（Gitea 读取 `.gitea/workflows`，忽略 `.github/workflows`），并通过 Gitea API 建立带同样文件的 Gitea Release，同时把 wheel 和 sdist 上传到仓库所有者的 Gitea PyPI 软件包仓库。上传需要一个名为 `PACKAGE_TOKEN` 的 Actions 密钥（有软件包写入权限的访问令牌；任务自带的令牌不能写入软件包）。服务器地址是 `http://kinabalu2.stdusr.yale.internal/gitea/`，而 `actions/checkout` 不能从子路径下的服务器 clone（它只保留协议、主机和端口），所以 1.3.0.6 起 Gitea 的 workflow 直接用 git 检出；1.3.0.3–1.3.0.5 在 Gitea 上没有 release，只有 GitHub 上的。用一个有读取软件包权限的 Gitea 访问令牌即可安装：
 
 ```text
 uv pip install --no-deps --index-url http://<用户名>:<令牌>@<gitea>/api/packages/<所有者>/pypi/simple rf-clock==1.3.0.2

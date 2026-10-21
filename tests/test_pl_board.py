@@ -63,6 +63,59 @@ def test_clocks_are_written_from_the_packaged_files(tmp_path):
     assert xrfclk.lmk_devices == ["lmk"]  # devices are found once
 
 
+def fake_xrfclk(tmp_path):
+    from collections import defaultdict
+    from types import SimpleNamespace
+
+    spi = {"adc": tmp_path / "spidev0.1", "dac": tmp_path / "spidev0.2"}  # by chip select
+    for path in spi.values():
+        path.write_bytes(b"")
+    xrfclk = SimpleNamespace(_Config=defaultdict(dict), lmk_devices=["lmk"],
+                             lmx_devices=[{"spi_device": str(spi["dac"])}, {"spi_device": str(spi["adc"])}],
+                             set_ref_clks=lambda lmk_freq, lmx_freq: None, written=[])
+    xrfclk._write_LMX_regs = lambda image, device: xrfclk.written.append((image, device["spi_device"]))
+    return xrfclk, spi
+
+
+def test_a_forced_vco_band_rewrites_only_that_lmx(tmp_path):
+    from rf_clock.pl.board import LMX_CAPCTRL_FORCE, clock_registers, program_clocks
+
+    xrfclk, spi = fake_xrfclk(tmp_path)
+    program_clocks(xrfclk, {"dac": 123})
+    ((image, device),) = xrfclk.written
+    assert device == str(spi["dac"])
+    packaged = clock_registers("LMX2594_480.0.txt")
+    changed = {word >> 16: word for word, old in zip(image, packaged) if word != old}
+    r8 = next(word for word in packaged if word >> 16 == 8)
+    assert changed == {8: r8 | LMX_CAPCTRL_FORCE, 19: changed[19]} and changed[19] & 0xFF == 123
+    # Both still get their SYNC after it.
+    assert [p.read_bytes() for p in spi.values()] == [bytes.fromhex("00241C00641C")] * 2
+
+
+def test_the_vco_is_read_back_without_recalibrating(tmp_path, monkeypatch):
+    from rf_clock.pl import board
+
+    xrfclk, spi = fake_xrfclk(tmp_path)
+    registers = {str(spi["adc"]): {110: 2 << 9 | 1 << 5, 111: 118, 112: 302},
+                 str(spi["dac"]): {110: 0 << 9 | 2 << 5, 111: 191, 112: 355}}
+    writes = []
+
+    def transfer(f, data):
+        if data[0] & 0x80:
+            return b"\0" + registers[f.name][data[0] & 0x7F].to_bytes(2, "big")
+        writes.append((f.name, int.from_bytes(data, "big")))
+        return bytes(len(data))
+
+    monkeypatch.setattr(board, "spi_transfer", transfer)
+    vco = board.read_lmx_vco(xrfclk, {"dac": 119})
+    assert vco["adc"] == board.LMXVCO(forced=None, capctrl=118, vco_sel=1, daciset=302, ld_vtune=2)
+    assert (vco["adc"].band, vco["adc"].locked) == (118, True)
+    assert (vco["dac"].band, vco["dac"].locked) == (119, False)
+    assert "NOT LOCKED" in vco["dac"].describe() and "calibration chose 191" in vco["dac"].describe()
+    # Per chip: R0 with MUXOUT_LD_SEL = 0, then = 1; never FCAL_EN, VCO_PHASE_SYNC kept.
+    assert writes == [(str(spi[side]), word) for side in ("adc", "dac") for word in (0x006410, 0x006414)]
+
+
 def test_pl_parts_are_never_none():
     gpio = MemoryMMIO(initial={0: 1})
     ctrl = PLClient(MemoryMMIO(), gpio)
