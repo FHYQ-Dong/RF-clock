@@ -123,7 +123,7 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | `src/rf_clock/correlator.py` | Cross-correlation delay estimation |
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
-| `experiments/` | Bench experiments, run on RF-clock-PC-ai: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9); `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |
+| `experiments/` | Bench experiments, run on RF-clock-PC-ai: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9), one question each; `m3_common.py` holds what the M3 loopback series share; `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
 | `.gitea/workflows/release.yml` | The same for a Gitea release, plus an upload to the Gitea PyPI registry (Gitea Actions) |
 
