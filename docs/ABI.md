@@ -672,7 +672,7 @@ Clocks
 RFDC
  6. Wait until ADC and DAC tiles 0 and 2 are started (TileState 0xF); after pl_resetn0 the IP
     restarts by itself, and StartUp is called only on a timeout
- 7. MTS on DAC, then ADC (tiles 0 and 2) with fixed target latencies DAC 1896 and ADC 1296, so
+ 7. MTS on DAC, then ADC (tiles 0 and 2) with fixed target latencies DAC 1944 and ADC 1296, so
     the data-path delay does not depend on the bitstream; stop if the status is not OK or a
     tile does not land on the target. Each tile captures SYSREF in the window of its
     capture delay (DTC) nearest the code the board config records for it (since rf-clock
@@ -888,7 +888,7 @@ Runs every power-up step of §7.1. The fixed hardware choices are defaults: the 
 | `write_clocks=False`              | skip LMK/LMX when they were written since boot |
 | `mts=False`                       | no RFDC start-up and MTS (time base only, as for M1) |
 | `pps_source_trig`, `pps_invert`   | written to `PPS_CONFIG` (§4.4.5) |
-| `ref_tile`, `*_target_latency`    | MTS parameters (§11.6); targets default to DAC 1896 and ADC 1296 (§7.1); -1 aligns to the largest measured latency |
+| `ref_tile`, `*_target_latency`    | MTS parameters (§11.6); targets default to DAC 1944 and ADC 1296 (§7.1); -1 aligns to the largest measured latency |
 | `check_version=False`             | skip the manifest and `BUILD_VERSION` checks of §14.1 (bitstreams before 1.2) |
 | `board_config`                    | a `BoardConfig`, or the path of a board config file, instead of the default file (below) |
 | `progress`                        | called with one line per step, for example `print` |
@@ -1020,7 +1020,7 @@ Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC,
 
 - Returns `RFDCSetupResult(dac, adc, started_after_startup_call, mixers, nco_synced)`.
 - Raises `RFDCError` if either MTS status is not OK; its `.result` still holds the result, so the latencies can be logged.
-- `*_target_latency = -1` aligns to the largest measured latency, which changes with the bitstream; `PL.open()` passes the fixed `board.DAC_TARGET_LATENCY` = 1896 and `board.ADC_TARGET_LATENCY` = 1296. A target below a tile's measured latency makes MTS report `TARGET_LOW`; then raise the target and recalibrate the loopback delay.
+- `*_target_latency = -1` aligns to the largest measured latency, which changes with the bitstream; `PL.open()` passes the fixed `board.DAC_TARGET_LATENCY` = 1944 (1896 before rf-clock 1.3.0.10) and `board.ADC_TARGET_LATENCY` = 1296. A target below a tile's measured latency makes MTS report `TARGET_LOW`; then raise the target and recalibrate the loopback delay.
 
 | Other functions | Description |
 | --------------- | ----------- |
@@ -1033,7 +1033,7 @@ Steps 6–7 of §7.1: waits for the tiles, runs MTS on the DAC and then the ADC,
 
 `MTSResult` fields: `kind`, `status`, `tiles`, `ref_tile`, `target_latency`, `latency` (tiles 0–3), `offset` (tiles 0–3), `dtc` (the SYSREF capture delay codes the driver picked, 0–127, and the number of capture windows it found, per tile, for the PLL and the T1 clock: `pll_code`, `pll_windows`, `t1_code`, `t1_windows`; they follow the tile clock's phase to SYSREF, which `latency` and `offset` do not); `describe()` gives one line. `ok` requires status 0 and every tile on the target (`on_target`): the driver adds delay in whole steps (6 for both DAC and ADC), so a target that is not a whole number of steps away would miss without an error.
 
-Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within the standard deviation (0.13–0.16 samples).
+Measured on the board (2026-10-14): without targets, DAC tiles 0/2 have latency 1848 and the ADC 1236 (run4) or 1248 (run6), unchanged across restarts of one bitstream. With targets DAC 1896 and ADC 1296, the crosstalk loopback delay on run4 and run6 is 226.05 and 226.02 samples: 0.03 samples apart, within the standard deviation (0.13–0.16 samples).  With the LMK divider SYNC of rf-clock 1.3.0.9 the DAC tiles measure 1896 before alignment (offset 0), which left no room for a tile that measures more (`TARGET_LOW`); rf-clock 1.3.0.10 raises the DAC target by 8 steps to 1944, which delays the DAC output by 48 samples (5 ns) against 1.3.0.9: delays measured against the PPS or through a loopback are to be measured again.
 
 ### 11.7 `rf_clock.pl.txbuf`
 

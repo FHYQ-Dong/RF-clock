@@ -34,6 +34,15 @@ over pyusb); board commands run over ssh as the sudo user::
     sudo .venv/bin/python experiments/m2_restarts.py --runs 5
     sudo .venv/bin/python experiments/m2_restarts.py --runs 1000 --until 08:00
 
+On each board M2 runs under ``--board-python`` (default PYNQ's environment, where
+docs/ABI.md 9.1 installs rf_clock) with the rf_clock installed there.  With
+``--alternate-code DIR`` the odd-numbered runs take the rf_clock package in DIR
+on the boards instead (put there first, for example the code without the
+LMK04828 divider SYNC of rf-clock 1.3.0.9), so that each board's burst time
+under the two codes is compared on the same cables::
+
+    sudo .venv/bin/python experiments/m2_restarts.py --runs 20 --no-reboot --alternate-code /tmp/rf-clock-nosync
+
 Results go to results/m2-restarts-<time>/: runNN.lnb (the LabNotebook entry;
 experiments/lnb.py unpacks it), runNN_<board>.log (M2 output), runs.jsonl (one
 record per run) and summary.json (spread of the per-run means).
@@ -57,7 +66,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCOPE = "USB0::0x05FF::0x1023::4404N30414::INSTR"  # HDO9404-MS on RF-clock-PC's USB
 BOARDS = {"99": "192.168.2.99", "101": "192.168.2.101"}
 TRACE_BOARD = {"F1": "99", "F2": "101"}  # F1 = Filter(Square(C2)), F2 = Filter(Square(C3))
-M2 = ("cd ~/RF-clock && (nohup setsid sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python "
+PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"  # the default --board-python
+M2 = ("cd /tmp && (nohup setsid sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr {pythonpath}{python} "
       "-m rf_clock.checks.m2_tx_timing {bursts} {m2_args} > {log} 2>&1 < /dev/null &)")
 M2_ARGS = "--waveform rect --amplitude 16000 --offset-ticks 0"
 M2_RUNNING = "pgrep -f 'rf_clock[.]checks[.]m2_tx_timing'"  # [.] keeps pgrep off this shell
@@ -100,7 +110,7 @@ def reboot(timeout: float = 600) -> None:
 
 
 def m2_progress(ip: str, log: str) -> tuple[int, str]:
-    r = ssh(ip, f"cd ~/RF-clock && grep -cE '{BURST_LINE}' {log}; grep -E '^M2 digital|Traceback' {log}")
+    r = ssh(ip, f"cd /tmp && grep -cE '{BURST_LINE}' {log}; grep -E '^M2 digital|Traceback' {log}")
     lines = r.stdout.split("\n")
     return (int(lines[0]) if lines[0].isdigit() else 0), " ".join(lines[1:]).strip()
 
@@ -223,6 +233,11 @@ def main() -> None:
                         help="extra scope setting after the setup recall, e.g. 'app.Acquisition.C2.VerScale = 0.08'")
     parser.add_argument("--no-reboot", action="store_true",
                         help="do not reboot between runs (each M2 still reloads the bitstream and redoes MTS)")
+    parser.add_argument("--board-python", default=PYNQ_PYTHON, metavar="PATH",
+                        help=f"the Python that runs M2 on each board (default {PYNQ_PYTHON})")
+    parser.add_argument("--alternate-code", metavar="DIR",
+                        help="odd-numbered runs with the rf_clock package in DIR on the boards (PYTHONPATH), "
+                             "even ones with the board Python's own")
     parser.add_argument("--keep-scope-entries", action="store_true",
                         help="keep each run's LabNotebook entry on the scope (default: delete after download)")
     args = parser.parse_args()
@@ -245,15 +260,21 @@ def main() -> None:
         for name, ip in BOARDS.items():
             if ssh(ip, M2_RUNNING).returncode == 0:
                 raise RuntimeError(f"M2 already running on board {name}")
+            if args.alternate_code and ssh(ip, f"test -d {args.alternate_code}/rf_clock").returncode:
+                raise RuntimeError(f"no {args.alternate_code}/rf_clock on board {name}")
         print(f"results in {out}" + (f"; until {until:%Y-%m-%d %H:%M}" if until else ""), flush=True)
         for run in range(1, args.runs + 1):
             tag = f"run{run:03d}"
             logs = {name: f"m2_restart_{stamp}_{tag}.log" for name in BOARDS}
+            old = bool(args.alternate_code) and run % 2 == 1
             record: dict = {"run": run, "start": datetime.now().isoformat(timespec="seconds"),
                             "trace_board": TRACE_BOARD, "m2_args": args.m2_args, "scope_vbs": args.scope_vbs,
-                            "rebooted": run > 1 and not args.no_reboot}
+                            "rebooted": run > 1 and not args.no_reboot, "board_python": args.board_python,
+                            "code": args.alternate_code if old else "installed"}
+            pythonpath = f"PYTHONPATH={args.alternate_code} PYTHONDONTWRITEBYTECODE=1 " if old else ""
             for name, ip in BOARDS.items():
-                ssh(ip, M2.format(bursts=bursts, m2_args=args.m2_args, log=logs[name]))
+                ssh(ip, M2.format(bursts=bursts, m2_args=args.m2_args, log=logs[name], pythonpath=pythonpath,
+                                  python=args.board_python))
             record["settle"] = wait_m2(logs, args.settle, timeout=240)
             if all(s.endswith("bursts") for s in record["settle"].values()):
                 try:
@@ -266,7 +287,7 @@ def main() -> None:
                     scope = reconnect(scope)
             record["m2"] = wait_m2(logs, bursts, timeout=bursts + 120, done=True)
             for name, ip in BOARDS.items():
-                text = ssh(ip, f"cat ~/RF-clock/{logs[name]}").stdout
+                text = ssh(ip, f"cat /tmp/{logs[name]}").stdout
                 (out / f"{tag}_{name}.log").write_text(text, newline="\n")
                 record.setdefault("mts", {})[name] = [ln[3:] for ln in text.splitlines() if ln.startswith("m: ")
                                                       and " MTS " in ln]
@@ -274,7 +295,7 @@ def main() -> None:
             with open(out / "runs.jsonl", "a", newline="\n") as f:
                 f.write(json.dumps(record) + "\n")
             s = record.get("stats", {})
-            print(f"{tag} {record['start']}: m2 {record['m2']}  clipped {record.get('clipped_after')}  " + "  ".join(
+            print(f"{tag} {record['start']} {record['code']}: m2 {record['m2']}  clipped {record.get('clipped_after')}  " + "  ".join(
                 f"{p} {s[p]['mean'] * 1e9:.3f}±{s[p]['sdev'] * 1e12:.0f}ps(n={s[p]['num']:.0f})"
                 for p in PARAM_LAYOUT if p in s) + (f"  ERROR {record['error']}" if "error" in record else ""),
                 flush=True)

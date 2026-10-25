@@ -17,9 +17,10 @@ Run on RF-clock-PC as the normal user, with the boards idle::
     .venv/bin/python experiments/m4_twtt.py pair --seconds 60 --runs 20 --reboot --alternate
     .venv/bin/python experiments/m4_twtt.py pair --seconds 60 --runs 5 --power-cycle
 
-``--dev`` runs this repository's src/rf_clock on the boards (copied to /tmp and put
-ahead of the installed package on PYTHONPATH) instead of the package installed in
-PYNQ's environment.  Results go to results/m4-twtt-<time>/: each board's log
+On each board the node runs under ``--board-python`` (default PYNQ's environment,
+where docs/ABI.md 9.1 installs rf_clock).  ``--dev`` runs this repository's
+src/rf_clock there instead (copied to ``--dev-dir`` and put ahead of the installed
+package on PYTHONPATH, with the installed package's overlay linked in).  Results go to results/m4-twtt-<time>/: each board's log
 (``rf_clock.twtt.link``), its console output, and summary.json with theta and the
 one-way delay (mean, sd, and the overlapping Allan deviation of theta).  ``--runs``
 repeats the run, each in ``runNN/``, and ``--reboot`` reboots the boards before each
@@ -50,49 +51,59 @@ from concurrent.futures import ThreadPoolExecutor
 from m3_common import ROOT, check_idle, reboot, results_dir, ssh
 
 BOARDS = {"A": "192.168.2.99", "B": "192.168.2.101"}  # S/N 887329260072A, 887329260101
-PYTHON = "/usr/local/share/pynq-venv/bin/python"
-INSTALLED_OVERLAY = "/usr/local/share/pynq-venv/lib/python3.10/site-packages/rf_clock/overlay"
-DEV_DIR = "/tmp/rf-clock-dev"
-NODE = f"^{PYTHON} -m rf_clock[.]twtt[.]node "  # pgrep pattern of a running node (and its link process)
+PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"  # the default --board-python
+DEV_DIR = "/tmp/rf-clock-dev"  # the default --dev-dir
+NODE = " -m rf_clock[.]twtt[.]node "  # what a running node's command line (and its link process's) holds
+
+
+def node_pattern(python: str) -> str:
+    """The anchored pgrep pattern of a node run by ``python``."""
+    return f"^{python}{NODE}"
 START_S = 180  # PL.open and the first PPS
 K3 = 3 * 2 * math.pi * 5.8e9 * 1e-12  # rad of three times the correlation phase per ps of delay
 
 
-def deploy_dev(ip: str) -> None:
-    """This repository's src/rf_clock to DEV_DIR on the board, the installed overlay linked in."""
+def deploy_dev(ip: str, python: str = PYNQ_PYTHON, dev_dir: str = DEV_DIR) -> None:
+    """This repository's src/rf_clock to ``dev_dir`` on the board, the overlay of the
+    rf_clock installed for ``python`` linked in."""
+    where = ssh(ip, f"cd / && {python} -c 'import os, rf_clock; print(os.path.dirname(rf_clock.__file__))'")
+    if where.returncode or not where.stdout.strip():
+        sys.exit(f"{ip}: no rf_clock installed for {python}: {where.stderr.strip()}")
+    overlay = f"{where.stdout.strip()}/overlay"
     tar = subprocess.run(["tar", "--exclude=__pycache__", "--exclude=overlay", "-C", str(ROOT / "src"), "-cf", "-",
                           "rf_clock"], capture_output=True, check=True).stdout
-    cmd = (f"sudo -n rm -rf {DEV_DIR} && mkdir -p {DEV_DIR} && tar -xf - -C {DEV_DIR} && "
-           f"ln -s {INSTALLED_OVERLAY} {DEV_DIR}/rf_clock/overlay")
+    cmd = (f"sudo -n rm -rf {dev_dir} && mkdir -p {dev_dir} && tar -xf - -C {dev_dir} && "
+           f"ln -s {overlay} {dev_dir}/rf_clock/overlay")
     done = subprocess.run(["ssh", "-o", "BatchMode=yes", f"xilinx@{ip}", cmd], input=tar, capture_output=True)
     if done.returncode:
         sys.exit(f"cannot copy src/rf_clock to {ip}: {done.stderr.decode().strip()}")
 
 
-def start(ip: str, node: str, seconds: int, dev: bool, peer: str | None = None, save_every: int = 0) -> None:
-    env = "BOARD=RFSoC4x2 XILINX_XRT=/usr" + (f" PYTHONPATH={DEV_DIR} PYTHONDONTWRITEBYTECODE=1" if dev else "")
+def start(ip: str, node: str, seconds: int, dev: bool, peer: str | None = None, save_every: int = 0,
+          python: str = PYNQ_PYTHON, dev_dir: str = DEV_DIR) -> None:
+    env = "BOARD=RFSoC4x2 XILINX_XRT=/usr" + (f" PYTHONPATH={dev_dir} PYTHONDONTWRITEBYTECODE=1" if dev else "")
     options = f"{node} --seconds {seconds} --log /tmp/twtt_{node}.jsonl" + (f" --peer {peer}" if peer else "")
     if save_every:
         options += f" --save-every {save_every} --save-dir /tmp/rx_{node}"
     cmd = (f"sudo -n rm -rf /tmp/twtt_{node}.jsonl /tmp/twtt_{node}.out /tmp/rx_{node}; cd /tmp && "
-           f"(setsid nohup sudo -n env {env} {PYTHON} -m rf_clock.twtt.node {options} "
+           f"(setsid nohup sudo -n env {env} {python} -m rf_clock.twtt.node {options} "
            f"> /tmp/twtt_{node}.out 2>&1 < /dev/null &)")
     if ssh(ip, cmd).returncode:
         sys.exit(f"cannot start node {node} on {ip}")
     print(f"node {node} started on {ip}", flush=True)
 
 
-def running(ip: str) -> bool:
-    return ssh(ip, f"pgrep -fc '{NODE}'").stdout.strip() not in ("", "0")
+def running(ip: str, python: str = PYNQ_PYTHON) -> bool:
+    return ssh(ip, f"pgrep -fc '{node_pattern(python)}'").stdout.strip() not in ("", "0")
 
 
-def wait_all(ips: list[str], timeout: float) -> bool:
+def wait_all(ips: list[str], timeout: float, python: str = PYNQ_PYTHON) -> bool:
     """Wait until no node runs on these boards; False if one still runs after ``timeout`` (then stopped)."""
     deadline = time.monotonic() + timeout
-    while any(running(ip) for ip in ips):
+    while any(running(ip, python) for ip in ips):
         if time.monotonic() > deadline:
             for ip in ips:
-                ssh(ip, f"sudo -n pkill -TERM -f '{NODE}'")
+                ssh(ip, f"sudo -n pkill -TERM -f '{node_pattern(python)}'")
             return False
         time.sleep(10)
     return True
@@ -232,6 +243,10 @@ def main() -> None:
     parser.add_argument("mode", choices=("self", "pair"), help="self: node AB on A's board; pair: A and B")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--dev", action="store_true", help="run this repository's src/rf_clock on the boards")
+    parser.add_argument("--board-python", default=PYNQ_PYTHON, metavar="PATH",
+                        help=f"the Python that runs the nodes on the boards (default {PYNQ_PYTHON})")
+    parser.add_argument("--dev-dir", default=DEV_DIR, metavar="DIR",
+                        help=f"where --dev puts src/rf_clock on the boards (default {DEV_DIR})")
     parser.add_argument("--runs", type=int, default=1, help="runs, each powering the boards up again")
     parser.add_argument("--reboot", action="store_true", help="reboot the boards before every run")
     parser.add_argument("--power-cycle", action="store_true",
@@ -252,7 +267,8 @@ def main() -> None:
     (out / "settings.json").write_text(json.dumps({"mode": args.mode, "seconds": args.seconds, "dev": args.dev,
                                                    "runs": args.runs, "reboot": args.reboot,
                                                    "power_cycle": args.power_cycle, "alternate": args.alternate,
-                                                   "save_every": args.save_every,
+                                                   "save_every": args.save_every, "board_python": args.board_python,
+                                                   "dev_dir": args.dev_dir if args.dev else None,
                                                    "boards": nodes},
                                                   indent=2) + "\n", newline="\n")
     series = []
@@ -276,11 +292,11 @@ def main() -> None:
                 ssh(ip, "systemctl is-system-running --wait", timeout=400)
         if args.dev:
             for ip in ips:
-                deploy_dev(ip)
+                deploy_dev(ip, args.board_python, args.dev_dir)
         for node, ip in nodes.items():  # A first, so that it listens when B connects
             start(ip, node, args.seconds, args.dev, peer=BOARDS["A"] if node == "B" else None,
-                  save_every=args.save_every)
-        finished = wait_all(ips, args.seconds + START_S)
+                  save_every=args.save_every, python=args.board_python, dev_dir=args.dev_dir)
+        finished = wait_all(ips, args.seconds + START_S, args.board_python)
         logs = {node: fetch(ip, node, run, rx=bool(args.save_every)) for node, ip in nodes.items()}
         if not finished:
             print("a node was still running after the expected time and was stopped")

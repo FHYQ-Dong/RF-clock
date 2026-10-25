@@ -661,7 +661,7 @@ t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
 RFDC
  6. 等 ADC、DAC 的 tile 0 和 tile 2 都进入启动完成状态（TileState 0xF）；pl_resetn0 之后
     IP 会自行重新启动，超时才调用 StartUp
- 7. 先 DAC、后 ADC 执行 MTS（tile 0、2），目标延时固定为 DAC 1896、ADC 1296，使数据通路
+ 7. 先 DAC、后 ADC 执行 MTS（tile 0、2），目标延时固定为 DAC 1944、ADC 1296，使数据通路
     延时与 bitstream 无关；状态非 OK 或任一 tile 没有落在目标上则停止。每个 tile 在其捕获延迟
     （DTC）中离板级配置所记码最近的窗口里采 SYSREF（rf-clock 1.3.0.8 起；没有记录时取离码 64
     最近的窗口，两个窗口离 64 差不多远时，上电之间可能整整差一个采样）。然后在同一个 SYSREF 沿上
@@ -870,7 +870,7 @@ client.validate()
 | `write_clocks=False`              | 开机后已写过 LMK/LMX 时跳过                                              |
 | `mts=False`                       | 不做 RFDC 启动和 MTS（只用时间基准时，如 M1）                            |
 | `pps_source_trig`、`pps_invert` | 写入`PPS_CONFIG`（§4.4.5）                                            |
-| `ref_tile`、`*_target_latency`  | MTS 参数（§11.6）；目标延时默认 DAC 1896、ADC 1296（§7.1），-1 为对齐到实测最大值 |
+| `ref_tile`、`*_target_latency`  | MTS 参数（§11.6）；目标延时默认 DAC 1944、ADC 1296（§7.1），-1 为对齐到实测最大值 |
 | `check_version=False`             | 不做 §14.1 的 manifest 和`BUILD_VERSION` 检查（1.2 之前的 bitstream） |
 | `board_config`                    | 一个 `BoardConfig`，或一个板级配置文件的路径，代替默认文件（见下）     |
 | `progress`                        | 每一步回调一行文字，如`print`                                          |
@@ -1002,7 +1002,7 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 
 - 返回 `RFDCSetupResult(dac, adc, started_after_startup_call, mixers, nco_synced)`。
 - 任一 MTS 状态非 OK 时抛 `RFDCError`，异常的 `.result` 属性仍带着结果，便于记录延时。
-- `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传固定值 `board.DAC_TARGET_LATENCY` = 1896、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个 tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
+- `*_target_latency = -1` 表示对齐到实测的最大延时，这个值随 bitstream 变；`PL.open()` 默认传固定值 `board.DAC_TARGET_LATENCY` = 1944（rf-clock 1.3.0.10 之前为 1896）、`board.ADC_TARGET_LATENCY` = 1296。目标低于某个 tile 的实测延时时 MTS 报 `TARGET_LOW`，此时调高目标并重新标定环回延时。
 
 | 其他函数                                                                | 说明                                                                          |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -1015,7 +1015,7 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 
 `MTSResult` 字段：`kind`、`status`、`tiles`、`ref_tile`、`target_latency`、`latency`（tile 0–3）、`offset`（tile 0–3）、`dtc`（驱动为每个 tile 选定的 SYSREF 捕获延迟码 0–127 及找到的捕获窗口数，PLL 和 T1 时钟各一组：`pll_code`、`pll_windows`、`t1_code`、`t1_windows`；它们反映 tile 时钟相对 SYSREF 的相位，`latency` 和 `offset` 反映不了）；`describe()` 给出一行说明。`ok` 要求状态为 0 且每个 tile 都落在目标上（`on_target`）：驱动按整步（DAC、ADC 都是 6）加延时，目标与实测之差不是整步时会差一点而不报错。
 
-板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为 226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。
+板上实测（2026-10-14）：不设目标时 DAC tile 0/2 延时 1848，ADC 1236（run4）或 1248（run6），同一 bitstream 重启前后不变。目标设为 DAC 1896、ADC 1296 后，run4 和 run6 的串扰环回延时分别为 226.05 和 226.02 个样本，差 0.03 个样本，在标准差（0.13–0.16 个样本）以内。有了 rf-clock 1.3.0.9 的 LMK 分频器同步后，DAC tile 对齐前的实测延时为 1896（offset 0），实测值再大一点的 tile 就没有余量了（`TARGET_LOW`）；rf-clock 1.3.0.10 把 DAC 目标调高 8 步到 1944，DAC 输出比 1.3.0.9 晚 48 个采样（5 ns）：相对 PPS 或经环回测得的延时需要重新测量。
 
 ### 11.7 `rf_clock.pl.txbuf`
 

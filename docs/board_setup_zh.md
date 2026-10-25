@@ -65,7 +65,7 @@ FS725 自己的 10 MHz 正弦经分配器后太弱（LMK04828 曾因此进入 ho
 2. **PPS 捕获余量。** 在 RF-clock-PC 上：`.venv/bin/python experiments/m1_pps_phase_scan.py --pair <地址>:<EPG1 输出>`（它步进那一路输出的延时）。通过标准：在使用的延时下，PPS 沿离 10 ns 采样沿超过约 1 ns。否则在 `experiments/epg1.py pps` 里给那一路设延时（887329260072A 的输出 2 是 6.6 ns）；新延时在 EPG1 下次重启 RUN 时生效，重启会打断它的所有输出。报告：`results/pps-phase-scan-20261018_203329`。
 3. **VCO 档位。** `$run -m rf_clock.checks.vco_bands scan --write --label <S/N>`（不需要接线）。它写 20 次时钟，取每片 LMX2594 校准最常选的档位，找出能锁定的档位，连同本板序列号写进板级配置。通过标准：建议的两个档位都锁定。否则每次写时钟芯片都可能换档，让对应的转换器移动 8–10 ps（`results/lmx-sync-loopback-20261019` 第 5 节）。
 4. **MTS 捕获窗口。** `$run -m rf_clock.checks.mts_dtc record --write`，然后 `$run -m rf_clock.checks.mts_dtc check`。它上电 6 次，取每个 tile 最常选中的 SYSREF 捕获窗口，存下它的码，以及每个 tile 通常的 MTS offset。通过标准：check 报告的最大距离不超过 6 个码，并且没有哪次上电的 offset 与记录不同。没有这些码时，两个窗口离码 64 差不多远的 tile 在上电之间可能整整移动一个采样（887329260101 的 DAC：104 ps；ABI_zh.md §7.1 第 7 步）。
-5. **定时发射（M2）。** `$run -m rf_clock.checks.m2_tx_timing 10`。通过标准：M2 PASS，每个 TX_ACTUAL 都等于目标，两个 MTS 都 OK，latency 为 DAC 1896、ADC 1296。
+5. **定时发射（M2）。** `$run -m rf_clock.checks.m2_tx_timing 10`。通过标准：M2 PASS，每个 TX_ACTUAL 都等于目标，两个 MTS 都 OK，latency 为 DAC 1944、ADC 1296。
 6. **回环（M3）**，接上板子自己的回环线。`$run -m rf_clock.checks.m3_loopback 20`。通过标准：M3 PASS（PSL 至少 10 dB；20 dB 衰减加带通时约 21 dB），同一套线缆下延时和以前相同（887329260072A 上为 288.06 ns），标准差几 ps。
 7. **档位表**，接着回环线。`$run -m rf_clock.checks.vco_bands delays --write`（约 20 分钟）。它测出配置档位两边各两档以内每个档位的回环延时，存进档位表：万一强制的档位锁不住了，换档的代价是多少。通过标准：每个档位都测到，3 次上电相差约 0.5 ps 以内。
 

@@ -43,10 +43,12 @@ LMX_FREQ_MHZ = 480.0  # xrfclk LMX2594_480.0.txt: 480 MHz RFDC tile references
 CLOCK_FILES = Path(__file__).resolve().parents[1] / "clocks" / "files"
 # MTS target latencies, so the RFDC datapath delay is the same for every build
 # (docs/ABI.md 7.1).  Measured without a target: DAC 1848 on run4 and run6,
-# ADC 1236 on run4 and 1248 on run6; both adjust in steps of 6.  A build whose
-# tile latency exceeds a target fails MTS (TARGET_LOW); raise the target then
-# and recalibrate the loopback delay.
-DAC_TARGET_LATENCY = 1896
+# ADC 1236 on run4 and 1248 on run6; both adjust in steps of 6.  With the LMK
+# divider SYNC (sync_lmk_dividers) the DAC tiles measure 1896 before alignment
+# (offset 0, 2026-10-24), so the DAC target is 8 steps above that, as it was
+# before.  A build whose tile latency exceeds a target fails MTS (TARGET_LOW);
+# raise the target then and recalibrate the loopback delay.
+DAC_TARGET_LATENCY = 1944
 ADC_TARGET_LATENCY = 1296
 LMX_VCO_PHASE_SYNC = 1 << 14  # R0 bit
 LMK_SYNC_POL = 1 << 5  # R0x143 SYNC_POL; with SYNC_1SHOT_EN = 0 the SYNC is level-sensitive (TI SNAS605AS Table 35)
