@@ -17,7 +17,10 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   time, runs, the VCO bands); written by ``rf_clock.checks.mts_dtc``.
                   Without them MTS takes the window nearest code 64, which can change
                   by a whole sample between power-ups when two windows lie about as
-                  far from it (docs/ABI.md 7.1)
+                  far from it (docs/ABI.md 7.1).  ``offset`` beside the codes (4 tiles)
+                  is each tile's usual MTS offset: ``PL.open()`` warns when a power-up's
+                  differ, as they did when one board's converters came up a few LMK VCO
+                  periods (416.7 ps) late against its PPS tick
 ``band_table``    what ``vco_bands`` measured: per chip how often the calibration
                   picked each band (``calibrated``), the bands that lock
                   (``locked``) and, with the loopback cable, the DAC -> ADC loopback
@@ -93,12 +96,13 @@ class BoardConfig:
             raise BoardConfigError(f"{source}: band_table must be an object")
         dtc = data.get("mts_dtc", {})
         if not isinstance(dtc, dict) or not all(
-                kind == "recorded" or (kind in LMX_SIDES and isinstance(clocks, dict) and set(clocks) <= {"t1", "pll"}
+                kind == "recorded" or (kind in LMX_SIDES and isinstance(clocks, dict)
+                                       and set(clocks) <= {"t1", "pll", "offset"}
                                        and all(isinstance(codes, list) and len(codes) == 4
                                                and all(type(c) is int and -1 <= c <= 127 for c in codes)
                                                for codes in clocks.values()))
                 for kind, clocks in dtc.items()):
-            raise BoardConfigError(f"{source}: mts_dtc must map adc/dac to t1/pll lists of 4 codes -1..127, "
+            raise BoardConfigError(f"{source}: mts_dtc must map adc/dac to t1/pll/offset lists of 4 values -1..127, "
                                    f"not {dtc!r}")
         return cls(serial=serial, label=str(data.get("label", "")), lmx_vco_band=dict(bands),
                    band_table=table, mts_dtc=dtc)

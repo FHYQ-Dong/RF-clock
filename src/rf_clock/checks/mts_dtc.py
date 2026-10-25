@@ -16,9 +16,12 @@ where it was recorded.
             config's VCO bands but without its codes) and, for each converter, clock
             and tile, the codes picked.  Codes within ``DTC_MARGIN`` of each other
             are one window; the window picked most often gives the code, the median
-            of its picks.  ``--write`` stores the codes in the board config.
+            of its picks.  Each tile's MTS offset is recorded too, the one seen most
+            often: ``PL.open()`` warns when a power-up's differ (the converters a few
+            LMK VCO periods off against the PPS tick).  ``--write`` stores both in the
+            board config.
 ``check``   ``--runs`` power-ups with the board config's codes: each picked code
-            against the one recorded.
+            against the one recorded, and each offset.
 
     run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
     $run -m rf_clock.checks.mts_dtc record --runs 6 --write
@@ -89,7 +92,7 @@ def open_once(args) -> int:
         pl = PL.open(board_config=replace(config, mts_dtc={}) if args.without_codes else config)
         mts = pl.rfdc.mts
         result = {kind: {"tiles": list(r.tiles), **{c: list(r.dtc[f"{c}_code"]) for c in CLOCKS},
-                         "target": {c: list(v) for c, v in r.dtc_target.items()}}
+                         "offset": list(r.offset), "target": {c: list(v) for c, v in r.dtc_target.items()}}
                   for kind, r in (("dac", mts.dac), ("adc", mts.adc))}
     except Exception as exc:
         result = {"error": f"{type(exc).__name__}: {exc}"}
@@ -117,7 +120,7 @@ def run(args, with_codes: bool) -> tuple[object, list[dict]]:
         else:
             print(f"{n:2d}: " + "; ".join(f"{kind.upper()} {clock.upper()} " + "/".join(
                 str(result[kind][clock][t]) for t in result[kind]["tiles"])
-                for kind in LMX_SIDES for clock in CLOCKS if result[kind][clock][0] >= 0), flush=True)
+                for kind in LMX_SIDES for clock in (*CLOCKS, "offset") if result[kind][clock][0] >= 0), flush=True)
     return config, [r for r in results if "error" not in r]
 
 
@@ -139,6 +142,14 @@ def record(args) -> int:
                 print(f"{kind.upper()} {clock.upper()} tile {tile}: windows {found}; recorded {row[tile]}"
                       + ("  <- the choice changed between power-ups" if len(windows(picks)) > 1 else ""))
             codes.setdefault(kind, {})[clock] = row
+        row = [-1] * 4
+        for tile in tiles:
+            picks = [r[kind]["offset"][tile] for r in results]
+            row[tile] = max(sorted(set(picks)), key=picks.count)
+            print(f"{kind.upper()} offset tile {tile}: " + ", ".join(
+                f"{o} ({picks.count(o)}x)" for o in sorted(set(picks))) + f"; recorded {row[tile]}"
+                + ("  <- the offset changed between power-ups" if len(set(picks)) > 1 else ""))
+        codes.setdefault(kind, {})["offset"] = row
     if args.write:
         codes["recorded"] = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                              "runs": len(results), "bands": config.lmx_vco_band, "rf_clock": package_version()}
@@ -148,16 +159,20 @@ def record(args) -> int:
 
 
 def check(args) -> int:
-    _, results = run(args, with_codes=True)
-    worst = 0
+    config, results = run(args, with_codes=True)
+    worst, other_offsets = 0, 0
     for r in results:
         for kind in LMX_SIDES:
             for clock, target in r[kind]["target"].items():
                 for tile in r[kind]["tiles"]:
                     if target[tile] >= 0:
                         worst = max(worst, abs(r[kind][clock][tile] - target[tile]))
+            usual = (config.mts_dtc.get(kind) or {}).get("offset")
+            other_offsets += bool(usual) and any(usual[t] >= 0 and r[kind]["offset"][t] != usual[t]
+                                                 for t in r[kind]["tiles"])
     print(f"largest distance of a picked code from its record: {worst} codes (warning above {DTC_MARGIN})")
-    return 0 if results and len(results) == args.runs and worst <= DTC_MARGIN else 1
+    print(f"power-ups with offsets other than recorded: {other_offsets} of {len(results)}")
+    return 0 if results and len(results) == args.runs and worst <= DTC_MARGIN and not other_offsets else 1
 
 
 def main() -> int:

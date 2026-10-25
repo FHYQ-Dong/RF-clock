@@ -37,13 +37,15 @@ class NoDMA:
     received_bytes = 0
 
 
-def test_clocks_are_written_from_the_packaged_files(tmp_path):
+def test_clocks_are_written_from_the_packaged_files(tmp_path, monkeypatch):
     from collections import defaultdict
     from types import SimpleNamespace
 
+    from rf_clock.pl import board
     from rf_clock.pl.board import program_clocks
 
-    written = []
+    monkeypatch.setattr(board, "LMK_SYNC_SETTLE_S", 0)
+    written, lmk_sync = [], []
     spi = [tmp_path / "spidev_adc_lmx", tmp_path / "spidev_dac_lmx"]
     for path in spi:
         path.write_bytes(b"")
@@ -52,15 +54,21 @@ def test_clocks_are_written_from_the_packaged_files(tmp_path):
                                     xrfclk.lmx_devices.extend({"spi_device": p} for p in spi))
     xrfclk.set_ref_clks = lambda lmk_freq, lmx_freq: written.append(
         (xrfclk._Config["lmk04828"][lmk_freq], xrfclk._Config["lmx2594"][lmx_freq]))
+    xrfclk._write_LMK_regs = lambda words, lmk: lmk_sync.append((words, lmk))
     program_clocks(xrfclk)
     lmk, lmx = written[0]
     assert (len(lmk), len(lmx)) == (136, 113)  # every line of the two files
     assert lmk[0] == 0x000090 and 0x013F0B in lmk  # INIT first; PLL1 zero-delay
+    assert {0x013903, 0x014331, 0x0144FF} <= set(lmk)  # continuous SYSREF; SYNC_POL = 1; every SYNC_DIS set
+    # Then the LMK's dividers get their SYNC: SYSREF_MUX 0 (the SYNC drives the SYNC line),
+    # SYNC_POL 0, SYNC_DIS cleared, SYNC_POL 1 then 0, SYNC_DIS and SYSREF_MUX back.
+    assert lmk_sync == [([0x013900, 0x014311, 0x014400, 0x014331, 0x014311, 0x0144FF, 0x013903], "lmk")]
     assert lmx[-1] == 0x00641C and 0x240028 in lmx  # VCO_PHASE_SYNC; N = 160 / IncludedDivide 4
     # Then each LMX gets its SYNC: R0 with VCO_PHASE_SYNC cleared, then set.
     assert [p.read_bytes() for p in spi] == [bytes.fromhex("00241C00641C")] * 2
     program_clocks(xrfclk)
     assert xrfclk.lmk_devices == ["lmk"]  # devices are found once
+    assert len(lmk_sync) == 2
 
 
 def fake_xrfclk(tmp_path):
@@ -74,12 +82,15 @@ def fake_xrfclk(tmp_path):
                              lmx_devices=[{"spi_device": str(spi["dac"])}, {"spi_device": str(spi["adc"])}],
                              set_ref_clks=lambda lmk_freq, lmx_freq: None, written=[])
     xrfclk._write_LMX_regs = lambda image, device: xrfclk.written.append((image, device["spi_device"]))
+    xrfclk._write_LMK_regs = lambda words, lmk: None
     return xrfclk, spi
 
 
-def test_a_forced_vco_band_rewrites_only_that_lmx(tmp_path):
+def test_a_forced_vco_band_rewrites_only_that_lmx(tmp_path, monkeypatch):
+    from rf_clock.pl import board
     from rf_clock.pl.board import LMX_CAPCTRL_FORCE, clock_registers, program_clocks
 
+    monkeypatch.setattr(board, "LMK_SYNC_SETTLE_S", 0)
     xrfclk, spi = fake_xrfclk(tmp_path)
     program_clocks(xrfclk, {"dac": 123})
     ((image, device),) = xrfclk.written

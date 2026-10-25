@@ -646,7 +646,11 @@ t_rx(n) = RX_TARGET × 10 ns + n × 1.25 ns
 时钟
  2. 用 xrfclk 把本项目的 LMK04828 / LMX2594 寄存器文件（`rf_clock/clocks/files/`）写入时钟芯片。
     LMK 用嵌套零延时模式（PLL1 反馈取 DCLKout8 = PL_CLK），使 100 MHz tick 相对 FS725 10 MHz/PPS
-    的相位每次上电都相同
+    的相位每次上电都相同。寄存器文件在写 PLL2 之前就放开了 LMK 的分频器，所以随后按数据手册
+    （TI SNAS605AS 9.3.2.1.1、表 1）再做一次 SYNC：SYSREF_MUX 置 0（让分频器的 SYNC 线上走 SYNC，
+    而不是连续 SYSREF）、SYNC_POL 置 0、SYNC_DIS 全部清零、SYNC_POL 拨 1 再拨 0、SYNC_DIS 和
+    SYSREF_MUX 恢复成文件里的值，再等 PLL1 2 s（rf-clock 1.3.0.9 起；没有这一步时，每千次上电
+    有几次会让一块板的转换器相对 PPS tick 晚 4 或 5 个 LMK VCO 周期，每个 416.7 ps）
     （lmk_freq = 100.0，lmx_freq = 480.0）。板级配置（§11.1）强制了 VCO 档位的 LMX2594 随后
     重写一遍，R8 VCO_CAPCTRL_FORCE = 1、档位写在 R19；两片 LMX2594 再做相位 SYNC（R0
     VCO_PHASE_SYNC 0 -> 1）。1 s 后回读每片 LMX2594 的 VCO（R110–R112），有一片没锁定就停止
@@ -880,7 +884,7 @@ client.validate()
 | `serial` | 本板 AT24MAC402 EEPROM 的 128 位序列号（PS I2C1，地址 0x58，偏移 0x80），32 个十六进制数字；不是本板的就由 `PL.open()` 抛 `BoardConfigError` |
 | `label` | 自由文字，例如本板的 S/N |
 | `lmx_vco_band` | 每片 LMX2594 强制使用的 VCO 档位（VCO_CAPCTRL，0–183），`{"adc": 117, "dac": 122}`（§7.1 第 2 步） |
-| `mts_dtc` | 由 `rf_clock.checks.mts_dtc`（§13）写入：MTS 选窗所依据的 SYSREF 捕获码（§7.1 第 7 步），按转换器（`dac`、`adc`）和时钟（`t1`；ADC 另有 `pll`），每个 tile 0–3 一个（-1 为不用），以及 `recorded`（时间、上电次数、对应的 VCO 档位）。选到的码离记录超过 6 个码（约 32 ps）、记录时的 VCO 档位与现在不同、或没有记录时，`PL.open()` 发出警告 |
+| `mts_dtc` | 由 `rf_clock.checks.mts_dtc`（§13）写入：MTS 选窗所依据的 SYSREF 捕获码（§7.1 第 7 步），按转换器（`dac`、`adc`）和时钟（`t1`；ADC 另有 `pll`），每个 tile 0–3 一个（-1 为不用）；每个转换器还有 `offset`，即每个 tile 通常的 MTS offset；以及 `recorded`（时间、上电次数、对应的 VCO 档位）。选到的码离记录超过 6 个码（约 32 ps）、记录时的 VCO 档位与现在不同、或没有记录时，`PL.open()` 发出警告；某个 tile 的 offset 与记录不同时也发出警告（曾出现过这种情况：一块板的转换器相对 PPS tick 晚了 4 或 5 个 LMK VCO 周期，每个 416.7 ps；应重新打开 PL），没有记录 offset 时同样警告 |
 | `band_table` | 由 `rf_clock.checks.vco_bands`（§13）写入：每片芯片校准选中各档位的次数（`calibrated`）、能锁定的档位（`locked`），以及每个档位下 DAC → ADC 回环延时的变化，单位 ps（`loopback_ps`），相对两片都在 `measured.reference` 时；另记扫描（`scanned`）和测量（`measured`）的时间与芯片温度 |
 
 没有这个文件，或文件没写某片芯片时，那片 LMX2594 用校准自选的档位，`PL.open()` 发出警告（`UserWarning`），`pl.board.lmx_vco` 记下这个档位：本板的频率落在相邻两档都够得着的地方时，校准每次上电在两档之间任选其一，而高一档会让那个转换器的时钟晚 8–10 ps（results/lmx-sync-loopback-20261019 第 5 节）。指定的文件不存在、格式不对或含未知的键，抛 `BoardConfigError`。无论哪种情况，有一片芯片没锁定都抛 `BringupError`。档位表不被 `PL.open()` 使用，它记录的是每个档位的代价。
@@ -1127,7 +1131,7 @@ $run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # 第二块板
 $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 ```
 
-日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。`experiments/m4_twtt.py` 从 RF-clock-PC 在板上启动节点并汇总日志。
+日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。每条记录还带有本板的芯片温度（`die_c`，AMS 传感器中最热的那个，`rf_clock.pl.board.die_c`）。`--save-every N` 每隔 N 秒把这一秒的 RX 窗口存为 complex64 的 `<时隙>_<计数>.npy`，放在 `--save-dir`（默认 `rx_<节点>`），记录里写有文件名。`experiments/m4_twtt.py` 从 RF-clock-PC 在板上启动节点并汇总日志；`experiments/m4_channel.py` 用存下的窗口估计每个方向的信道响应。
 
 ## 12. 异常与返回码
 
@@ -1164,7 +1168,7 @@ $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 | `m1_check`     | M1：tick 与 PPS    | `[秒数] [--no-clocks]`；每秒一行，结束时 PASS/FAIL                                                                                                                         |
 | `m2_tx_timing` | M2：MTS 与定时 TX  | `[突发数] [--offset-ticks N] [--amplitude A] [--waveform prn\|rect\|square] [--scope-nco MHZ]`；每个 PPS 发一个突发；每次运行的 MTS 延时追加到 `m2_runs.jsonl` |
 | `m3_loopback`  | M3：环回、RX、相关 | `[次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl`             |
-| `mts_dtc`      | 板级配置（§11.1）  | `record [--write] [--runs N]` 不用已记录的码上电 N 次（默认 6），按转换器、时钟和 tile 取被选中次数最多的窗口；`--write` 把它的码存进板级配置。`check [--runs N]` 用记录的码上电，报告每个选到的码离记录多远。在 `vco_bands scan --write` 之后运行（它会丢掉这些码，因为码与档位有关） |
+| `mts_dtc`      | 板级配置（§11.1）  | `record [--write] [--runs N]` 不用已记录的码上电 N 次（默认 6），按转换器、时钟和 tile 取被选中次数最多的窗口，并按 tile 取出现次数最多的 MTS offset；`--write` 把两者都存进板级配置。`check [--runs N]` 用记录的码上电，报告每个选到的码离记录多远，以及有几次上电的 offset 与记录不同。在 `vco_bands scan --write` 之后运行（它会丢掉这些码，因为码与档位有关） |
 | `vco_bands`    | 板级配置（§11.1）  | `scan [--write] [--label S/N] [--calibrations N]` 写 N 次时钟（默认 20），建议每片 LMX2594 校准最常选的档位，使芯片保持在校准自己的工作点上；再从它向两边逐档强制，直到锁不住，以显示两边的余量；`--write` 把建议的档位、各档次数、能锁定的档位和本板序列号存进板级配置。`delays [--write] [--span N] [--runs N] [--captures N]`，需接回环线 DAC_A → ADC_B：用载波相位测配置档位两边各 N 档（默认 2）以内每个档位的回环延时，每次上电在单独的进程里；`--write` 存入档位表；记录追加到 `vco_bands_runs.jsonl` |
 
 M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。

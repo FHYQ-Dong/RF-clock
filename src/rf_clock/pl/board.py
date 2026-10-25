@@ -49,6 +49,9 @@ CLOCK_FILES = Path(__file__).resolve().parents[1] / "clocks" / "files"
 DAC_TARGET_LATENCY = 1896
 ADC_TARGET_LATENCY = 1296
 LMX_VCO_PHASE_SYNC = 1 << 14  # R0 bit
+LMK_SYNC_POL = 1 << 5  # R0x143 SYNC_POL; with SYNC_1SHOT_EN = 0 the SYNC is level-sensitive (TI SNAS605AS Table 35)
+LMK_SYSREF_MUX = 0x03  # R0x139 SYSREF_MUX: what drives the dividers' SYNC line; 0 = the SYNC (SNAS605AS Figure 13)
+LMK_SYNC_SETTLE_S = 2.0  # for PLL1 to pull DCLKout8 back to CLKin0 after the divider SYNC (nested zero delay)
 LMX_CAL_WAIT_S = 0.01  # after an R0 write with FCAL_EN = 1 (TI SNAS696C 7.5)
 LMX_FCAL_EN = 1 << 3  # R0: an R0 write with it set calibrates the VCO
 LMX_MUXOUT_LD_SEL = 1 << 2  # R0: 1 = lock detect on MUXout, 0 = register readback
@@ -85,21 +88,52 @@ def program_clocks(xrfclk: Any, vco_band: dict[str, int] | None = None) -> None:
     ``set_ref_clks()`` only reads the .txt files in its own package directory,
     into the table ``_Config``, and only when it has not found the devices
     yet.  Finding them here and filling ``_Config`` from our files makes it
-    write our registers, so the board needs no copies inside xrfclk.
+    write our registers, so the board needs no copies inside xrfclk.  The
+    LMK04828's dividers then get their SYNC (``sync_lmk_dividers``).
     ``vco_band`` ({"adc": 117, ...}) then rewrites those LMX2594 with their VCO
     band forced (``force_vco_band``).  An LMX image with VCO_PHASE_SYNC set then
     gets its SYNC (``sync_lmx_phase``).
     """
     if not xrfclk.lmk_devices and not xrfclk.lmx_devices:
         xrfclk._find_devices()
+    lmk = clock_registers(f"LMK04828_{LMK_FREQ_MHZ}.txt")
     lmx = clock_registers(f"LMX2594_{LMX_FREQ_MHZ}.txt")
-    xrfclk._Config["lmk04828"][LMK_FREQ_MHZ] = clock_registers(f"LMK04828_{LMK_FREQ_MHZ}.txt")
+    xrfclk._Config["lmk04828"][LMK_FREQ_MHZ] = lmk
     xrfclk._Config["lmx2594"][LMX_FREQ_MHZ] = lmx
     xrfclk.set_ref_clks(lmk_freq=LMK_FREQ_MHZ, lmx_freq=LMX_FREQ_MHZ)
+    sync_lmk_dividers(xrfclk, lmk)
     for side, band in (vco_band or {}).items():
         xrfclk._write_LMX_regs(force_vco_band(lmx, band), lmx_device(xrfclk, side))
     if lmx[-1] & LMX_VCO_PHASE_SYNC:
         sync_lmx_phase(xrfclk, lmx[-1])
+
+
+def sync_lmk_dividers(xrfclk: Any, image: list[int]) -> None:
+    """Synchronize every LMK04828 divider once PLL2 runs (TI SNAS605AS 9.3.2.1.1, steps 2d-3).
+
+    The register file holds only the final SYNC settings, written in address order
+    before PLL2's: 0x143 with SYNC_POL = 1 (SYNC asserted, level-sensitive), then
+    0x144 = 0xFF (no divider takes SYNC).  So the dividers are released at the 0x144
+    write, before PLL2 and its VCO are programmed and calibrated, and their relative
+    phase rests on how that start-up goes: in a few power-ups in a thousand one
+    board's converters came up 4 or 5 VCO periods (416.7 ps each) later against its
+    PPS tick, with other MTS offsets (2026-10-21/24).  Here, as the data sheet's
+    procedure does after all registers (TI SNAS605AS 9.3.2.1.1 and Table 1):
+    SYSREF_MUX = 0, so that the dividers' SYNC line carries the SYNC instead of the
+    image's continuous SYSREF (3); SYNC_POL = 0; every SYNC_DIS cleared (SYSREF's
+    divider included); SYNC_POL 1 then 0 (all held, then released together on the
+    running VCO, the SYNC reclocked by the distribution path); SYNC_DIS and
+    SYSREF_MUX as in the image.  PLL1, in nested zero-delay mode on DCLKout8, then
+    pulls all outputs back into line with the 10 MHz together.
+    """
+    registers = {word >> 8: word for word in image}  # 24-bit words: address above the data byte
+    r139, r143, r144 = registers[0x139], registers[0x143], registers[0x144]
+    time.sleep(LMX_CAL_WAIT_S)
+    words = [r139 & ~LMK_SYSREF_MUX, r143 & ~LMK_SYNC_POL, 0x144 << 8, r143 | LMK_SYNC_POL,
+             r143 & ~LMK_SYNC_POL, r144, r139]
+    for lmk in xrfclk.lmk_devices:
+        xrfclk._write_LMK_regs(words, lmk)
+    time.sleep(LMK_SYNC_SETTLE_S)
 
 
 def lmx_device(xrfclk: Any, side: str) -> dict:
@@ -197,9 +231,20 @@ def lmx_readback(spi_device: str | Path, r0: int) -> dict[str, int]:
 
 
 def mts_dtc_warnings(mts: RFDCSetupResult, config: BoardConfig | None) -> list[str]:
-    """What the MTS capture codes say about the board config's ``mts_dtc``."""
+    """What the MTS capture codes and offsets say about the board config's ``mts_dtc``."""
     out = []
     for kind, result in (("dac", mts.dac), ("adc", mts.adc)):
+        usual = (config.mts_dtc.get(kind) or {}).get("offset") if config else None
+        if usual is None:
+            out.append(f"MTS {kind.upper()} offsets not recorded in the board config: a power-up that puts the "
+                       f"converters a few LMK VCO periods (416.7 ps) off against the PPS tick goes unnoticed "
+                       f"(rf_clock.checks.mts_dtc record --write)")
+        else:
+            for tile in result.tiles:
+                if usual[tile] >= 0 and result.offset[tile] != usual[tile]:
+                    out.append(f"MTS {kind.upper()} tile {tile} offset {result.offset[tile]}, recorded {usual[tile]}: "
+                               f"in this power-up the converters may sit a few LMK VCO periods (416.7 ps each) off "
+                               f"against the PPS tick; open the PL again")
         if not result.dtc_target:
             out.append(f"MTS {kind.upper()} capture windows not set by the board config: MTS takes the window "
                        f"nearest code 64, which can move the converter by a whole sample at the next power-up "
@@ -217,6 +262,13 @@ def mts_dtc_warnings(mts: RFDCSetupResult, config: BoardConfig | None) -> list[s
         out.append(f"MTS capture codes recorded with VCO bands {recorded}, the board config forces "
                    f"{config.lmx_vco_band}: record them again")
     return out
+
+
+def die_c() -> float | None:
+    """The hottest RFSoC die sensor (AMS), in degrees C; None off the board.  The LMK04828
+    and LMX2594 have no sensor, so this stands for the board's temperature."""
+    temps = [int(p.read_text()) for p in Path("/sys/bus/iio/devices/iio:device0").glob("in_temp*_input")]
+    return max(temps) / 1000 if temps else None
 
 
 def read_lmx_vco(xrfclk: Any, vco_band: dict[str, int] | None = None) -> dict[str, LMXVCO]:
@@ -368,7 +420,8 @@ class PL:
                 result = setup_rfdc_and_mts(
                     overlay, ref_tile=ref_tile,
                     dac_target_latency=dac_target_latency, adc_target_latency=adc_target_latency,
-                    dtc_target={k: v for k, v in config.mts_dtc.items() if k in LMX_CHIP_SELECT} if config else None)
+                    dtc_target={k: {c: v for c, v in clocks.items() if c in ("t1", "pll")}
+                                for k, clocks in config.mts_dtc.items() if k in LMX_CHIP_SELECT} if config else None)
                 for warning in mts_dtc_warnings(result, config):
                     warnings.warn(warning, stacklevel=4)
             except RFDCError as exc:

@@ -13,7 +13,9 @@ and/or the RX window of a slot (the window from ``PRE_TICKS`` before it), waits 
 them and takes the samples; after the last slot it correlates each window with the
 PRN reference and hands the second's record to the link.  M4 wiring: A's DAC_A ->
 attenuator -> B's ADC_B and B's DAC_A -> attenuator -> A's ADC_B, both boards on one
-FS725.
+FS725.  With ``--save-every N`` every Nth second's RX windows are also kept, as
+complex64 ``<slot>_<count>.npy`` in ``--save-dir`` (``rx_<node>`` unless given), for
+looking at the waveform itself; the record names the file.
 
 The two boards' records are matched by the system time of their PPS edges, so A and
 B need NTP-synchronized clocks (docs/ABI.md 9.1): the command refuses to start
@@ -24,12 +26,15 @@ in progress.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import subprocess
 import sys
 import time
 from multiprocessing import Pipe, Process
 from typing import Any, Callable
+
+from rf_clock.pl.board import die_c
 
 from .link import DEFAULT_PORT, run_link
 from .timing import PRE_TICKS, SLOTS, plan
@@ -46,9 +51,11 @@ def ntp_synchronized() -> bool:
 
 
 def run_node(pl: Any, node: str, seconds: int, emit: Callable[[dict], None], *,
-             amplitude: float = AMPLITUDE, say: Callable[[str], None] = print) -> int:
+             amplitude: float = AMPLITUDE, say: Callable[[str], None] = print,
+             save_every: int = 0, save_dir: str = "") -> int:
     """The PL loop: one record per second to ``emit``, for ``seconds`` seconds (0:
-    until interrupted).  Returns the number of seconds done."""
+    until interrupted).  With ``save_every`` every that many seconds' RX windows go
+    to ``save_dir`` as complex64 .npy.  Returns the number of seconds done."""
     import numpy as np
 
     from rf_clock.correlator import estimate_delay
@@ -79,16 +86,21 @@ def run_node(pl: Any, node: str, seconds: int, emit: Callable[[dict], None], *,
                 if rx:
                     window = pl.ctrl.wait_rx(timeout=WAIT_S)
                     # A copy: the next window reuses the DMA buffer.
-                    windows.append((entry, window.actual, np.array(pl.rx_dma.wait(window.beats).samples)))
+                    windows.append((slot, entry, window.actual, np.array(pl.rx_dma.wait(window.beats).samples)))
             except (RXWindowInvalid, TargetMissed, WaitTimeout) as exc:
                 entry.clear()
                 entry["error"] = str(exc)
                 pl.ctrl.cancel_tx()  # whatever of this slot is still armed
                 pl.ctrl.cancel_rx()
-        for entry, actual, samples in windows:
+        for slot, entry, actual, samples in windows:
             peak = estimate_delay(samples, ref)
             entry["rx"] = {"tick": actual, "peak": float(peak.index), "phase": float(peak.phase),
                            "psl_db": peak.peak_to_sidelobe_db}
+            if save_every and done % save_every == 0:
+                name = f"{slot}_{count}.npy"
+                np.save(os.path.join(save_dir, name), samples.astype(np.complex64))
+                entry["rx"]["saved"] = name
+        record["die_c"] = die_c()
         emit(record)
         say(describe(record))
         done += 1
@@ -119,6 +131,9 @@ def main() -> int:
     parser.add_argument("--log", help="JSON-lines log (default twtt_<node>.jsonl)")
     parser.add_argument("--amplitude", type=float, default=AMPLITUDE, help="PRN amplitude")
     parser.add_argument("--no-ntp-check", action="store_true", help="start without an NTP-synchronized clock")
+    parser.add_argument("--save-every", type=int, default=0, metavar="N",
+                        help="keep every Nth second's RX windows as complex64 .npy")
+    parser.add_argument("--save-dir", help="where --save-every puts them (default rx_<node>)")
     args = parser.parse_args()
     if args.node == "B" and not args.peer:
         parser.error("node B needs --peer, A's address")
@@ -131,6 +146,9 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     log_path = args.log or f"twtt_{args.node}.jsonl"
+    save_dir = args.save_dir or f"rx_{args.node}"
+    if args.save_every:
+        os.makedirs(save_dir, exist_ok=True)
     ours, theirs = Pipe()
     # The link process starts before PL.open, so that it holds none of the hardware.
     link = Process(target=run_link, args=(theirs, args.node, args.peer, args.port, log_path), daemon=True)
@@ -156,7 +174,8 @@ def main() -> int:
                    "t1_code": {"dac": mts.dac.dtc.get("t1_code"), "adc": mts.adc.dtc.get("t1_code")},
                    "slots": SLOTS, "pre_ticks": PRE_TICKS, "amplitude": args.amplitude})
         mark(f"twtt node {args.node}: log {log_path}")
-        done = run_node(pl, args.node, args.seconds, emit, amplitude=args.amplitude)
+        done = run_node(pl, args.node, args.seconds, emit, amplitude=args.amplitude,
+                        save_every=args.save_every, save_dir=save_dir)
         print(f"{done} seconds")
     except KeyboardInterrupt:
         print("stopped")

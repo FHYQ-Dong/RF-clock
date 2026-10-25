@@ -44,8 +44,8 @@ import sys
 import time
 from collections import Counter
 from dataclasses import asdict, replace
-from pathlib import Path
 
+from rf_clock.pl.board import die_c
 from rf_clock.pl.board_config import (DEFAULT_PATH, LMX_CAPCTRL_MAX, LMX_SIDES, PATH_ENV,
                                       BoardConfig, check_board, config_path, load_board_config,
                                       read_board_serial, save_board_config)
@@ -63,12 +63,6 @@ RESULT = "VCO_BANDS_RESULT "
 
 def now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-
-
-def die_c() -> float | None:
-    """The hottest RFSoC die sensor (AMS), in degrees C; the LMX2594 have none."""
-    temps = [int(p.read_text()) for p in Path("/sys/bus/iio/devices/iio:device0").glob("in_temp*_input")]
-    return max(temps) / 1000 if temps else None
 
 
 def time_shift(delay_ps: float, phase3: float, ref_delay_ps: float, ref_phase3: float) -> float:

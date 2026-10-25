@@ -48,9 +48,9 @@ def test_run_mts_picks_windows_by_the_recorded_codes(monkeypatch):
     assert fixed.dtc_target == {"t1": (54, -1, 53, -1)}
 
 
-def mts(kind, t1, target=None):
+def mts(kind, t1, target=None, offset=(8, 0, 8, 0)):
     return MTSResult(kind=kind, status=0, tiles=(0, 2), ref_tile=0, target_latency=1896, latency=(1896,) * 4,
-                     offset=(8,) * 4, dtc={"t1_code": tuple(t1), "pll_code": (-1,) * 4},
+                     offset=tuple(offset), dtc={"t1_code": tuple(t1), "pll_code": (-1,) * 4},
                      dtc_target={"t1": tuple(target)} if target else {})
 
 
@@ -58,7 +58,9 @@ def test_pl_open_warns_about_unrecorded_or_drifting_codes():
     setup = RFDCSetupResult(dac=mts("DAC", (54, -1, 53, -1), (54, -1, 53, -1)), adc=mts("ADC", (62, -1, 65, -1)),
                             started_after_startup_call=False, mixers={})
     config = BoardConfig(serial=SERIAL, lmx_vco_band={"adc": 125, "dac": 128},
-                         mts_dtc={"dac": {"t1": [54, -1, 53, -1]}, "recorded": {"bands": {"adc": 125, "dac": 128}}})
+                         mts_dtc={"dac": {"t1": [54, -1, 53, -1], "offset": [8, -1, 8, -1]},
+                                  "adc": {"offset": [8, -1, 8, -1]},
+                                  "recorded": {"bands": {"adc": 125, "dac": 128}}})
     (only,) = mts_dtc_warnings(setup, config)
     assert only.startswith("MTS ADC capture windows not set")
     drifted = RFDCSetupResult(dac=mts("DAC", (54 + DTC_MARGIN + 1, -1, 53, -1), (54, -1, 53, -1)),
@@ -68,6 +70,21 @@ def test_pl_open_warns_about_unrecorded_or_drifting_codes():
     assert "tile 0 T1 capture code 61 is 7 codes from the recorded 54" in only
     other_bands = BoardConfig(serial=SERIAL, lmx_vco_band={"adc": 124, "dac": 128}, mts_dtc=config.mts_dtc)
     assert any("recorded with VCO bands" in w for w in mts_dtc_warnings(drifted, other_bands))
+
+
+def test_pl_open_warns_about_other_or_unrecorded_offsets():
+    config = BoardConfig(serial=SERIAL, mts_dtc={"dac": {"t1": [54, -1, 53, -1], "offset": [8, -1, 8, -1]},
+                                                 "adc": {"t1": [62, -1, 65, -1]}})
+    usual = RFDCSetupResult(dac=mts("DAC", (54, -1, 53, -1), (54, -1, 53, -1)),
+                            adc=mts("ADC", (62, -1, 65, -1), (62, -1, 65, -1), offset=(10, 0, 8, 0)),
+                            started_after_startup_call=False, mixers={})
+    (only,) = mts_dtc_warnings(usual, config)
+    assert only.startswith("MTS ADC offsets not recorded")
+    shifted = RFDCSetupResult(dac=mts("DAC", (54, -1, 53, -1), (54, -1, 53, -1), offset=(12, 0, 8, 0)),
+                              adc=usual.adc, started_after_startup_call=False, mixers={})
+    warnings = mts_dtc_warnings(shifted, config)
+    assert any(w.startswith("MTS DAC tile 0 offset 12, recorded 8") for w in warnings)
+    assert not any("tile 2 offset" in w for w in warnings)
 
 
 def test_record_takes_the_window_picked_most_often():
@@ -84,6 +101,7 @@ def test_record_takes_the_window_picked_most_often():
     {"dac": {"t2": [54, -1, 53, -1]}},
     {"DAC": {"t1": [54, -1, 53, -1]}},
     {"adc": {"pll": [54, -1, 128, -1]}},
+    {"dac": {"offset": [8, -1, 8]}},
 ])
 def test_bad_capture_codes_are_refused(dtc):
     with pytest.raises(BoardConfigError):
@@ -91,7 +109,8 @@ def test_bad_capture_codes_are_refused(dtc):
 
 
 def test_capture_codes_round_trip():
-    dtc = {"dac": {"t1": [62, -1, 61, -1]}, "adc": {"t1": [62, -1, 65, -1], "pll": [72, -1, 76, -1]},
+    dtc = {"dac": {"t1": [62, -1, 61, -1], "offset": [8, -1, 8, -1]},
+           "adc": {"t1": [62, -1, 65, -1], "pll": [72, -1, 76, -1], "offset": [10, -1, 8, -1]},
            "recorded": {"runs": 6}}
     config = BoardConfig.from_json({"serial": SERIAL, "mts_dtc": dtc})
     assert BoardConfig.from_json(config.to_json()) == config

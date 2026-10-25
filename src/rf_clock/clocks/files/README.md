@@ -18,7 +18,7 @@ SYSREF is 5 MHz: PG269 requires it below 10 MHz, and 5 MHz divides PL_CLK, the 4
 
 | File | Use |
 | --- | --- |
-| `LMK04828_100.0.txt` | `ext10m`: PLL1 locked to the FS725 10 MHz on CLKin0, in nested zero-delay mode (0x13F = 0x0B: PLL1 N fed from DCLKout8; R = 12, N = 120, 833.3 kHz phase detector), so PL_CLK has one phase to the 10 MHz and PPS after every programming. The only image for measurements. |
+| `LMK04828_100.0.txt` | `ext10m`: PLL1 locked to the FS725 10 MHz on CLKin0, in nested zero-delay mode (0x13F = 0x0B: PLL1 N fed from DCLKout8; R = 12, N = 120, 833.3 kHz phase detector), so PL_CLK has one phase to the 10 MHz and PPS after every programming. The only image for measurements. Written in address order it releases the dividers (0x143 SYNC_POL = 1, then 0x144 = 0xFF) before PLL2 is programmed; `PL.open()` therefore gives them the data sheet's SYNC afterwards (`rf_clock.pl.board.sync_lmk_dividers`). |
 | `LMK04828_100.1.txt` | `onboard`: on-board reference selection from RFSoC-MTS, same output rates. Does not follow the FS725; never use it for time measurements. |
 | `LMX2594_480.0.txt` | Integer-N: 480 MHz reference, 7.68 GHz VCO, 16-way channel divider, 480 MHz on OUTA/OUTB, with phase SYNC (`make_phase_sync_config`: VCO_PHASE_SYNC = 1, so 4 of the 16 are in the PLL feedback and PLL_N is 40). `PL.open()` toggles VCO_PHASE_SYNC after writing (SYNC category 2), which fixes the output phase to the LMK reference; without it the RFDC sample clocks moved by 0 or half a DAC sample with each clock write. |
 | `LMK04828_500.0.txt`, `LMX2594_500.0.txt` | Fixtures from Xilinx RFSoC-MTS (MIT), used to check the decoders. |
