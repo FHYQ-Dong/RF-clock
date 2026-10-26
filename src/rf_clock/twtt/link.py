@@ -150,7 +150,7 @@ def run_link(conn: Any, node: str, peer: str | None, port: int, log_path: str, b
                             if out["type"] == "record":
                                 link.unsent.append(out)
                             drop(str(exc))
-                    elif ready is listener:
+                    elif listener is not None and ready is listener:
                         new, address = listener.accept()
                         sock = connected(new, f"accepted {address[0]}")
                     elif sock is not None:

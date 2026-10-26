@@ -78,6 +78,7 @@ pl.ctrl.wait_tx(timeout=2.5)                    # returns TX_ACTUAL == target
 ```bash
 uv sync                               # Python environment (pynq is a dev dependency, for completion only)
 uv run pytest                         # unit tests against a fake PL, no hardware
+uv run pyright                        # static type check of src, tests, experiments and tools
 uv run python -m rf_clock.examples.pl.01_fake_tx
 ./PL/sim/run_pl_tests.ps1             # RTL testbenches (PowerShell, iverilog)
 ```
@@ -87,7 +88,7 @@ uv run python -m rf_clock.examples.pl.01_fake_tx
 1. Set the version in `pyproject.toml` (rules below).
 2. On the build machine: `vivado -mode batch -source PL/bd/create_rf_clock_bd.tcl -tclargs <new build dir> <RFSoC4x2-BSP>/board_files impl`
 3. `python3 tools/package_overlay.py <build dir>` copies the bitstream and a manifest into `src/rf_clock/overlay/` (refused unless the build completed with timing met for this version).
-4. Commit, then push a tag `vA.B.C.D`: GitHub Actions, and Gitea Actions where the tag is pushed to Gitea, build the wheel and publish a release with notes.
+4. `uv run pytest` and `uv run pyright` pass; commit, then push a tag `vA.B.C.D`: GitHub Actions, and Gitea Actions where the tag is pushed to Gitea, build the wheel and publish a release with notes.
 
 Details in [docs/ABI.md §14.1](docs/ABI.md).
 

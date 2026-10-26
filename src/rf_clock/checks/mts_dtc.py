@@ -42,7 +42,7 @@ import sys
 from dataclasses import replace
 
 from rf_clock.pl.board import DTC_MARGIN
-from rf_clock.pl.board_config import (DEFAULT_PATH, LMX_SIDES, PATH_ENV, check_board, config_path,
+from rf_clock.pl.board_config import (DEFAULT_PATH, LMX_SIDES, PATH_ENV, BoardConfig, check_board, config_path,
                                       load_board_config, read_board_serial, save_board_config)
 from rf_clock.pl.overlay import package_version
 
@@ -100,7 +100,7 @@ def open_once(args) -> int:
     return 0 if "error" not in result else 1
 
 
-def run(args, with_codes: bool) -> tuple[object, list[dict]]:
+def run(args, with_codes: bool) -> tuple[BoardConfig, list[dict]]:
     serial = read_board_serial()
     config = load_board_config(args.config)
     if config is None or set(config.lmx_vco_band) != set(LMX_SIDES):

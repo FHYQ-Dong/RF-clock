@@ -92,9 +92,20 @@ _CHDIV = {0: 2, 1: 4, 2: 6, 3: 8, 4: 12, 5: 16, 6: 24, 7: 32,
           14: 256, 15: 384, 16: 512, 17: 768}
 
 # TI SNAS696C field table used by the decoder and by callers that need to
-# inspect or edit a register image.  Masks are in the 16-bit register value.
+# inspect or edit a register image, such as rf_clock.pl.board for the phase
+# SYNC, the forced VCO band and the VCO readback.  Each value is (register,
+# mask, shift); masks are in the 16-bit register value.
 LMX_FIELDS = {
     "VCO_PHASE_SYNC": (0, 0x4000, 14),
+    "FCAL_EN": (0, 0x0008, 3),  # an R0 write with it set calibrates the VCO
+    "MUXOUT_LD_SEL": (0, 0x0004, 2),  # 1 = lock detect on MUXout, 0 = register readback
+    "VCO_CAPCTRL_FORCE": (8, 0x0800, 11),  # 1 = VCO band from VCO_CAPCTRL instead of the calibration
+    "VCO_CAPCTRL": (19, 0x00FF, 0),  # VCO band
+    # Readback (section 7.6.13): the calibration's result.
+    "rb_LD_VTUNE": (110, 0x0600, 9),  # 2 = locked, 0 = tuning voltage low, 3 = high
+    "rb_VCO_SEL": (110, 0x00E0, 5),  # VCO core
+    "rb_VCO_CAPCTRL": (111, 0x00FF, 0),  # VCO band
+    "rb_VCO_DACISET": (112, 0x01FF, 0),  # VCO amplitude
     "INPIN_IGNORE": (58, 0x8000, 15),
     "OSC_2X": (9, 0x1000, 12),
     "MULT": (10, 0x0F80, 7),

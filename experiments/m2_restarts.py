@@ -147,11 +147,13 @@ def unclip(scope: HDO9404, traces: tuple[str, ...] = ("F1", "F2"), tries: int = 
     """Refit clipped math traces to the bursts on screen; return the clipped sample counts left."""
     left = {}
     for trace in traces:
+        n = scope.clipped_samples(trace)
         for _ in range(tries):
-            if (n := scope.clipped_samples(trace)) < CLIPPED:
+            if n < CLIPPED:
                 break
             scope.reframe_math(trace)
             time.sleep(6)  # a few acquisitions (the scope takes ~2 s each)
+            n = scope.clipped_samples(trace)
         left[trace] = n
     return left
 

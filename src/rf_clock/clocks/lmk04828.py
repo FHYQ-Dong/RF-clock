@@ -1,7 +1,11 @@
 """LMK04828 TICS register files.
 
 Field positions follow TI LMK04821/26/28 SNAS605AS, section 9.7.  The
-ordered register list is retained because xrfclk writes it verbatim.
+ordered register list is retained because xrfclk writes it verbatim.  Written
+in that order, the address order, a file releases the dividers (0x143
+SYNC_POL = 1, then 0x144 = 0xFF) before PLL2 is programmed, and nothing in it
+synchronizes them afterwards; ``PL.open()`` gives them the data sheet's SYNC
+once the file is written (``rf_clock.pl.board.sync_lmk_dividers``).
 """
 
 from __future__ import annotations
@@ -138,7 +142,8 @@ _FORMATS = {0: "powerdown", 1: "LVDS", 2: "HSDS 6 mA", 3: "HSDS 8 mA",
             4: "HSDS 10 mA", 5: "LVPECL 1600 mV", 6: "LVPECL 2000 mV", 7: "LCPECL"}
 
 # TI SNAS605AS field table.  Each value is (register, mask, shift) in the
-# 8-bit data byte; the output-pair fields are repeated at 0x100 + 8*n.
+# 8-bit data byte; the output-pair fields are repeated at 0x100 + 8*n.  Also
+# used by rf_clock.pl.board for the divider SYNC.
 LMK_FIELDS = {
     "PLL2_R": (0x160, 0x0F, 0),
     "PLL2_P": (0x162, 0xE0, 5),
@@ -146,7 +151,9 @@ LMK_FIELDS = {
     "PLL2_N_MSB": (0x166, 0x03, 0),
     "PLL2_N_MID": (0x167, 0xFF, 0),
     "PLL2_N_LSB": (0x168, 0xFF, 0),
-    "SYSREF_MUX": (0x139, 0x03, 0),
+    "SYSREF_MUX": (0x139, 0x03, 0),  # what drives the dividers' SYNC line; 0 = the SYNC (Figure 13)
+    "SYNC_POL": (0x143, 0x20, 5),  # with SYNC_1SHOT_EN = 0 the SYNC is level-sensitive (Table 35)
+    "SYNC_DIS": (0x144, 0xFF, 0),  # one bit per divider, SYSREF's included: 1 = ignores the SYNC
     "SYSREF_DIV_MSB": (0x13A, 0x1F, 0),
     "SYSREF_DIV_LSB": (0x13B, 0xFF, 0),
     "DCLKOUT_DIV": (0x100, 0x1F, 0),
@@ -255,10 +262,12 @@ def make_100mhz_config(base: RegisterFile, *, mode: str) -> LMKConfig:
         # Nested zero-delay (SNAS605AS Table 7): PLL1 locks DCLKout8 = PL_CLK,
         # not the VCXO, to the FS725 10 MHz on CLKin0, so PL_CLK and every
         # output synchronized with it have one phase to the 10 MHz (and the
-        # PPS) after each programming.  Without it the start of the /24
-        # divider picks one of 24 PL_CLK phases 0.42 ns apart, and the PPS
-        # sub-tick phase changed with every clock write (M2 scope test,
-        # 2026-10-14).  N = R * 100 MHz / 10 MHz keeps the 833.3 kHz phase
+        # PPS) after each programming.  Without it the /24 divider can start on
+        # any of 24 VCO edges, so PL_CLK, and with it the PPS sub-tick phase,
+        # can take one of 24 phases 0.42 ns apart at every clock write.  (The
+        # M2 scope test of 2026-10-14 that seemed to show this read a peak that
+        # moved with the carrier phase, so it does not prove it.)
+        # N = R * 100 MHz / 10 MHz keeps the 833.3 kHz phase
         # detector and the loop gain (VCXO/192 before, VCXO * 100/160 / 120).
         pll1_r = ((values.get(0x153, 0) & 0x3F) << 8) | values.get(0x154, 0)
         pll1_n = pll1_r * round(PL_CLK_HZ / FS725_REF_HZ)

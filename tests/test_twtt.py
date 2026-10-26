@@ -39,6 +39,7 @@ def records(theta_ns: float, path_ns: float, *, t_sys: float = 100.0, psl_db: fl
 
 def test_two_way_gives_theta_and_the_one_way_delay():
     result = two_way(*records(theta_ns=3.2, path_ns=300.0))
+    assert result is not None
     assert result.theta_ns == pytest.approx(3.2)
     assert result.delay_ns == pytest.approx(300.0)
     assert (result.count_a, result.count_b) == (7, 42)
@@ -159,6 +160,7 @@ def test_the_self_test_loop_measures_its_loopback_with_theta_zero():
     record = records_[0]
     assert record["slots"]["AB"]["rx"]["peak"] == pytest.approx(PRE_TICKS * 8 + 230, abs=1e-3)
     result = two_way(record, record)
+    assert result is not None
     assert result.theta_ns == pytest.approx(0.0, abs=1e-9)  # the same window in both slots
     assert result.delay_ns == pytest.approx(230 * 1.25, abs=1e-2)
 

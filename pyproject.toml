@@ -1,6 +1,6 @@
 [project]
 name = "rf-clock"
-version = "1.3.0.10"
+version = "1.3.0.11"
 description = "RF clock control library for Q-LATS Project. This library provides a Python interface for controlling the RF clock overlay on PYNQ platforms."
 readme = "README.md"
 authors = [
@@ -16,6 +16,7 @@ dev = [
     "pynq==3.1.1",
     "pynqmetadata",
     "pynqutils",
+    "pyright>=1.1.414",
     "pytest>=8.3",
 ]
 # Plotting for utils/ only; not installed on the RFSoC (uv sync --no-default-groups).
@@ -42,10 +43,11 @@ pynqmetadata = { git = "https://github.com/Xilinx/PYNQ-Metadata.git" }
 pynqutils = { git = "https://github.com/Xilinx/PYNQ-Utils.git" }
 tanglab-instruments = { index = "tanglab" }
 
-# Type checking (Pylance/pyright): the PL code and the board checks run on the
-# board's Linux.
+# Type checking (Pylance/pyright; `uv run pyright`): the PL code and the board
+# checks run on the board's Linux.
 [tool.pyright]
 pythonPlatform = "Linux"
+include = ["src", "tests", "experiments", "tools"]
 
 [project.scripts]
 rf-clock = "rf_clock:main"

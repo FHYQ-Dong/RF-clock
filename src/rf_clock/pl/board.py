@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..clocks.lmk04828 import LMK_FIELDS
+from ..clocks.lmx2594 import LMX_FIELDS
 from .board_config import BoardConfig, check_board, config_path, load_board_config, read_board_serial
 from .bringup import (Bringup, BringupError, BringupResult, mmio_from_overlay, pynq_pl_reset,
                       pynq_register_factories, wait_for_boot)
@@ -50,17 +52,19 @@ CLOCK_FILES = Path(__file__).resolve().parents[1] / "clocks" / "files"
 # raise the target then and recalibrate the loopback delay.
 DAC_TARGET_LATENCY = 1944
 ADC_TARGET_LATENCY = 1296
-LMX_VCO_PHASE_SYNC = 1 << 14  # R0 bit
-LMK_SYNC_POL = 1 << 5  # R0x143 SYNC_POL; with SYNC_1SHOT_EN = 0 the SYNC is level-sensitive (TI SNAS605AS Table 35)
-LMK_SYSREF_MUX = 0x03  # R0x139 SYSREF_MUX: what drives the dividers' SYNC line; 0 = the SYNC (SNAS605AS Figure 13)
+# Clock-chip fields, (register, mask, shift) from the field tables of rf_clock.clocks.
+LMX_VCO_PHASE_SYNC = LMX_FIELDS["VCO_PHASE_SYNC"][1]
+LMK_SYNC_POL = LMK_FIELDS["SYNC_POL"][1]
+LMK_SYSREF_MUX = LMK_FIELDS["SYSREF_MUX"][1]
+LMK_SYNC_DIS = LMK_FIELDS["SYNC_DIS"][1]
 LMK_SYNC_SETTLE_S = 2.0  # for PLL1 to pull DCLKout8 back to CLKin0 after the divider SYNC (nested zero delay)
 LMX_CAL_WAIT_S = 0.01  # after an R0 write with FCAL_EN = 1 (TI SNAS696C 7.5)
-LMX_FCAL_EN = 1 << 3  # R0: an R0 write with it set calibrates the VCO
-LMX_MUXOUT_LD_SEL = 1 << 2  # R0: 1 = lock detect on MUXout, 0 = register readback
-LMX_CAPCTRL_FORCE = 1 << 11  # R8 VCO_CAPCTRL_FORCE; the band is R19[7:0] VCO_CAPCTRL
-# Readback fields (register, shift, bits), TI SNAS696C 7.6.13.
-LMX_READBACK = {"ld_vtune": (110, 9, 2), "vco_sel": (110, 5, 3), "capctrl": (111, 0, 8),
-                "daciset": (112, 0, 9)}
+LMX_FCAL_EN = LMX_FIELDS["FCAL_EN"][1]
+LMX_MUXOUT_LD_SEL = LMX_FIELDS["MUXOUT_LD_SEL"][1]
+LMX_CAPCTRL_FORCE = LMX_FIELDS["VCO_CAPCTRL_FORCE"][1]
+# What lmx_readback returns, by LMX_FIELDS readback field.
+LMX_READBACK = {"ld_vtune": "rb_LD_VTUNE", "vco_sel": "rb_VCO_SEL", "capctrl": "rb_VCO_CAPCTRL",
+                "daciset": "rb_VCO_DACISET"}
 LMX_LOCKED = 2  # rb_LD_VTUNE: 0 = tuning voltage low, 2 = locked, 3 = high
 # The LMX2594 by SPI chip select (/dev/spidev0.<cs>): RF_PLL1 on CS 1 clocks the ADC
 # tiles, RF_PLL2 on CS 2 the DAC tiles.  PYNQ's device tree names them the other way
@@ -129,10 +133,10 @@ def sync_lmk_dividers(xrfclk: Any, image: list[int]) -> None:
     pulls all outputs back into line with the 10 MHz together.
     """
     registers = {word >> 8: word for word in image}  # 24-bit words: address above the data byte
-    r139, r143, r144 = registers[0x139], registers[0x143], registers[0x144]
+    mux, pol, dis = (registers[LMK_FIELDS[name][0]] for name in ("SYSREF_MUX", "SYNC_POL", "SYNC_DIS"))
     time.sleep(LMX_CAL_WAIT_S)
-    words = [r139 & ~LMK_SYSREF_MUX, r143 & ~LMK_SYNC_POL, 0x144 << 8, r143 | LMK_SYNC_POL,
-             r143 & ~LMK_SYNC_POL, r144, r139]
+    words = [mux & ~LMK_SYSREF_MUX, pol & ~LMK_SYNC_POL, dis & ~LMK_SYNC_DIS, pol | LMK_SYNC_POL,
+             pol & ~LMK_SYNC_POL, dis, mux]
     for lmk in xrfclk.lmk_devices:
         xrfclk._write_LMK_regs(words, lmk)
     time.sleep(LMK_SYNC_SETTLE_S)
@@ -148,11 +152,13 @@ def lmx_device(xrfclk: Any, side: str) -> dict:
 def force_vco_band(image: list[int], band: int) -> list[int]:
     """An LMX2594 image with its VCO band forced to ``band`` instead of calibrated.
 
-    R8 VCO_CAPCTRL_FORCE = 1 with the band in R19 VCO_CAPCTRL; the calibration
-    still picks the VCO core and amplitude (TI SNAS696C 7.3.6.1).
+    VCO_CAPCTRL_FORCE = 1 with the band in VCO_CAPCTRL; the calibration still
+    picks the VCO core and amplitude (TI SNAS696C 7.3.6.1).
     """
-    return [word | LMX_CAPCTRL_FORCE if word >> 16 == 8
-            else (word & ~0xFF) | band if word >> 16 == 19
+    force_reg = LMX_FIELDS["VCO_CAPCTRL_FORCE"][0]
+    band_reg, band_mask, band_shift = LMX_FIELDS["VCO_CAPCTRL"]
+    return [word | LMX_CAPCTRL_FORCE if word >> 16 == force_reg
+            else (word & ~band_mask) | ((band << band_shift) & band_mask) if word >> 16 == band_reg
             else word for word in image]
 
 
@@ -222,14 +228,14 @@ def lmx_readback(spi_device: str | Path, r0: int) -> dict[str, int]:
     VCO, and keep VCO_PHASE_SYNC as it is, so that neither is a SYNC; the second
     puts lock detect back on MUXout.
     """
+    fields = {name: LMX_FIELDS[field] for name, field in LMX_READBACK.items()}
     r0 &= ~LMX_FCAL_EN
     with open(spi_device, "rb+", buffering=0) as f:
         spi_transfer(f, struct.pack(">I", r0 & ~LMX_MUXOUT_LD_SEL)[1:])
         words = {addr: int.from_bytes(spi_transfer(f, bytes([0x80 | addr, 0, 0]))[1:], "big")
-                 for addr in (110, 111, 112)}
+                 for addr in sorted({addr for addr, _, _ in fields.values()})}
         spi_transfer(f, struct.pack(">I", r0 | LMX_MUXOUT_LD_SEL)[1:])
-    return {name: (words[addr] >> shift) & ((1 << bits) - 1)
-            for name, (addr, shift, bits) in LMX_READBACK.items()}
+    return {name: (words[addr] & mask) >> shift for name, (addr, mask, shift) in fields.items()}
 
 
 def mts_dtc_warnings(mts: RFDCSetupResult, config: BoardConfig | None) -> list[str]:
@@ -260,7 +266,7 @@ def mts_dtc_warnings(mts: RFDCSetupResult, config: BoardConfig | None) -> list[s
                                f"{abs(picked[tile] - target[tile])} codes from the recorded {target[tile]}: the "
                                f"clock has moved toward a window boundary; record the codes again")
     recorded = (config.mts_dtc.get("recorded") or {}).get("bands") if config else None
-    if recorded is not None and recorded != config.lmx_vco_band:
+    if config is not None and recorded is not None and recorded != config.lmx_vco_band:
         out.append(f"MTS capture codes recorded with VCO bands {recorded}, the board config forces "
                    f"{config.lmx_vco_band}: record them again")
     return out

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 from rf_clock.pl import rfdc
@@ -71,7 +72,7 @@ class MTSStatusTests(unittest.TestCase):
 class NCOSyncTests(unittest.TestCase):
     """sync_nco_phase follows PG269 Use Case 1 and leaves the event sources as it found them."""
 
-    def run_sync(self, status: int = 0) -> tuple[list, object]:
+    def run_sync(self, status: int = 0) -> tuple[list, Any]:
         log: list = []
         driver, ffi, lib = fake_rfdc(log, status)
         xrfdc = SimpleNamespace(EVNT_SRC_SYSREF=SYSREF)
