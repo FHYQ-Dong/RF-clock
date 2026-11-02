@@ -1,5 +1,8 @@
 """Slots, timestamps, pairing and the two-way equations (plan/RF_clock_modules.md section 4).
 
+The slots and the pairing by system time are deprecated with the rest of
+``rf_clock.twtt`` (see its docstring); rf-clock 2 keeps the two-way equations.
+
 Each board counts 10 ns ticks from its latest PPS edge.  Every second, A transmits
 in slot AB while B listens, and B transmits in slot BA while A listens.  With every
 time measured from the board's own PPS edge of that second:

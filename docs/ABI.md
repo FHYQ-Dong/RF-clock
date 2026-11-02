@@ -411,6 +411,8 @@ Python: `TXBuffer.write_beats(beats)`.
 
 #### 4.5.9 `TX_REPEAT` — repeated playback (shadow, since 1.3)
 
+Removed in rf-clock 2 (branch `v2-rf-data-transfer`), where bursts are made in the PL from chip sequences.
+
 | Address | Access    | Format          | Reset |
 | ------- | --------- | --------------- | ----- |
 | 0x5C    | RW shadow | u32, 1 … 65535 | 1     |
@@ -799,7 +801,7 @@ Notes:
 - Jupyter: PYNQ's Jupyter runs in that environment and imports rf_clock as installed.
 - `~/RF-clock/.venv`, the separate venv used before 1.3.0.6 (it sees PYNQ's packages through a `.pth` file), holds no rf-clock; scripts started with it, such as the board side of `experiments/`, import PYNQ's copy.
 - After a PYNQ image upgrade, install the wheel again.
-- Both boards' system clocks follow RF-clock-PC by NTP (chrony there serves 192.168.2.0/24; on the boards `/etc/systemd/timesyncd.conf.d/rf-clock.conf` sets `NTP=192.168.2.1`). `rf_clock.twtt` needs it to pair the two boards' seconds (§11.12); the boards have no clock of their own across a power cycle.
+- Both boards' system clocks follow RF-clock-PC by NTP (chrony there serves 192.168.2.0/24; on the boards `/etc/systemd/timesyncd.conf.d/rf-clock.conf` sets `NTP=192.168.2.1`). `rf_clock.twtt` needs it to pair the two boards' seconds (§11.12; rf-clock 2 pairs by `PPS_COUNT` and slot instead); the boards have no clock of their own across a power cycle.
 - Remote recovery: an access to the fabric domain while its clock is not running hangs the AXI bus and the board stops answering ping. Reset it from the machine at the other end of the JTAG cable: `source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG cable serial>`; ssh is back after about 40 s, with PYNQ's base overlay in the PL.
 
 Modules:
@@ -1137,6 +1139,8 @@ Non-coherent delay estimation (the `correlator` of plan section 7), pure NumPy, 
 ### 11.12 `rf_clock.twtt` (two-way time transfer, since 1.3.0.7)
 
 One board's side of the two-way time transfer of plan section 4, for M4 (two boards on one FS725, cabled with attenuators: A's DAC_A → B's ADC_B, B's DAC_A → A's ADC_B).
+
+Deprecated: rf-clock 2 (branch `v2-rf-data-transfer`) moves this exchange into the PL: its slot engine runs a 2 ms ping-pong, the PL correlates every window, and the measurements ride in the bursts' measurement packets, paired by `PPS_COUNT` and slot without NTP. This once-a-second exchange, driven by the ARM and carried over Ethernet, stays on the 1.x line for M4 and as the reference v2 is checked against (M4b); it gets fixes, not features.
 
 | Module | Content |
 | ------ | ------- |

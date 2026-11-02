@@ -1,5 +1,8 @@
 """M4: the channel each burst went through, from the RX windows the nodes kept.
 
+Reads the windows of the 1.x ``rf_clock.twtt`` node, deprecated in favour of rf-clock 2
+(branch v2-rf-data-transfer).
+
 Problem.  The envelope timing of the correlation peak departs from its carrier
 phase: by tens of picoseconds over a night, and after a power cycle by +60 to +86 ps
 on A's DAC -> B's ADC and by -19 ps on B's DAC -> A's ADC

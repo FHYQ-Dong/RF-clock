@@ -1,5 +1,8 @@
 """M4: two-way time transfer between the two boards, or one board through its own loopback cable.
 
+Runs the 1.x exchange of ``rf_clock.twtt``, deprecated in favour of rf-clock 2 (branch
+v2-rf-data-transfer); kept for M4 and as the reference for M4b.
+
 Problem.  M4 of the plan: with both boards on one FS725 and cabled with
 attenuators (A's DAC_A -> B's ADC_B, B's DAC_A -> A's ADC_B), theta = (m_AB - m_BA)/2
 of ``rf_clock.twtt`` is the zero-baseline constant (Delta/2 and the PPS

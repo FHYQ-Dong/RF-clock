@@ -1,5 +1,8 @@
 """The link process: exchanges each board's records with the other board and pairs them.
 
+Deprecated with the rest of ``rf_clock.twtt`` (see its docstring): in rf-clock 2 the
+measurements ride in the bursts.
+
 ``rf_clock.twtt.node`` starts it beside the PL loop and hands it every record
 through a pipe.  It never touches the hardware, so a slow or broken connection
 cannot delay a slot.  A listens on ``port``; B connects to A and reconnects whenever

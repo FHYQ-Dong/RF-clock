@@ -409,6 +409,8 @@ Python：`TXBuffer.write_beats(beats)`。
 
 #### 4.5.9 `TX_REPEAT` — 重复播放（shadow，1.3 起）
 
+rf-clock 2（分支 `v2-rf-data-transfer`）删去了它：那里的突发由 PL 从码片序列生成。
+
 | 地址 | 访问      | 格式            | 复位值 |
 | ---- | --------- | --------------- | ------ |
 | 0x5C | RW shadow | u32，1 … 65535 | 1      |
@@ -783,7 +785,7 @@ wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打�
 - Jupyter：PYNQ 的 Jupyter 就运行在这个环境里，直接导入装好的 rf_clock。
 - `~/RF-clock/.venv` 是 1.3.0.6 之前用的独立 venv（通过 `.pth` 文件看到 PYNQ 的包），里面已不装 rf-clock；用它启动的脚本（比如 `experiments/` 在板上运行的部分）导入的是 PYNQ 里那份。
 - PYNQ 镜像升级后，重新安装 wheel。
-- 两块板的系统时间经 NTP 跟随 RF-clock-PC（那里的 chrony 为 192.168.2.0/24 提供时间；板上 `/etc/systemd/timesyncd.conf.d/rf-clock.conf` 设 `NTP=192.168.2.1`）。`rf_clock.twtt` 靠它为两块板的秒配对（§11.12）；板子断电后不保留时间。
+- 两块板的系统时间经 NTP 跟随 RF-clock-PC（那里的 chrony 为 192.168.2.0/24 提供时间；板上 `/etc/systemd/timesyncd.conf.d/rf-clock.conf` 设 `NTP=192.168.2.1`）。`rf_clock.twtt` 靠它为两块板的秒配对（§11.12；rf-clock 2 改为按 `PPS_COUNT` 和时隙号配对）；板子断电后不保留时间。
 - 远程恢复：访问时钟没在跑的 fabric 域会卡死 AXI 总线，板子 ping 不通。可以从 JTAG 线另一端的机器复位：`source /tools/Xilinx/Vivado/2024.1/settings64.sh; xsdb tools/jtag_reset_board.tcl <JTAG 线缆序列号>`，约 40 s 后 ssh 恢复；重启后 PL 里是 PYNQ 的 base overlay。
 
 模块一览：
@@ -1118,6 +1120,8 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 ### 11.12 `rf_clock.twtt`（双向时间比对，1.3.0.7 起）
 
 计划第 4 节双向时间比对中一块板的那一侧，用于 M4（两块板共用一台 FS725，经衰减器交叉连接：A 的 DAC_A → B 的 ADC_B，B 的 DAC_A → A 的 ADC_B）。
+
+已弃用：rf-clock 2（分支 `v2-rf-data-transfer`）把这套交换移进 PL：时隙引擎运行 2 ms 乒乓，PL 对每个窗口做相关，测量值放在突发的测量包里传送，按 `PPS_COUNT` 和时隙号配对，不需要 NTP。这套由 ARM 驱动、每秒一次、经以太网交换的流程留在 1.x 上，供 M4 使用，并作为检验 v2 的参照（M4b）；只修错，不加功能。
 
 | 模块 | 内容 |
 | ---- | ---- |

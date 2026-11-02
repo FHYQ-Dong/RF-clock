@@ -22,6 +22,9 @@ The two boards' records are matched by the system time of their PPS edges, so A 
 B need NTP-synchronized clocks (docs/ABI.md 9.1): the command refuses to start
 without (``--no-ntp-check`` overrides).  SIGTERM or Ctrl-C stops it after the second
 in progress.
+
+Deprecated with the rest of ``rf_clock.twtt`` (see its docstring): rf-clock 2 runs
+the slots in the PL.
 """
 
 from __future__ import annotations
