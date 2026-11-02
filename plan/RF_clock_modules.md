@@ -1,9 +1,6 @@
 # RF-clock design plan: 5.8 GHz two-way time transfer steering an FS725
 
-> This is a fresh design. It does not inherit the earlier H00-H19 module split
-> or the existing RTL. Principle: **all algorithms run on the ARM; the PL only
-> provides deterministic time** — it keeps a raw tick, transmits/captures at an
-> exact tick, and anchors each sample block to that tick.
+> This is a fresh design. It does not inherit the earlier H00-H19 module split or the existing RTL. Principle: **algorithms run on the ARM; the PL provides deterministic time and the per-burst measurement chain** — it keeps a raw tick, transmits and captures at exact ticks and anchors each sample block to its tick, and, because the nodes exchange their measurements inside the bursts of a 2 ms ping-pong (§5), it also shapes the bursts, correlates the windows and carries the measurement packets.
 >
 > The Chinese version, `RF_clock_modules_zh.md`, has the same content.
 
@@ -29,7 +26,7 @@ The measurement is 5.8 GHz over-the-air two-way time transfer (TWTT): A and B ex
  RFDC DAC ─ BPF ─ PA ─ TX ant ~~~~ 5.8 GHz ~~~~> RX ant ─ LNA ─ BPF ─ RFDC ADC        │
  RFDC ADC ─ BPF ─ LNA ─ RX ant <~~~ 5.8 GHz ~~~~ TX ant ─ PA ─ BPF ─ RFDC DAC        │
   │                                                   │                               │
- ARM_A: waveform/correlation ── Ethernet (exchange measurements) ── ARM_B: TWTT/Kalman ┘
+ ARM_A: monitoring ─ measurements ride in the bursts (no network) ─ ARM_B: TWTT/Kalman ┘
 ~~~
 
 Key premise: **on each board, the DAC/ADC sample clocks, the PL fabric clock and the raw tick are all derived from that node's FS725 10 MHz through the board PLLs.** The raw tick is then the FS725's time scale; steering FS725_B moves node B's whole timebase and closes the loop.
@@ -38,17 +35,19 @@ Key premise: **on each board, the DAC/ADC sample clocks, the PL fabric clock and
 
 | Responsibility | ARM (Python first) | PL |
 | --- | --- | --- |
-| PRN generation, RRC shaping, quantization, packing | yes | no |
-| Per-second TDD slot plan, target_tick computation | yes | no |
-| Correlation, peak quality, fractional delay | yes | no |
+| Chip sequences of fixed codes (PRN, acquisition code, packet spreading code) and RRC coefficients, loaded into the PL (the correlation reference is made from the same chips by the same FIR) | yes | no |
+| Slot plan: period, role, offsets, expected delay | configures it | runs it every slot (slot engine) |
+| Chip stream → RRC FIR → DAC, gap-free from the slot's start tick | no | yes |
+| RX window starting at the slot's tick | no | yes |
+| Correlation, peak quality, sub-sample delay, carrier phase | acquisition and verification only | tracker in every window; whole-window search on loss of lock or request |
+| Measurement packet: assemble, spread, despread, CRC | decodes during acquisition | yes |
+| Acquisition on long windows in DDR | yes | captures the windows |
 | TWTT, Kalman filter, FS725 steering | yes | no |
 | raw tick counting, PPS capture | no | yes |
-| Gap-free TX burst playback from on-chip buffer at target_tick | no | yes |
-| RX capture window starting at target_tick | no | yes |
 | Actual start tick recording, fault detection | no | yes |
 | RFDC configuration and MTS | via driver | IP and clocks |
 
-The PL contains **no** DSP: no PRN generator, no FIR, no correlator, no carrier recovery.
+The PL's DSP is limited to the per-burst chain: the RRC FIR, the correlator (tracker and whole-window search) with its estimator, and the packet's spreading and despreading. It runs in the PL because each measurement must be on air within 2 ms of the burst it measures (§5); everything else stays on the ARM.
 
 ## 3. RF frequency plan (accepted by the RFDC IP; not yet verified on the board)
 
@@ -69,7 +68,7 @@ Every frequency above is an integer multiple of 10 MHz, so the mapping from samp
 **MTS tile requirements:** deterministic latency needs RFDC MTS. RFDC 2.6 (Vivado 2024.1) offers MTS only when at least two tiles of a kind take part and block 0 of every participating tile is enabled. The RFSoC 4x2 brings out ADC and DAC tiles 0 and 2, each with its own reference clock, so tile 0 joins MTS with the same datapath on its own PLL and its data is unused. On-chip clock distribution is not used (a distributing DAC tile is limited to 7.0 GS/s). Evidence: `plan/checklist.md` §1 and §3.
 
 **Spectral inversion:** 5.8 GHz is a 2nd-Nyquist-zone image, so the transmitted RF spectrum is inverted relative to baseband; the ADC works in the 3rd (odd) zone and does not invert. The received baseband is therefore the conjugate of the transmitted one. BPSK PRN shaped by a real RRC is real, so this has no effect; a future complex waveform needs a conjugated correlation template.
-### 3.1 RRC pulse-shaping parameters (used by ARM waveform generation)
+### 3.1 RRC pulse-shaping parameters (the PL FIR, coefficients from the ARM)
 
 | Parameter | Value | Notes |
 | --- | --- | --- |
@@ -80,8 +79,8 @@ Every frequency above is an integer multiple of 10 MHz, so the mapping from samp
 | `RRC_TAIL_SAMPLES` | 73 | = 81 − 8; burst length = chips × 8 + 73 |
 | `RRC_BETA` | 0.25 | roll-off |
 
-- The ARM convolves the upsampled BPSK chips with the float64 coefficients from `RRC_coeff`, quantizes the result to the DAC's 16-bit I/Q, packs 256-bit beats and writes them into the TX buffer;
-- the receiver's local correlation template must be generated from the **same config_id**; `config_id` is stored in every measurement record, and a measurement whose two ends disagree is rejected;
+- The ARM computes the float64 coefficients (`rrc_config()`), quantizes them and loads them into the PL FIR (P3); the PL shapes each burst's chip stream (PRN, guard, measurement packet) at 8 samples per chip into the DAC's 16-bit I/Q;
+- the receiver's local correlation template must be generated from the **same config_id**; `config_id` travels in every measurement packet (§5.1), and a measurement whose two ends disagree is rejected;
 - RRC is applied once, at the transmitter. In the first version the receiver correlates directly against the "PRN ⊛ RRC" template (equivalent to a matched filter) instead of running a separate receive RRC.
 
 **Must verify:** ADC input bandwidth and performance at 5.8 GHz, DAC output power at about 0.604 fs in mix-mode, and whether the board clock chain accepts an external 10 MHz reference. Transmit power must comply with local 5.8 GHz ISM regulations.
@@ -96,7 +95,7 @@ Each PL keeps a never-reset 64-bit `raw_tick` at 100 MHz and captures `pps_tick[
 T_local = k + (tick - pps_tick[k]) * 10 ns + (offset within the samples)
 ~~~
 
-A TX burst starts at `tx_tick`; an RX window starts at `rx_tick`; the ARM correlation gives the peak position τ̂ in samples, including a fractional part:
+A TX burst starts at `tx_tick`; an RX window starts at `rx_tick`; the PL correlator gives the peak position τ̂ in samples, including a fractional part:
 
 ~~~text
 T_tx = local time of tx_tick
@@ -108,47 +107,71 @@ T_rx = local time of rx_tick + τ̂ / Fs
 Let θ = T_B − T_A (B's reading minus A's reading at the same true instant), δt/δr the transmit/receive hardware delays of each node, and p the air path delay:
 
 ~~~text
-m_AB = T_rx,B − T_tx,A = δt_A + p + δr_B + θ      (measured by B)
-m_BA = T_rx,A − T_tx,B = δt_B + p + δr_A − θ      (measured by A, sent to B over Ethernet)
+m_AB = T_rx,B − T_tx,A = δt_A + p + δr_B + θ      (measured by B, sent to A in B's next burst)
+m_BA = T_rx,A − T_tx,B = δt_B + p + δr_A − θ      (measured by A, sent to B in A's next burst)
 
 θ = (m_AB − m_BA)/2 − Δ/2,   Δ = (δt_A + δr_B) − (δt_B + δr_A)
 ~~~
 
 - The air path p cancels (same frequency and antenna positions, assumed reciprocal);
 - the non-reciprocity Δ must be calibrated with a zero-baseline setup (§8);
-- the two slots are not simultaneous; the ARM uses the Kalman frequency estimate to bring both measurements to one epoch;
+- the two bursts of a pair are 2 ms apart (§5), so the air path is the same in both directions; the clocks drift by y × 2 ms in between (0.02 ps at y = 1e-11), which the ARM removes with the Kalman frequency estimate;
 - `(m_AB + m_BA)/2` is the one-way delay, logged as a diagnostic.
 
 ### 4.3 Carrier offset
 
-The relative frequency offset of two FS725s is about 1e-11, which gives a carrier offset of about 0.06 Hz at 5.8 GHz. That is negligible over a burst of tens to hundreds of microseconds, so the first version uses **non-coherent correlation** (magnitude of the complex correlation) and needs no carrier recovery. Carrier-phase measurement (more precise, but with cycle ambiguity) is a later extension.
+The relative frequency offset of two FS725s is about 1e-11, which gives a carrier offset of about 0.06 Hz at 5.8 GHz: negligible over a burst and over the 4 ms between two bursts of one node, so no carrier recovery is needed. The correlator reports the envelope peak (magnitude of the complex correlation, with parabolic interpolation) and the carrier phase at the peak; the envelope resolves the carrier's whole cycles. The same arrival time and phase serve to despread the measurement packet coherently (§5.1).
 
-## 5. Slot plan (TDD)
+## 5. Slot plan (TDD ping-pong)
 
-One measurement cycle per second, referenced to the local PPS (candidate values):
+The two nodes take turns every 2 ms, referenced to the local PPS (candidate values):
 
 ~~~text
-PPS + 100 ms : A transmits, B's capture window is open
-PPS + 600 ms : B transmits, A's capture window is open
+slot k = 0 … 499 starts at PPS + k × 2 ms
+k even : A transmits, B's window is open
+k odd  : B transmits, A's window is open
+pair j = slots 2j and 2j + 1: one θ
 ~~~
 
-- Burst length: a 4095-chip PRN × 8 + 73 = 32833 complex samples ≈ 41 µs; 65535 chips (524353 samples, ≈ 655 µs) if more processing gain is needed;
-- RX window = burst length + clock-offset uncertainty + filter tails, about 100 µs while tracking (80000 complex samples, about 320 KB);
+- A burst is the PRN (4096 chips, 41 µs), a guard of at least the RRC span (10 chips), then the measurement packet (§5.1), all one chip stream through the RRC FIR (P3);
+- each burst's packet carries the sender's measurement of the peer's burst in the previous slot, 2 ms earlier;
+- why 2 ms: the tracker's result is ready shortly after its window and the packet is assembled after that, and the propagation delay must fit as well (133 µs at 40 km); 2 ms is short enough that the air path is the same in both directions of a pair;
+- RX window: opens before the expected arrival; its length sets the lag range a whole-window search covers and the time the search takes (today's 43848 samples: 11008 lags, 13.8 µs), and is open (§10); the window goes to the PL correlator (P8), the samples behind it to the packet decoder (P9), and a copy to DDR only when the ARM asks (acquisition, verification);
 - a node never opens its RX window while it is transmitting;
-- the cycle period and slot offsets are planned by the ARM; the PL only executes target ticks.
+- the ARM configures the slot plan once (period, role, offsets, expected delay); the PL slot engine (P7) runs it every slot without per-burst commands;
+- both nodes open their windows from start-up, even before the peer transmits: an empty window gives no lock and is reported as no measurement.
 
-### 5.1 Initial acquisition
+### 5.1 Measurement packet
 
-At start-up θ may be as large as a second, which a 100 µs window cannot cover. Two steps:
+| Field | Type | Content |
+| --- | --- | --- |
+| format version, `config_id` | u8, u32 | packet layout and RRC configuration (§3.1) |
+| `PPS_COUNT`, slot | u32, u16 | the sender's second and slot of this burst |
+| `TIME_EPOCH` | u8 | changes when the sender's clocks relock: data across a change is not comparable |
+| T_tx | i64, fs after the sender's PPS | start of this burst |
+| T_rx | i64, fs after the sender's PPS | arrival of the peer's burst in the previous slot (P8's tracked peak) |
+| carrier phase | i16, 2π/65536 | at that peak |
+| quality | u8, 0.25 dB | the tracker's peak power over the window's noise power (the peak-to-sidelobe ratio needs a whole-window search, P8) |
+| status | u8 | locked, measurement present, window valid, FIFO overflow, PPS locked, clocks locked |
+| CRC-16 | u16 | |
 
-1. **Second labels and coarse time:** the two ARMs align to millisecond level over Ethernet (NTP/PTP) and agree on the second number of each PPS;
-2. **Coarse search:** B covers the coarse-time uncertainty with one long capture window (for example a few to tens of milliseconds, written straight to DDR by P4), or sweeps several windows around the expected position, until a correlation peak passes the quality threshold; then it switches to the tracking window.
+- 34 bytes (272 bits). Times are in time units, not ticks or samples, so the packet survives a change of sample rate; T_rx must not pass through float32, which resolves only about 0.15 ps near sample 1000.
+- Modulation: BPSK spread at 100 Mchip/s with a code different from the PRN, L chips per bit. L follows from the link budget, measured on the link rather than assumed: about 10 dB Eb/N0 per bit gives a 1e-5 bit error rate before the CRC, and Eb/N0 = Es/N0 + 10·lg L, with Es/N0 the chip's signal-to-noise ratio at the receiver. The tracker's quality (§5.1 table; the peak power over the window's noise power) is Es/N0 + 36.1 dB for the 4096-chip PRN (10·lg 4096), so it gives Es/N0 on the link itself; L is the smallest power of two that leaves a margin above 10 dB, measured on the cabled link (M4b) and again on the air link (M6). Until then L = 64, which makes the packet 0.17 ms long; P3 and P9 take L as a parameter.
+- The receiving PL despreads coherently with the arrival time and carrier phase of the peer's previous burst, which move far less than a chip and a degree in 4 ms, and checks the CRC; a packet that fails is dropped, not repeated.
+- The PL queues its own measurements and the decoded packets; the ARM reads the queue in batches.
+- Pairing needs no NTP: each node learns the offset between the peer's `PPS_COUNT` and its own from every packet; a change of the offset (a missed PPS edge) discards that second.
 
-If PPS_B differs from PPS_A by far more than frequency steering can remove, a one-off coarse PPS alignment is needed (§10, item 4).
+### 5.2 Initial acquisition
+
+- Until acquisition is done, bursts use the acquisition code, a fixed public code (today's PRN). Keyed codes (later) start only after both nodes decode each other's packets; a node that loses the peer falls back to the acquisition code.
+- B listens with a long window to DDR (up to about 21 ms). A transmits every 4 ms, so one window holds several of A's bursts. The ARM correlates it, decodes A's packet, and from A's T_tx and `PPS_COUNT` finds the offset of its PPS from A's, to within the unknown propagation delay.
+- B moves its 1 pps output by that offset with the FS725's PP command (`place_pulse()` in `rf_clock.fs725`, 1 ns steps) and starts its slots. A's whole-window search then finds B's bursts if they arrive within its lag range, that is, if the delay is known to within a quarter of it (about ±3.4 µs, 1 km, for today's 13.8 µs); otherwise A searches a long window as B did.
+- With both directions measured, B removes the rest of its PPS offset with PP and then steers the FS725's frequency (§7.1).
+- After losing the peer, the PL searches the window (P8); it re-locks by itself only if the peak did not move (within ±1 sample), otherwise the ARM decides after checking the one-way delay; a peak outside the lag range goes back to long-window acquisition.
 
 ## 6. PL modules
 
-All timing-relevant logic is in one clock domain: the RFDC DAC AXIS, ADC AXIS, raw tick, TX buffer and RX timestamping all run on the same 100 MHz fabric clock derived from the FS725, so there is no CDC in the sample path before timestamping. The only CDC is the asynchronous FIFO after the RX timestamp (into the DMA clock domain), which does not affect timing. The AXI bus enters the fabric domain through a clock converter in the block design.
+All timing-relevant logic is in one clock domain: the RFDC DAC AXIS, ADC AXIS, raw tick, TX buffer and RX timestamping all run on the same 100 MHz fabric clock derived from the FS725, so there is no CDC in the sample path before timestamping. After the RX timestamp, samples cross into the DMA clock domain through an asynchronous FIFO and into the correlator's faster clock domain (300–350 MHz, also derived from the FS725) through P8's window buffer; neither affects timing. The AXI bus enters the fabric domain through a clock converter in the block design.
 
 ### P0 clock_reset: clocks and reset
 
@@ -167,24 +190,28 @@ All timing-relevant logic is in one clock domain: the RFDC DAC AXIS, ADC AXIS, r
 - Read-only: ID/version, atomic `raw_tick` snapshot, latest `pps_tick` and PPS count, `time_epoch`, state, fault bits;
 - commands: `TX_TARGET_TICK`, `TX_LENGTH`, `RX_TARGET_TICK`, `RX_LENGTH`, written to shadow registers first and committed atomically by a doorbell;
 - results: `tx_actual_tick`, `rx_actual_tick`, completion sequence, return code;
-- reject a target_tick that is already stale (≤ current tick + safety margin), a length larger than the buffer, and a resubmission while ARMED/RUNNING.
+- reject a target_tick that is already stale (≤ current tick + safety margin), a length larger than the buffer, and a resubmission while ARMED/RUNNING;
+- these single commands remain for tests (M2, M3); the protocol runs from the slot engine's configuration (P7).
 
-### P3 tx_player: timed TX playback
+### P3 tx_burst: chip stream, RRC FIR and timed playback
 
-- The TX waveform buffer is BRAM/URAM, written by the ARM through an AXI BRAM interface; a 4095-chip burst is about 128 KB; a 65535-chip burst is about 2 MB, close to the total URAM; an unchanged waveform is written only once;
+- Chip memories (BRAM) hold the fixed codes the ARM writes (PRN or acquisition code, packet spreading code); the packet's bits come from P9; a later keyed-code generator feeds the same stream;
+- the chip stream (PRN, a guard of zeros, packet chips) passes a polyphase RRC FIR (81 taps, 8 samples per chip; the chips are ±1, so it needs adders only) into 16-bit I/Q beats;
+- a test mode plays a sample waveform the ARM preloads into the BRAM/URAM buffer (CW, scope and spectrum measurements), as the first version did;
 - states: IDLE → ARMED → RUNNING → DONE / FAULT;
-- starting on the cycle where `raw_tick == TX_TARGET_TICK`, output one beat (8 complex samples) per clock without a gap until the length is reached; output zeros outside the burst;
-- an ARM write to the TX buffer while ARMED/RUNNING is an error: the waveform being transmitted cannot change;
+- starting on the cycle where `raw_tick` equals the slot's start tick (or `TX_TARGET_TICK` in test mode), output one beat (8 complex samples) per clock without a gap until the burst ends; output zeros outside the burst;
+- an ARM write to the chip or sample memories while ARMED/RUNNING is an error: the burst being transmitted cannot change;
 - a drop of the DAC `tready` while RUNNING is a FAULT: no pause, no retry;
 - record the actual start tick (it should equal the target).
 
 ### P4 rx_capture: timed RX capture
 
-RX samples go to DDR and do not occupy large BRAM. Windows need not be contiguous with each other, but **no sample may be lost inside a window**: sample time is derived from "start tick + sample index", so one lost beat shifts the time of every later sample.
+Each window goes to the correlator's window buffer (P8) and the packet decoder (P9), and, when the ARM asks for it, also to DDR. Windows need not be contiguous with each other, but **no sample may be lost inside a window**, on either path: sample time is derived from "start tick + sample index", so one lost beat shifts the time of every later sample.
 
 ~~~text
-ADC AXIS ─> window gate + timestamp ─> async FIFO ─> width conv. ─> AXI DMA S2MM ─> HP port ─> DDR
-  (100 MHz fabric domain)                          (DMA domain, e.g. 250 MHz)
+ADC AXIS ─> window gate + timestamp ─┬─> P8 window buffer, P9 despreader
+  (100 MHz fabric domain)             └─> async FIFO ─> width conv. ─> AXI DMA S2MM ─> HP port ─> DDR
+                                                       (DMA domain, e.g. 250 MHz)
 ~~~
 
 - Open the window at `raw_tick == RX_TARGET_TICK`, push every ADC AXIS beat into the FIFO, close the window after the length is reached and mark the last beat with `TLAST`;
@@ -194,7 +221,7 @@ ADC AXIS ─> window gate + timestamp ─> async FIFO ─> width conv. ─> AXI 
 - before submitting the command the ARM must have an S2MM DDR buffer of sufficient length ready (PYNQ `allocate`). If the DMA is not ready, the PL rejects the command and does not open the window;
 - **FIFO overflow inside a window → the window is discarded:** set `rx_window_invalid`, count it, drop that measurement; do not enter FAULT and do not affect TX. This differs from TX: losing an RX window only loses one measurement;
 - after DMA completion the ARM invalidates the cache for that buffer before reading samples;
-- the same path serves the tracking window (~100 µs) and the long coarse acquisition windows.
+- the DDR path serves the long acquisition windows (§5.2) and the copies the ARM checks P8 against; every protocol window goes to P8 and P9.
 
 ### P5 rfdc: RFDC IP
 
@@ -204,39 +231,65 @@ ADC AXIS ─> window gate + timestamp ─> async FIFO ─> width conv. ─> AXI 
 
 ### P6 status: status and faults
 
-- Collect faults from P0–P5 into one latched status word with source and sequence number;
+- Collect faults from P0–P5 and P7–P9 into one latched status word with source and sequence number;
 - clear faults only with an explicit CLEAR command or a new `time_epoch`;
 - polling in the first version, no interrupts.
 
+### P7 slot_engine: the ping-pong schedule
+
+- Runs the slot plan (§5) from the PPS: in each slot it starts the burst (P3) or opens the window (P4) at its tick;
+- the ARM writes the plan once; changes (expected delay, role, codes) take effect at the next PPS;
+- a slot the engine cannot start on time is skipped and counted, never shifted.
+
+### P8 correlator: tracking every slot, searching on demand
+
+- Two window buffers (BRAM, written losslessly at 800 MS/s; their length is a parameter of the RTL, about 39 BRAM36 each for today's 43848 samples): one keeps receiving while the other can be frozen for a search;
+- the reference is made from the burst's chips by the RRC FIR, so it equals what was transmitted, and keyed codes later need no extra step;
+- tracker: in every window, a few lags around the predicted peak, three-point parabolic interpolation, carrier phase by CORDIC; ready shortly after the window, long before the node's next burst; its quality figure is the peak power over the window's noise power;
+- whole-window search: parallel time-domain correlators, a systolic array in which the reference is broadcast to every lane and the window shifts through them, one lag per lane, passes repeated until every lag is done; integer multiply-accumulate (16 × 16 bits, 47-bit sums in the DSP48E2's 48-bit accumulator), so its correlation equals the ARM's float64 exactly; 11008 lags × 32841 samples ≈ 7.2e8 multiplications: 2.4 ms with 1024 DSP at 300 MHz, 1.2 ms with 2048 (the device has 4272, the tracker uses about 150);
+- a search starts when the tracker has no lock (lost, or not yet found after start-up; then again on fresh windows until it locks) or the ARM asks; the ARM asks from time to time while locked, so that a lock on a wrong peak (a delayed copy, multipath) is found; one search at a time (busy), requests while busy are refused and counted;
+- a search reports, with the window's `PPS_COUNT`, slot and start tick: the strongest peak, the earliest peak within a set threshold of it (the direct path arrives first), the peak-to-sidelobe ratio and the window status;
+- re-lock: by the PL itself only if the new peak lies within ±1 sample of the old one; otherwise the ARM decides after checking the one-way delay; slots without lock carry invalid measurements, while a search the ARM requests during lock leaves the tracker's measurements valid; a peak outside the lag range goes to the ARM's long-window acquisition;
+- clock 300 MHz derived from the FS725;
+- the estimator must equal the ARM's (`rf_clock.correlator.estimate_delay`) so that calibrated constants carry over; acceptance against the ARM's float64 on the same window: envelope within 0.01 ps, phase within 0.001 ps;
+- results (window tick, peak, sub-sample position, phase, quality) go to P9 and to the measurement queue;
+- the alternative studied was a 65536-point FFT correlator on every window (2026-11-01: about 550–620 BRAM36 and 250 DSP, 0.7–0.9 ms per window, accurate enough with 27-bit data and 18-bit twiddles); the time-domain search needs no reference spectrum and little memory, and runs only when needed.
+
+### P9 packet: measurement packet
+
+- Assembles the packet of §5.1 from P8's latest result, the slot's T_tx and the status, adds the CRC, and gives its bits to P3, which spreads them with the packet code behind the PRN;
+- despreads the peer's packet in each window coherently (§5.1), checks the CRC, and queues the decoded fields;
+- the queue holds at least a second of both nodes' measurements, so the ARM reads it in batches.
+
 ### 6.1 Not needed in the first version
 
-- **No DDR-streamed TX:** the transmit waveform is fixed and short, so it is played from an on-chip buffer and continuity is guaranteed by construction; only RX uses S2MM DMA;
-- no DSP in the PL;
+- **No DDR-streamed TX:** bursts are made from on-chip data (P3), so continuity is guaranteed by construction; only RX uses S2MM DMA;
+- no DSP in the PL beyond the per-burst chain (P3's FIR, P8, P9);
 - no scatter-gather DMA and no interrupts: one simple-mode transfer per window, completion by polling.
 
 ## 7. ARM software modules
 
 | Module | Function |
 | --- | --- |
-| `waveform` | m-sequence PRN, BPSK, RRC, quantization, packing in the RFDC lane format, write to the TX buffer |
-| `pl_client` | read/write P2 registers, submit TX/RX commands, read RX buffers and metadata |
-| `scheduler` | compute each second's TX/RX target ticks from the latest `pps_tick` |
-| `correlator` | FFT cross-correlation magnitude, peak quality (peak-to-sidelobe), parabolic or upsampled interpolation for fractional delay |
-| `twtt` | pair the two directions by second number and sequence, compute θ and one-way delay |
-| `link` | Ethernet messages between the two ARMs (measurements, second number, sequence, epoch) |
+| `waveform` | chip sequences of fixed codes (PRN or acquisition code, packet spreading code), RRC coefficients quantized for P3's FIR; test sample waveforms (CW) in the RFDC lane format |
+| `pl_client` | read/write P2 registers, configure the slot engine, read the measurement queue, request DDR windows |
+| `scheduler` | the slot plan: period, role, offsets, expected delay |
+| `correlator` | float64 correlation on DDR windows: acquisition, and the reference that P8 is checked against |
+| `twtt` | pair the two directions by `PPS_COUNT` and slot, compute θ and one-way delay |
+| `link` | decode measurement packets from DDR during acquisition, parse the decoded packets from the queue; Ethernet only for management and logs |
 | `estimator` | Kalman filter with clock offset θ and relative frequency y, with outlier rejection |
 | `fs725` | RS-232 driver: set frequency offset, read status, log every correction |
 | `calibration` | store Δ, PPS sub-tick phase, RFDC latency, with version and date |
 | `rfdc_mgr` | RFDC initialization, MTS, NCO settings and status readback |
 
-Measurement and steering happen on the scale of seconds, so Python + NumPy is enough. Move a bottleneck to C/C++/Rust only when measurement shows it is needed.
+The ARM reads the PL's measurement queue in batches; estimation and steering happen on the scale of seconds, so Python + NumPy is enough. Move a bottleneck to C/C++/Rust only when measurement shows it is needed.
 
 ### 7.1 FS725 steering policy
 
 - Only B is steered; A free-runs;
 - the first version adjusts only B's frequency offset over RS-232. Frequency error is corrected directly; PPS phase error is removed by temporarily adding a frequency offset so that the phase slews into place;
-- the range, resolution and units of the steering command come from the FS725/PRS10 manual;
-- the loop time constant is tens to hundreds of seconds, matched to the stability of the rubidium standard.
+- the steering command is SF (PRS10 manual): the frequency offset in parts in 1e12, −2000 to +2000, relative to the EEPROM calibration. The first SF disables the calibration pot and SF is ignored while the unit phase-locks to a 1 pps input, so steering starts from the value SF? reads, with that PLL off (`rf_clock.fs725`);
+- the loop time constant is tens to hundreds of seconds, matched to the stability of the rubidium standard. With white frequency noise the residual of θ goes as σ_y(1 s)·√(τ/2), so the shortest τ the FS725's response allows is best; `rf_clock.twtt.steer` defaults to 50 s (`experiments/m5_steer_sim.py`).
 
 ## 8. Calibration
 
@@ -257,7 +310,8 @@ Calibration values live in software with a version number. Never subtract a gues
 | M2 | P3 + P5, scope triggered on PPS looking at the DAC output | burst delay relative to PPS is fixed and unchanged across reboots (MTS works) |
 | M3 | P4, on-board DAC → ADC cable loopback, correlation on the ARM | standard deviation of the loopback delay and its consistency across reboots; S2MM sustains its write rate without overflow while the ARM also accesses DDR |
 | M4 | two boards, cabled with attenuators, sharing one FS725 | Δ from the zero baseline; noise level of θ̂ |
-| M5 | each board on its own FS725, cabled, Kalman + FS725 steering loop closed | PPS_A − PPS_B on a time-interval counter converges over the long term |
+| M4b | P7–P9 and P3's FIR, on the M3 loopback, then the cabled pair | P8 equals the ARM's float64 on the same windows (envelope within 0.01 ps, phase within 0.001 ps); packets decoded with their CRC over hours; θ and the loopback delay unchanged with and without packets; pairing by `PPS_COUNT` without NTP; searches triggered by loss of lock and by the ARM, with the re-lock rules of P8 |
+| M5 | each board on its own FS725, cabled, acquisition (§5.2), Kalman + FS725 steering loop closed | PPS_A − PPS_B on a time-interval counter converges over the long term |
 | M6 | replace cables with the 5.8 GHz BPF, amplifier and antenna air link | same metrics as M5; record multipath and SNR effects |
 
 Every piece of evidence must say whether it comes from simulation, synthesis or board measurement. The final metric is PPS_A − PPS_B measured by an external time-interval counter, not the θ̂ reported by the system itself.
@@ -268,7 +322,10 @@ Item-by-item progress and evidence are tracked in `plan/checklist.md`.
 
 1. **Board model and external reference input:** can the board clock chain take a 10 MHz external reference, and can both RFDC and fabric clocks be derived from it?
 2. **Antennas:** separate TX/RX antennas, or one antenna with a T/R switch? If shared, the PL must drive the switch at target ticks and protect the LNA.
-3. **Inter-node data channel:** Ethernet by default; without it, measurements must be modulated into the RF bursts.
-4. **FS725 coarse PPS alignment:** can the PPS phase be jumped once to near the target (for example by syncing to the 1PPS input)? If not, another way to do the initial coarse alignment is needed.
+3. **Measurement packet:** measurements ride in the bursts (§5.1). Open: the spreading factor L, measured as §5.1 describes (L = 64 until then), and the packet's fields and registers (registers only added keep `VERSION`'s major; changing existing ones bumps it, `docs/ABI.md` §14).
+4. **FS725 coarse PPS alignment:** the PRS10 moves its 1 pps output by PP in 1 ns steps; §5.2 uses that with the offset found by RF acquisition (`place_pulse()`), not yet tested. Time-tagging the peer's PPS on the rear 1 pps input (TT?, 1 ns, `rf_clock.fs725 align`) remains a bench alternative.
 5. **Target accuracy:** ns level is reachable with code correlation; 100 ps or better needs carrier-phase measurement and tighter handling of the PPS sub-tick phase.
 6. **Regulations:** 5.8 GHz transmit power and occupied-bandwidth limits.
+7. **Security:** monitoring the one-way delay; an innovation gate in the Kalman filter; the threshold for the earliest peak (P8); a message authentication code on the packet; keyed codes (§5.2) and their keys.
+8. **Polarization in rain:** with the two directions on orthogonal polarizations, rain's differential phase makes the link non-reciprocal (estimated at 10–20 ps over 40 km in heavy rain, not measured); both directions on one polarization would avoid it.
+9. **RX window length:** today's 43848 samples give 11008 lags (13.8 µs) and a 2.4 ms search with 1024 DSP; a longer window widens the range a search and A's first catch of B (§5.2) cover, and lengthens the search in proportion. The window length is a parameter of the RTL. It starts at 43848 samples, which this design did not derive: it is the window of the M3/M4 node (the burst's 32841 samples, 1.25 µs before the expected arrival and 10 µs after it), kept so that the RX windows saved in M4 serve as test vectors. Its final value follows from how well the link distance is known (A's first catch of B needs the delay to within a quarter of the lag range) and from how far after the direct peak the multipath reaches.
