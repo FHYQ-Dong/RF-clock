@@ -266,7 +266,13 @@ class PLInterfaceTests(unittest.TestCase):
             PLClient(self.regs, self.clock, monotonic=lambda: now[0],
                      sleep=lambda s: now.__setitem__(0, now[0] + s)).wait_next_pps(timeout=1.0)
 
+    def test_a_1_x_bitstream_is_refused(self):
+        self.regs.values[abi.ABI.REG.VERSION] = 0x0001_0003
+        with self.assertRaises(IdentityError):
+            self.client.validate()
+
     def test_pps_registers_need_abi_1_1(self):
+        self.client.expected_major = 1
         self.regs.values[abi.ABI.REG.VERSION] = 0x0001_0000
         self.client.validate()
         with self.assertRaises(IdentityError):
@@ -282,6 +288,7 @@ class PLInterfaceTests(unittest.TestCase):
             self.client.arm_tx(1000, 2, repeat=0)
 
     def test_tx_repeat_not_written_before_abi_1_3(self):
+        self.client.expected_major = 1
         self.regs.values[abi.ABI.REG.VERSION] = 0x0001_0002
         self.client.validate()
         self._on_tx_doorbell(abi.ResultCode.ARMED)
@@ -294,6 +301,7 @@ class PLInterfaceTests(unittest.TestCase):
     def test_build_version_needs_abi_1_2(self):
         self.regs.values[abi.ABI.REG.BUILD_VERSION] = 0x01_02_03_04
         self.assertEqual(self.client.build_version(), "1.2.3.4")
+        self.client.expected_major = 1
         self.regs.values[abi.ABI.REG.VERSION] = 0x0001_0001
         self.client.validate()
         with self.assertRaises(IdentityError):

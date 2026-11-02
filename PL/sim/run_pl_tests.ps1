@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    # Tests to run: p0 p1 p3 p4 top, or ALL.
+    # Tests to run: p0 p1 p3 p4 top est burst slots tracker search packet top2, or ALL
+    # (every test but top2, the two-node run, which takes about half an hour).
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]] $Test = @('ALL')
 )
@@ -13,16 +14,8 @@ $srcDir = (Resolve-Path (Join-Path $simDir '..\src')).Path
 $buildDir = Join-Path ([System.IO.Path]::GetTempPath()) 'rfclock_pl_sim'
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
-$sources = @(
-    'p0_clock_reset.v'
-    'p1_timebase_pps.v'
-    'p2_control_regs.v'
-    'p3_tx_player.v'
-    'p4_rx_capture.v'
-    'p6_status.v'
-    'p_async_fifo.v'
-    'p_top.v'
-) | ForEach-Object { Join-Path $srcDir $_ }
+# Every RTL source; each testbench names its top with -s.
+$sources = @(Get-ChildItem -LiteralPath $srcDir -Filter '*.v' | Sort-Object Name | ForEach-Object { $_.FullName })
 
 $testMap = [ordered]@{
     p0  = 'tb_p0_clock_reset'
@@ -30,12 +23,21 @@ $testMap = [ordered]@{
     p3  = 'tb_p3_tx_player'
     p4  = 'tb_p4_rx_capture'
     top = 'tb_p_top'
+    est     = 'tb_p_estimator'
+    burst   = 'tb_p3_burst_gen'
+    slots   = 'tb_p7_slot_engine'
+    tracker = 'tb_p8_tracker'
+    search  = 'tb_p8_search'
+    packet  = 'tb_p9_packet'
+    top2    = 'tb_p_top2'
 }
+$slowTests = @('top2')
 
 $selected = [System.Collections.Generic.List[string]]::new()
 foreach ($requested in $Test) {
     if ($requested -ieq 'ALL') {
-        $testMap.Keys | ForEach-Object { if (-not $selected.Contains($_)) { $selected.Add($_) } }
+        $testMap.Keys | Where-Object { $slowTests -notcontains $_ } |
+            ForEach-Object { if (-not $selected.Contains($_)) { $selected.Add($_) } }
     } elseif ($testMap.Contains($requested.ToLowerInvariant())) {
         $name = $requested.ToLowerInvariant()
         if (-not $selected.Contains($name)) { $selected.Add($name) }
@@ -66,6 +68,12 @@ if (-not (Test-Path -LiteralPath $vvpCommand)) {
     $vvpCommand = (Get-Command vvp -ErrorAction Stop).Source
 }
 
+# The 2.0 testbenches compare with rf_clock.plmodel: write its vectors where vvp runs.
+$repoDir = (Resolve-Path (Join-Path $simDir '..\..')).Path
+Write-Host "[GEN  ] vectors"
+& uv run --project $repoDir python (Join-Path $simDir 'gen_vectors.py') $buildDir
+if ($LASTEXITCODE -ne 0) { Write-Error 'gen_vectors.py failed.' }
+
 $failed = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $selected) {
     $top = $testMap[$name]
@@ -86,7 +94,12 @@ foreach ($name in $selected) {
 
     Write-Host "[RUN  ] $name"
     # The testbenches print "PASS <top>" or "FAIL ..." and always $finish.
-    $runOutput = @(& $vvpCommand '-n' $outputPath 2>&1 | ForEach-Object { "$($_)" })
+    Push-Location $buildDir
+    try {
+        $runOutput = @(& $vvpCommand '-n' $outputPath 2>&1 | ForEach-Object { "$($_)" })
+    } finally {
+        Pop-Location
+    }
     $runOutput | Where-Object { $_ -match '^(PASS|FAIL)' } | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0 -or -not ($runOutput -match "^PASS $top")) {
         $failed.Add($name)

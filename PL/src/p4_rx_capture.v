@@ -18,6 +18,10 @@
 //
 // dma_ready is the synchronized S2MM tready level: software programs the
 // S2MM transfer before ringing the RX doorbell.
+//
+// Since 2.0 the slot engine owns the windows while it is enabled (ext_busy):
+// P2's doorbell is then refused with RC_REJ_BUSY, and the engine's internal
+// command (int_doorbell, for SLOT_COPY) arms a window with the same checks.
 module p4_rx_capture #(
     parameter integer DATA_W         = 256,
     // AXI DMA simple-mode length is at most 26 bits (2**26 - 1 bytes).
@@ -34,6 +38,10 @@ module p4_rx_capture #(
     input  wire              cancel,
     input  wire [63:0]       cmd_target,
     input  wire [31:0]       cmd_length,
+    input  wire              ext_busy,
+    input  wire              int_doorbell,
+    input  wire [63:0]       int_target,
+    input  wire [31:0]       int_length,
     // RFDC ADC AXI4-Stream (no backpressure).
     input  wire [DATA_W-1:0] s_axis_adc_tdata,
     input  wire              s_axis_adc_tvalid,
@@ -103,6 +111,11 @@ module p4_rx_capture #(
     reg        tail_pending;
     reg        ack_seen;
 
+    // the command: the engine's internal one, or P2's while the engine is off
+    wire        db        = int_doorbell || (doorbell && !ext_busy);
+    wire [63:0] db_target = int_doorbell ? int_target : cmd_target;
+    wire [31:0] db_length = int_doorbell ? int_length : cmd_length;
+
     wire fifo_full;
     wire at_start  = (state == ST_ARMED) && (tick_d == target);
     wire in_window = at_start || (state == ST_RUNNING);
@@ -170,12 +183,14 @@ module p4_rx_capture #(
 
             case (state)
                 ST_IDLE, ST_DONE: begin
-                    if (doorbell) begin
+                    if (doorbell && ext_busy && !int_doorbell) begin
+                        result <= RC_REJ_BUSY;
+                    end else if (db) begin
                         if (!time_valid)
                             result <= RC_REJ_TIME_INVALID;
-                        else if (cmd_length == 32'd0 || cmd_length > MAX_BEATS)
+                        else if (db_length == 32'd0 || db_length > MAX_BEATS)
                             result <= RC_REJ_LENGTH;
-                        else if (cmd_target < raw_tick + MIN_LEAD_TICKS)
+                        else if (db_target < raw_tick + MIN_LEAD_TICKS)
                             result <= RC_REJ_STALE;
                         else if (!dma_ready)
                             result <= RC_REJ_DMA_NOT_READY;
@@ -184,8 +199,8 @@ module p4_rx_capture #(
                             result       <= RC_ARMED;
                             flags        <= 4'd0;
                             beats        <= 32'd0;
-                            target       <= cmd_target;
-                            end_tick     <= cmd_target + {32'd0, cmd_length} - 64'd1;
+                            target       <= db_target;
+                            end_tick     <= db_target + {32'd0, db_length} - 64'd1;
                             tail_pending <= 1'b0;
                             ack_seen     <= 1'b0;
                         end

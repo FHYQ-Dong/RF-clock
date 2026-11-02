@@ -158,7 +158,7 @@ class PLClient:
         *,
         clock_status_offset: int = 0,
         clock_locked_mask: int = 1,
-        expected_major: int = 1,
+        expected_major: int = abi.ABI.VERSION >> 16,
         monotonic=time.monotonic,
         sleep=time.sleep,
     ) -> None:
@@ -287,7 +287,7 @@ class PLClient:
             raise ValueError(f"repeat must be 1..{abi.ABI.TX_REPEAT_MAX}")
         # TX_REPEAT exists from ABI 1.3; writing it on an older bitstream is a
         # bus error, so it is only written where it exists.
-        has_repeat = not rx and self._info is not None and (self._info.version & 0xFFFF) >= 3
+        has_repeat = not rx and self._info is not None and self._info.version >= 0x0001_0003
         if repeat != 1 and not has_repeat:
             self._require_minor(3, "TX_REPEAT")
         state = self.status().rx_state if rx else self.status().tx_state
@@ -425,7 +425,8 @@ class PLClient:
         self._write(abi.ABI.REG.CONTROL, 1 << abi.ABI.CTRL.CLEAR_FAULT)
 
     def _require_minor(self, minor: int, what: str) -> None:
-        if self._info is None or (self._info.version & 0xFFFF) < minor:
+        """A feature added in ABI 1.``minor``: every later version has it."""
+        if self._info is None or self._info.version < ((1 << 16) | minor):
             raise IdentityError(f"{what} needs PL ABI 1.{minor}; call validate() on a newer bitstream")
 
     def build_version(self) -> str:

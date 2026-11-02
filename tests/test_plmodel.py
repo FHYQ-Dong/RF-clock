@@ -133,3 +133,33 @@ def test_the_packet_is_despread_coherently_from_the_peak(angle):
     assert peak is not None and peak.lag == 300
     bits = p9.despread(rx_i, rx_q, p9.packet_start(peak.lag), peak.c_i, peak.c_q, p9.code_reference(taps))
     assert p9.unpack(p9.from_bits(bits)) == MEASUREMENT
+
+
+def test_the_fraction_is_kept_in_i32():
+    assert p8.subsample(100, 300, 300) == 2 ** 31 - 1  # +0.5 sample
+    assert p8.subsample(300, 300, 100) == -2 ** 31
+
+
+def test_the_tracker_takes_samples_beyond_the_window_as_zero():
+    rng = np.random.default_rng(3)
+    rx_i, rx_q, ref = (rng.integers(-1000, 1000, n) for n in (300, 300, 100))
+    i, q = p8.track_correlations(rx_i, rx_q, ref, 1)
+    pad_i, pad_q = (np.concatenate([np.zeros(8, dtype=np.int64), a, np.zeros(8, dtype=np.int64)]) for a in (rx_i, rx_q))
+    want_i, want_q = p8.correlate(pad_i, pad_q, ref, 8 + 1 - 4, 9)
+    assert list(i) == list(want_i) and list(q) == list(want_q)
+    end_i, _ = p8.track_correlations(rx_i, rx_q, ref, 200)  # lags 196 .. 204, the last 3 past the window
+    assert end_i[0] == p8.correlate(rx_i, rx_q, ref, 196, 1)[0][0]
+
+
+def test_mitchell_log_and_quality():
+    assert [p8.log2_mitchell(v) for v in (0, 1, 2, 3, 24, 1 << 93)] == [0, 0, 16, 24, 64 + 8, 16 * 93]
+    assert p8.quality(1 << 60, 1 << 40, 0) == (16 * 20 * 771) >> 10
+    assert p8.quality(1, 1 << 40, 0) == 0  # clamped
+    assert p8.quality(1 << 93, 1, 1000) == 255
+
+
+def test_t_rx_rounds_the_fraction_to_the_nearest_fs():
+    assert p8.t_rx_fs(1000, 900, 3, 0) == 100 * 10_000_000 + 3 * 1_250_000
+    assert p8.t_rx_fs(0, 0, 0, 2 ** 31) == 625_000          # half a sample
+    assert p8.t_rx_fs(0, 0, 0, -2 ** 31) == -625_000
+    assert p8.t_rx_fs(0, 0, 0, 1717) == 0 and p8.t_rx_fs(0, 0, 0, 1718) == 1  # 0.4997 / 0.5000 fs

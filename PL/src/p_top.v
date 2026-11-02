@@ -7,6 +7,12 @@
 // 3.2 GB/s through a 128-bit HP port after the BD width converter).
 //
 // P5 (RFDC IP, MTS/SYSREF, clocking) lives in the block design, not here.
+//
+// Since 2.0 the slot engine (P7) runs the ping-pong: bursts made from chips
+// (p3_burst_gen) with the measurement packet (P9), windows into the
+// correlator (P8), measurements and decoded packets into the queue.  The
+// first version's P3 player and P4 window serve development tests with the
+// engine off; P4 also copies a window to DDR on SLOT_COPY.
 // The X_INTERFACE_* attributes let the block design (module reference) see
 // the clock/reset associations and the BRAM port as interfaces.
 module p_top #(
@@ -24,10 +30,19 @@ module p_top #(
     // rf-clock package version A.B.C.D (0xAABBCCDD) set by the build script
     // from pyproject.toml; software compares it with its own version.  An integer
     // so the block design can set it as a plain decimal CONFIG value.
-    parameter integer BUILD_VERSION  = 0
+    parameter integer BUILD_VERSION  = 0,
+    // 2.0: slots, windows, the search, the queue
+    parameter [31:0]  SLOT_TICKS     = 32'd200000,
+    parameter [31:0]  SLOTS          = 32'd500,
+    parameter integer WINDOW_BEATS   = 5481,     // 43848 samples: the correlator's window
+    parameter integer SEARCH_LANES   = 1024,
+    parameter integer QUEUE_ENTRIES  = 1024,
+    parameter integer CHIP_AW        = 11,       // code memories: 2^(CHIP_AW+5) chips
+    parameter integer WIN_BW         = 13,       // window beat address bits
+    parameter integer LAG_KW         = 16        // lag bits
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:s_axis_adc, ASSOCIATED_RESET arst_n" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:s_axis_adc:BURST_PORT:QUEUE_PORT, ASSOCIATED_RESET arst_n" *)
     input  wire                      clk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 arst_n RST" *)
     (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
@@ -44,7 +59,7 @@ module p_top #(
     input  wire                      dma_arst_n,
 
     // AXI4-Lite control (through an AXI clock converter onto clk).
-    input  wire [7:0]                s_axi_awaddr,
+    input  wire [11:0]               s_axi_awaddr,
     input  wire                      s_axi_awvalid,
     output wire                      s_axi_awready,
     input  wire [31:0]               s_axi_wdata,
@@ -54,7 +69,7 @@ module p_top #(
     output wire [1:0]                s_axi_bresp,
     output wire                      s_axi_bvalid,
     input  wire                      s_axi_bready,
-    input  wire [7:0]                s_axi_araddr,
+    input  wire [11:0]               s_axi_araddr,
     input  wire                      s_axi_arvalid,
     output wire                      s_axi_arready,
     output wire [31:0]               s_axi_rdata,
@@ -75,6 +90,32 @@ module p_top #(
     input  wire [DATA_W-1:0]         bram_wrdata,
     (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BRAM_PORTA DOUT" *)
     output wire [DATA_W-1:0]         bram_rddata,
+
+    // Burst memory (2.0), AXI BRAM Controller port, 32-bit, 64 KiB (docs/ABI.md 4.9).
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BURST_PORT EN" *)
+    (* X_INTERFACE_PARAMETER = "MASTER_TYPE BRAM_CTRL, MEM_ECC NONE, MEM_WIDTH 32, MEM_SIZE 65536, READ_WRITE_MODE READ_WRITE, READ_LATENCY 1" *)
+    input  wire                      burst_en,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BURST_PORT WE" *)
+    input  wire [3:0]                burst_we,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BURST_PORT ADDR" *)
+    input  wire [15:0]               burst_addr,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BURST_PORT DIN" *)
+    input  wire [31:0]               burst_wrdata,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 BURST_PORT DOUT" *)
+    output wire [31:0]               burst_rddata,
+
+    // Measurement queue (2.0), AXI BRAM Controller port, 32-bit, 64 KiB, read only (4.12).
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 QUEUE_PORT EN" *)
+    (* X_INTERFACE_PARAMETER = "MASTER_TYPE BRAM_CTRL, MEM_ECC NONE, MEM_WIDTH 32, MEM_SIZE 65536, READ_WRITE_MODE READ_WRITE, READ_LATENCY 1" *)
+    input  wire                      queue_en,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 QUEUE_PORT WE" *)
+    input  wire [3:0]                queue_we,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 QUEUE_PORT ADDR" *)
+    input  wire [15:0]               queue_addr,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 QUEUE_PORT DIN" *)
+    input  wire [31:0]               queue_wrdata,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:bram:1.0 QUEUE_PORT DOUT" *)
+    output wire [31:0]               queue_rddata,
 
     // RFDC DAC AXI4-Stream.
     output wire [DATA_W-1:0]         m_axis_dac_tdata,
@@ -168,6 +209,57 @@ module p_top #(
         .pps_fault_event    (pps_fault_event)
     );
 
+    // ---------------- 2.0 signals ----------------
+    localparam integer SPREAD = 64;
+    localparam integer PBITS  = 288;
+    localparam [31:0]  PACKET_CHIPS = PBITS * SPREAD;
+
+    wire [2:0]  slot_control;
+    wire [31:0] slot_tx_offset, slot_rx_offset;
+    wire        slot_copy, slots_running, slot_copy_pending;
+    wire [8:0]  slot;
+    wire [31:0] slot_skipped_count;
+    wire [16:0] burst_prn_chips;
+    wire [15:0] burst_guard_chips;
+    reg  [31:0] burst_count, packet_tx_count;
+    wire [31:0] burst_mem_rej_count;
+    wire        p8_cmd_search, p8_cmd_accept_s, p8_cmd_accept_e, p8_cmd_unlock;
+    wire [31:0] p8_config, quality_offset, packet_config_id, queue_tail;
+    wire        p8_locked, p8_search_busy, p8_waiting;
+    wire [15:0] p8_lock_lag;
+    wire [46:0] p8_lock_mag;
+    wire [31:0] p8_lost_count, p8_relock_count, p8_search_count, p8_refused_count, p8_search_lags;
+    wire [31:0] sr_seq, sr_pps_count;
+    wire [8:0]  sr_slot;
+    wire [3:0]  sr_flags;
+    wire [63:0] sr_tick;
+    wire [15:0] sr_s_lag, sr_e_lag;
+    wire [31:0] sr_s_fraction, sr_s_phase, sr_e_fraction, sr_e_phase;
+    wire [46:0] sr_s_magnitude, sr_e_magnitude, sr_sidelobe;
+    wire [31:0] packet_rx_count, packet_crc_count;
+    wire [31:0] queue_head, queue_dropped_count;
+
+    // P7 and its units
+    wire               burst_busy, burst_fault, burst_started;
+    wire [63:0]        burst_actual_tick;
+    wire               rx_busy_p8;
+    wire               role_b, packets_active;
+    wire [CHIP_AW+5:0] prn_active;
+    wire [15:0]        guard_active;
+    wire [31:0]        burst_beats, span_beats;
+    wire               tx_arm, rx_arm, rx_copy;
+    wire [63:0]        ev_tick, sec_tick;
+    wire [8:0]         ev_slot;
+    wire [31:0]        sec_count;
+
+    // the burst and the span as the registers configure them now (the engine
+    // takes them at the next PPS edge)
+    wire [31:0] burst_beats_cfg = {15'd0, burst_prn_chips} + 32'd10 +
+                                  (slot_control[SLOTCTL_PACKETS] ? {16'd0, burst_guard_chips} + PACKET_CHIPS : 32'd0);
+    wire [31:0] span_beats_cfg  = WINDOW_BEATS + {16'd0, burst_guard_chips} + PACKET_CHIPS + 32'd1;
+    // the engine owns the DAC, the windows and the burst memory
+    wire        engine_lock = slot_control[SLOTCTL_ENABLE] || slots_running;
+
     // ---------------- P2 ----------------
     wire        tx_doorbell, tx_cancel, rx_doorbell, rx_cancel, clear_fault;
     wire [63:0] tx_target, rx_target;
@@ -198,7 +290,16 @@ module p_top #(
         .TX_DEPTH_BEATS (TX_DEPTH),
         .RX_MAX_BEATS   (RX_MAX_BEATS),
         .MIN_LEAD_TICKS (MIN_LEAD_TICKS),
-        .BUILD_VERSION  (BUILD_VERSION)
+        .BUILD_VERSION  (BUILD_VERSION),
+        .SLOT_TICKS     (SLOT_TICKS),
+        .SLOTS          (SLOTS),
+        .WINDOW_BEATS   (WINDOW_BEATS),
+        .SPREAD         (SPREAD),
+        .PACKET_BITS    (PBITS),
+        .CHIP_CHIPS     (32'd1 << (CHIP_AW + 5)),
+        .TRACK_HALF     (32'd4),
+        .SEARCH_LANES   (SEARCH_LANES),
+        .QUEUE_ENTRIES  (QUEUE_ENTRIES)
     ) u_p2 (
         .clk                (clk),
         .rst                (rst),
@@ -259,10 +360,66 @@ module p_top #(
         .rx_seq             (rx_seq),
         .rx_beats           (rx_beats),
         .rx_actual_tick     (rx_actual_tick),
-        .rx_invalid_count   (rx_invalid_count)
+        .rx_invalid_count   (rx_invalid_count),
+        .slot_control       (slot_control),
+        .slot_tx_offset     (slot_tx_offset),
+        .slot_rx_offset     (slot_rx_offset),
+        .slot_copy          (slot_copy),
+        .slots_running      (slots_running),
+        .slot               (slot),
+        .slot_skipped_count (slot_skipped_count),
+        .slot_copy_pending  (slot_copy_pending),
+        .rx_span_beats      (span_beats_cfg),
+        .burst_prn_chips    (burst_prn_chips),
+        .burst_guard_chips  (burst_guard_chips),
+        .burst_beats        (burst_beats_cfg),
+        .burst_count        (burst_count),
+        .burst_mem_rej_count(burst_mem_rej_count),
+        .p8_search          (p8_cmd_search),
+        .p8_accept_strongest(p8_cmd_accept_s),
+        .p8_accept_earliest (p8_cmd_accept_e),
+        .p8_unlock          (p8_cmd_unlock),
+        .p8_config          (p8_config),
+        .quality_offset     (quality_offset),
+        .p8_locked          (p8_locked),
+        .p8_search_busy     (p8_search_busy),
+        .p8_waiting         (p8_waiting),
+        .p8_lock_lag        (p8_lock_lag),
+        .p8_lock_mag        (p8_lock_mag),
+        .p8_lost_count      (p8_lost_count),
+        .p8_relock_count    (p8_relock_count),
+        .p8_search_count    (p8_search_count),
+        .p8_refused_count   (p8_refused_count),
+        .p8_search_lags     (p8_search_lags),
+        .sr_seq             (sr_seq),
+        .sr_pps_count       (sr_pps_count),
+        .sr_slot            (sr_slot),
+        .sr_flags           (sr_flags),
+        .sr_tick            (sr_tick),
+        .sr_s_lag           (sr_s_lag),
+        .sr_s_fraction      (sr_s_fraction),
+        .sr_s_phase         (sr_s_phase),
+        .sr_s_magnitude     (sr_s_magnitude),
+        .sr_e_lag           (sr_e_lag),
+        .sr_e_fraction      (sr_e_fraction),
+        .sr_e_phase         (sr_e_phase),
+        .sr_e_magnitude     (sr_e_magnitude),
+        .sr_sidelobe        (sr_sidelobe),
+        .packet_config_id   (packet_config_id),
+        .packet_tx_count    (packet_tx_count),
+        .packet_rx_count    (packet_rx_count),
+        .packet_crc_count   (packet_crc_count),
+        .queue_tail         (queue_tail),
+        .queue_head         (queue_head),
+        .queue_dropped_count(queue_dropped_count)
     );
 
     // ---------------- P3 ----------------
+    wire [DATA_W-1:0] player_tdata, burst_tdata;
+    wire              player_tvalid, burst_tvalid;
+    assign m_axis_dac_tdata  = player_tdata | burst_tdata;   // each is zero outside its bursts
+    assign m_axis_dac_tvalid = player_tvalid | burst_tvalid;
+
     p3_tx_player #(
         .DATA_W         (DATA_W),
         .ADDR_W         (TX_ADDR_W),
@@ -274,6 +431,7 @@ module p_top #(
         .rst           (rst),
         .raw_tick      (raw_tick),
         .time_valid    (time_valid),
+        .ext_busy      (engine_lock),
         .doorbell      (tx_doorbell),
         .cancel        (tx_cancel),
         .clear_fault   (clear_fault),
@@ -285,8 +443,8 @@ module p_top #(
         .bram_addr     (bram_addr),
         .bram_wrdata   (bram_wrdata),
         .bram_rddata   (bram_rddata),
-        .m_axis_tdata  (m_axis_dac_tdata),
-        .m_axis_tvalid (m_axis_dac_tvalid),
+        .m_axis_tdata  (player_tdata),
+        .m_axis_tvalid (player_tvalid),
         .m_axis_tready (m_axis_dac_tready),
         .state         (tx_state),
         .result        (tx_result),
@@ -310,6 +468,10 @@ module p_top #(
         .cancel            (rx_cancel),
         .cmd_target        (rx_target),
         .cmd_length        (rx_length),
+        .ext_busy          (engine_lock),
+        .int_doorbell      (rx_arm && rx_copy),
+        .int_target        (ev_tick),
+        .int_length        (span_beats),
         .s_axis_adc_tdata  (s_axis_adc_tdata),
         .s_axis_adc_tvalid (s_axis_adc_tvalid),
         .adc_overrange     (overrange_sync[1]),
@@ -330,12 +492,152 @@ module p_top #(
     );
     assign m_axis_s2mm_tkeep = {(DATA_W/8){1'b1}};
 
+    // ---------------- burst memory ----------------
+    wire [3:0]         prn_we, code_we;
+    wire [CHIP_AW-1:0] mem_waddr;
+    wire [31:0]        mem_wdata;
+    wire [81*16-1:0]   taps;
+
+    p_burst_mem #(.AW(CHIP_AW)) u_bmem (
+        .clk (clk), .rst (rst), .lock (engine_lock),
+        .bram_en (burst_en), .bram_we (burst_we), .bram_addr (burst_addr),
+        .bram_wrdata (burst_wrdata), .bram_rddata (burst_rddata),
+        .prn_we (prn_we), .code_we (code_we), .mem_waddr (mem_waddr), .mem_wdata (mem_wdata),
+        .taps (taps), .rej_count (burst_mem_rej_count)
+    );
+
+    // ---------------- P7 ----------------
+
+    p7_slot_engine #(
+        .SLOT_TICKS (SLOT_TICKS),
+        .SLOTS      (SLOTS),
+        .AW         (CHIP_AW)
+    ) u_p7 (
+        .clk (clk), .rst (rst), .raw_tick (raw_tick), .time_valid (time_valid), .pps_locked (pps_locked),
+        .pps_event (pps_event), .pps_tick (pps_tick), .pps_count (pps_count),
+        .cfg_control (slot_control), .cfg_tx_offset (slot_tx_offset), .cfg_rx_offset (slot_rx_offset),
+        .cfg_prn_chips (burst_prn_chips[CHIP_AW+5:0]), .cfg_guard_chips (burst_guard_chips),
+        .window_beats (WINDOW_BEATS), .packet_chips (PACKET_CHIPS), .copy_request (slot_copy),
+        .tx_busy (burst_busy), .tx_fault (burst_fault), .rx_busy (rx_busy_p8),
+        .running (slots_running), .slot (slot), .skipped_count (slot_skipped_count),
+        .copy_pending (slot_copy_pending), .role_b (role_b), .packets (packets_active),
+        .prn_chips (prn_active), .guard_chips (guard_active),
+        .burst_beats (burst_beats), .span_beats (span_beats),
+        .tx_arm (tx_arm), .rx_arm (rx_arm), .rx_copy (rx_copy),
+        .ev_tick (ev_tick), .ev_slot (ev_slot), .sec_count (sec_count), .sec_tick (sec_tick)
+    );
+
+    // ---------------- P3 bursts from chips ----------------
+    wire [PBITS-1:0] packet;
+
+    p3_burst_gen #(.AW(CHIP_AW), .SPREAD(SPREAD), .PBITS(PBITS)) u_burst (
+        .clk (clk), .rst (rst), .raw_tick (raw_tick), .clear_fault (clear_fault),
+        .arm (tx_arm), .target (ev_tick), .prn_chips (prn_active), .guard_chips (guard_active),
+        .packets (packets_active), .beats (burst_beats), .packet (packet),
+        .prn_we (prn_we), .code_we (code_we), .mem_waddr (mem_waddr), .mem_wdata (mem_wdata), .taps (taps),
+        .m_axis_tdata (burst_tdata), .m_axis_tvalid (burst_tvalid), .m_axis_tready (m_axis_dac_tready),
+        .busy (burst_busy), .fault (burst_fault), .started (burst_started), .actual_tick (burst_actual_tick)
+    );
+
+    always @(posedge clk) begin
+        if (rst) begin
+            burst_count     <= 32'd0;
+            packet_tx_count <= 32'd0;
+        end else if (burst_started) begin
+            burst_count <= burst_count + 32'd1;
+            if (packets_active) packet_tx_count <= packet_tx_count + 32'd1;
+        end
+    end
+
+    // ---------------- P8 ----------------
+    // ADC beats with the raw_tick of their bus cycle, as P4 takes them
+    reg  [DATA_W-1:0] adc_r;
+    reg               adc_rv, adc_ror;
+    reg  [63:0]       tick_r;
+    always @(posedge clk) begin
+        adc_r   <= s_axis_adc_tdata;
+        adc_rv  <= rst ? 1'b0 : s_axis_adc_tvalid;
+        adc_ror <= rst ? 1'b0 : overrange_sync[1];
+        tick_r  <= raw_tick;
+    end
+
+    wire               span_v, span_dsp;
+    wire [31:0]        span_m, span_pps_count;
+    wire [DATA_W-1:0]  span_d;
+    wire [15:0]        span_lag;
+    wire [93:0]        span_corr;
+    wire [8:0]         span_slot;
+    wire [63:0]        span_tick;
+    wire               meas_valid;
+    wire [63:0]        meas_trx;
+    wire [31:0]        meas_phase;
+    wire [7:0]         meas_quality;
+    wire [3:0]         meas_flags;
+    wire               own_req, own_ack, peer_req, peer_ack;
+    wire [511:0]       own_entry, peer_entry;
+
+    p8_correlator #(
+        .N  (SEARCH_LANES),
+        .AW (CHIP_AW),
+        .BW (WIN_BW),
+        .KW (LAG_KW),
+        .WB (WINDOW_BEATS)
+    ) u_p8 (
+        .clk (clk), .rst (rst), .time_valid (time_valid), .running (slots_running),
+        .adc_d (adc_r), .adc_v (adc_rv), .adc_or (adc_ror), .tick_d (tick_r),
+        .rx_arm (rx_arm), .ev_tick (ev_tick), .ev_slot (ev_slot), .sec_count (sec_count), .sec_tick (sec_tick),
+        .span_beats (span_beats), .prn_chips (prn_active), .packets (packets_active),
+        .threshold (p8_config[P8CFG_THRESHOLD_LSB +: 16]), .lock_min (p8_config[P8CFG_LOCK_MIN_LSB +: 16]),
+        .quality_offset (quality_offset),
+        .cmd_search (p8_cmd_search), .cmd_accept_strongest (p8_cmd_accept_s),
+        .cmd_accept_earliest (p8_cmd_accept_e), .cmd_unlock (p8_cmd_unlock),
+        .prn_we (prn_we), .mem_waddr (mem_waddr), .mem_wdata (mem_wdata), .taps (taps),
+        .rx_busy (rx_busy_p8), .locked (p8_locked), .search_busy (p8_search_busy), .waiting (p8_waiting),
+        .lock_lag (p8_lock_lag), .lock_mag (p8_lock_mag),
+        .lost_count (p8_lost_count), .relock_count (p8_relock_count), .search_count (p8_search_count),
+        .refused_count (p8_refused_count), .search_lags (p8_search_lags),
+        .sr_seq (sr_seq), .sr_pps_count (sr_pps_count), .sr_slot (sr_slot), .sr_flags (sr_flags), .sr_tick (sr_tick),
+        .sr_s_lag (sr_s_lag), .sr_s_fraction (sr_s_fraction), .sr_s_phase (sr_s_phase), .sr_s_magnitude (sr_s_magnitude),
+        .sr_e_lag (sr_e_lag), .sr_e_fraction (sr_e_fraction), .sr_e_phase (sr_e_phase), .sr_e_magnitude (sr_e_magnitude),
+        .sr_sidelobe (sr_sidelobe),
+        .span_v (span_v), .span_m (span_m), .span_d (span_d), .span_dsp (span_dsp), .span_lag (span_lag),
+        .span_corr (span_corr), .span_pps_count (span_pps_count), .span_slot (span_slot), .span_tick (span_tick),
+        .meas_valid (meas_valid), .meas_trx (meas_trx), .meas_phase (meas_phase),
+        .meas_quality (meas_quality), .meas_flags (meas_flags),
+        .own_req (own_req), .own_entry (own_entry), .own_ack (own_ack)
+    );
+
+    // ---------------- P9 and the queue ----------------
+    p9_packet #(.AW(CHIP_AW), .SPREAD(SPREAD), .PBITS(PBITS)) u_p9 (
+        .clk (clk), .rst (rst),
+        .tx_arm (tx_arm), .ev_tick (ev_tick), .ev_slot (ev_slot), .sec_count (sec_count), .sec_tick (sec_tick),
+        .time_epoch (time_epoch[7:0]), .config_id (packet_config_id), .locked (p8_locked),
+        .pps_locked (pps_locked), .clocks_locked (clocks_locked),
+        .meas_valid (meas_valid), .meas_trx (meas_trx), .meas_phase (meas_phase),
+        .meas_quality (meas_quality), .meas_flags (meas_flags),
+        .packet (packet), .packet_ready (),
+        .span_v (span_v), .span_m (span_m), .span_d (span_d), .span_dsp (span_dsp), .span_lag (span_lag),
+        .span_corr (span_corr), .span_pps_count (span_pps_count), .span_slot (span_slot), .span_tick (span_tick),
+        .prn_chips (prn_active), .guard_chips (guard_active),
+        .code_we (code_we), .mem_waddr (mem_waddr), .mem_wdata (mem_wdata), .taps (taps),
+        .rx_count (packet_rx_count), .crc_count (packet_crc_count),
+        .peer_req (peer_req), .peer_entry (peer_entry), .peer_ack (peer_ack)
+    );
+
+    p9_queue #(.ENTRIES(QUEUE_ENTRIES)) u_queue (
+        .clk (clk), .rst (rst),
+        .own_req (own_req), .own_entry (own_entry), .own_ack (own_ack),
+        .peer_req (peer_req), .peer_entry (peer_entry), .peer_ack (peer_ack),
+        .tail (queue_tail), .head (queue_head), .dropped_count (queue_dropped_count),
+        .bram_en (queue_en), .bram_addr (queue_addr), .bram_rddata (queue_rddata)
+    );
+
     // ---------------- P6 ----------------
     wire [3:0] fault_in;
     assign fault_in[FB_LOCK_LOST]      = lock_lost_event;
     assign fault_in[FB_PPS]            = pps_fault_event;
     assign fault_in[FB_TICK_EXHAUSTED] = raw_tick_exhausted;
-    assign fault_in[FB_TX]             = tx_fault;
+    assign fault_in[FB_TX]             = tx_fault || burst_fault;
 
     p6_status #(
         .N (4)

@@ -340,7 +340,7 @@ set failed [catch {
     connect_bd_intf_net [intf rfdc/m20_axis] [intf adc_iq_combiner/S00_AXIS]
     connect_bd_intf_net [intf rfdc/m21_axis] [intf adc_iq_combiner/S01_AXIS]
     # ---------------------------------------------------------------
-    # p_top (P0-P4, P6).
+    # p_top (P0-P4, P6; since 2.0 P7-P9 and the measurement queue).
     # ---------------------------------------------------------------
     set top [create_bd_cell -type module -reference p_top p_top_0]
     set_property CONFIG.BUILD_VERSION $build_version $top
@@ -369,6 +369,16 @@ set failed [catch {
     connect_bd_net $clk_fabric  [pin tx_bram_ctrl/s_axi_aclk]
     connect_bd_net $rstn_fabric [pin tx_bram_ctrl/s_axi_aresetn]
     connect_bd_intf_net [intf tx_bram_ctrl/BRAM_PORTA] [intf p_top_0/BRAM_PORTA]
+
+    # Burst memory and measurement queue controllers (2.0): 32-bit BRAM ports
+    # of p_top, 64 KiB windows (docs/ABI.md 4.9, 4.12).
+    foreach {name port} {burst_bram_ctrl BURST_PORT queue_bram_ctrl QUEUE_PORT} {
+        set c [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 $name]
+        set_property -dict [list             CONFIG.PROTOCOL AXI4             CONFIG.DATA_WIDTH 32             CONFIG.SINGLE_PORT_BRAM 1             CONFIG.ECC_TYPE 0             CONFIG.READ_LATENCY 1         ] $c
+        connect_bd_net $clk_fabric  [pin $name/s_axi_aclk]
+        connect_bd_net $rstn_fabric [pin $name/s_axi_aresetn]
+        connect_bd_intf_net [intf $name/BRAM_PORTA] [intf p_top_0/$port]
+    }
 
     # RX DMA: S2MM only, simple mode, 26-bit length (docs/ABI.md §4.6.9).
     set dma [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:7.1 rx_dma]
@@ -406,10 +416,11 @@ set failed [catch {
     connect_bd_net $rstn_ps [pin clk_status_gpio/s_axi_aresetn]
     connect_bd_net [pin fabric_mmcm/locked] [pin clk_status_gpio/gpio_io_i]
 
-    # Control SmartConnect: PS HPM0 (pl_clk0) -> p_top regs and TX buffer
-    # (fabric clock), RFDC, DMA and clock-status registers (pl_clk0).
+    # Control SmartConnect: PS HPM0 (pl_clk0) -> p_top regs, TX buffer, burst
+    # memory and queue (fabric clock), RFDC, DMA and clock-status registers
+    # (pl_clk0).
     set sc_ctrl [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc_ctrl]
-    set_property -dict [list CONFIG.NUM_SI 1 CONFIG.NUM_MI 5 CONFIG.NUM_CLKS 2] $sc_ctrl
+    set_property -dict [list CONFIG.NUM_SI 1 CONFIG.NUM_MI 7 CONFIG.NUM_CLKS 2] $sc_ctrl
     connect_bd_net $clk_ps     [pin sc_ctrl/aclk]
     connect_bd_net $clk_fabric [pin sc_ctrl/aclk1]
     connect_bd_net $rstn_ps    [pin sc_ctrl/aresetn]
@@ -420,6 +431,8 @@ set failed [catch {
     connect_bd_intf_net [intf sc_ctrl/M02_AXI] [intf rfdc/s_axi]
     connect_bd_intf_net [intf sc_ctrl/M03_AXI] [intf rx_dma/S_AXI_LITE]
     connect_bd_intf_net [intf sc_ctrl/M04_AXI] [intf clk_status_gpio/S_AXI]
+    connect_bd_intf_net [intf sc_ctrl/M05_AXI] [intf burst_bram_ctrl/S_AXI]
+    connect_bd_intf_net [intf sc_ctrl/M06_AXI] [intf queue_bram_ctrl/S_AXI]
 
     # ---------------------------------------------------------------
     # Address map (fixed so software and docs/ABI.md can rely on it).
@@ -431,6 +444,8 @@ set failed [catch {
         clk_status_gpio/S_AXI/Reg 0xA0020000 4K
         rfdc/s_axi/Reg            0xA0040000 256K
         tx_bram_ctrl/S_AXI/Mem0   0xA0400000 4M
+        burst_bram_ctrl/S_AXI/Mem0 0xA0800000 64K
+        queue_bram_ctrl/S_AXI/Mem0 0xA0810000 64K
     } {
         set s [get_bd_addr_segs $seg -quiet]
         if {[llength $s] != 1} { error "address segment not found: $seg" }

@@ -18,6 +18,9 @@
 //
 // MIN_LEAD_TICKS must exceed TX_PIPE + 1 so an accepted target can be met.
 //
+// While the slot engine is enabled (ext_busy, since 2.0) the doorbell is
+// refused with RC_REJ_BUSY: the engine's bursts own the DAC.
+//
 // DEPTH need not be a power of two: port A addresses 2**ADDR_W beats, and
 // writes at or above DEPTH are dropped (reads there are undefined).
 module p3_tx_player #(
@@ -32,6 +35,7 @@ module p3_tx_player #(
     input  wire                   rst,
     input  wire [63:0]            raw_tick,
     input  wire                   time_valid,
+    input  wire                   ext_busy,
     // Commands from P2 (one-cycle pulses; fields sampled on doorbell).
     input  wire                   doorbell,
     input  wire                   cancel,
@@ -191,7 +195,9 @@ module p3_tx_player #(
             case (state)
                 ST_IDLE, ST_DONE: begin
                     if (doorbell) begin
-                        if (!time_valid)
+                        if (ext_busy)
+                            result <= RC_REJ_BUSY;
+                        else if (!time_valid)
                             result <= RC_REJ_TIME_INVALID;
                         else if (cmd_length == 32'd0 || cmd_length > DEPTH ||
                                  cmd_repeat == 32'd0 || cmd_repeat > TX_REPEAT_MAX)

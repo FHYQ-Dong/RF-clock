@@ -1,6 +1,7 @@
 `timescale 1ns / 1ps
 // P4: window timing, DMA stream content/TLAST, invalid-window handling
-// (FIFO overflow, ADC gap), DMA-not-ready reject, cancel.
+// (FIFO overflow, ADC gap), DMA-not-ready reject, cancel; since 2.0 the
+// doorbell refused while the slot engine is enabled and its internal command.
 //
 // Each ADC beat carries the raw_tick of the cycle it is on the bus, so a
 // correct capture contains target, target+1, ... in order.
@@ -27,6 +28,9 @@ module tb_p4_rx_capture;
     reg         doorbell = 0, cancel = 0;
     reg  [63:0] cmd_target = 0;
     reg  [31:0] cmd_length = 0;
+    reg         ext_busy = 0, int_doorbell = 0;
+    reg  [63:0] int_target = 0;
+    reg  [31:0] int_length = 0;
     wire [DATA_W-1:0] m_tdata;
     wire        m_tvalid, m_tlast;
     reg         m_tready = 1'b0;
@@ -43,6 +47,7 @@ module tb_p4_rx_capture;
         .clk(clk), .rst(rst), .raw_tick(raw_tick), .time_valid(time_valid),
         .doorbell(doorbell), .cancel(cancel),
         .cmd_target(cmd_target), .cmd_length(cmd_length),
+        .ext_busy(ext_busy), .int_doorbell(int_doorbell), .int_target(int_target), .int_length(int_length),
         .s_axis_adc_tdata(adc_tdata), .s_axis_adc_tvalid(adc_tvalid),
         .adc_overrange(1'b0),
         .dma_clk(dma_clk), .dma_rst(dma_rst),
@@ -174,6 +179,21 @@ module tb_p4_rx_capture;
         check(result == RC_RX_INVALID && flags[RXF_GAP], "gap invalidates window");
         check(rx_last[rx_n - 1] && rx_word[rx_n - 1] == 0, "tail beat carries TLAST");
         check(invalid_count == 2, "second invalid window counted");
+
+        // The slot engine enabled: P2's doorbell is refused, its own command is not.
+        ext_busy = 1;
+        submit(raw_tick + 40, 6);
+        check(result == RC_REJ_BUSY && state == ST_DONE, "doorbell refused while the engine is on");
+        start_n = rx_n;
+        tgt = raw_tick + 40;
+        @(negedge clk);
+        int_target = tgt; int_length = 7; int_doorbell = 1;
+        @(negedge clk);
+        int_doorbell = 0;
+        check(result == RC_ARMED, "internal command armed");
+        wait_done;
+        check(result == RC_DONE && rx_n - start_n == 7 && rx_word[start_n] == tgt[31:0], "internal window copied");
+        ext_busy = 0;
 
         if (errors == 0) $display("PASS tb_p4_rx_capture");
         else             $display("FAIL tb_p4_rx_capture (%0d errors)", errors);

@@ -20,7 +20,7 @@ module tb_p_top;
     reg arst_n = 1'b0;
     reg pps = 1'b0;
 
-    reg  [7:0]  awaddr = 0, araddr = 0;
+    reg  [11:0] awaddr = 0, araddr = 0;
     reg         awvalid = 0, wvalid = 0, bready = 0, arvalid = 0, rready = 0;
     reg  [31:0] wdata = 0;
     reg  [3:0]  wstrb = 0;
@@ -62,7 +62,10 @@ module tb_p_top;
         .PPS_PERIOD     (PPS_P),
         .PPS_TOLERANCE  (32'd1),
         .PPS_LOCK_COUNT (32'd2),
-        .BUILD_VERSION  (32'h0102_0304)
+        .BUILD_VERSION  (32'h0102_0304),
+        .WINDOW_BEATS   (64),
+        .SEARCH_LANES   (4),
+        .QUEUE_ENTRIES  (16)
     ) dut (
         .clk(clk), .arst_n(arst_n), .clocks_locked_async(1'b1), .pps_in(pps), .pps_trig_in(1'b0),
         .dma_clk(dma_clk), .dma_arst_n(arst_n),
@@ -73,6 +76,8 @@ module tb_p_top;
         .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid), .s_axi_rready(rready),
         .bram_en(bram_en), .bram_we(bram_we), .bram_addr(bram_addr),
         .bram_wrdata(bram_wrdata), .bram_rddata(bram_rddata),
+        .burst_en(1'b0), .burst_we(4'd0), .burst_addr(16'd0), .burst_wrdata(32'd0), .burst_rddata(),
+        .queue_en(1'b0), .queue_we(4'd0), .queue_addr(16'd0), .queue_wrdata(32'd0), .queue_rddata(),
         .m_axis_dac_tdata(dac_tdata), .m_axis_dac_tvalid(dac_tvalid), .m_axis_dac_tready(dac_tready),
         .s_axis_adc_tdata(adc_tdata), .s_axis_adc_tvalid(1'b1), .adc_overrange(1'b0),
         .m_axis_s2mm_tdata(s2mm_tdata), .m_axis_s2mm_tkeep(s2mm_tkeep),
@@ -121,7 +126,7 @@ module tb_p_top;
         end
     endtask
 
-    task axi_write(input [7:0] addr, input [31:0] data, input [3:0] strb, output [1:0] resp);
+    task axi_write(input [11:0] addr, input [31:0] data, input [3:0] strb, output [1:0] resp);
         begin
             @(negedge clk);
             awaddr = addr; awvalid = 1; wdata = data; wstrb = strb; wvalid = 1; bready = 1;
@@ -135,7 +140,7 @@ module tb_p_top;
         end
     endtask
 
-    task wr(input [7:0] addr, input [31:0] data);
+    task wr(input [11:0] addr, input [31:0] data);
         reg [1:0] r;
         begin
             axi_write(addr, data, 4'hF, r);
@@ -143,7 +148,7 @@ module tb_p_top;
         end
     endtask
 
-    task axi_read(input [7:0] addr, output [31:0] data, output [1:0] resp);
+    task axi_read(input [11:0] addr, output [31:0] data, output [1:0] resp);
         begin
             @(negedge clk);
             araddr = addr; arvalid = 1; rready = 1;
@@ -157,7 +162,7 @@ module tb_p_top;
         end
     endtask
 
-    task rd(input [7:0] addr, output [31:0] data);
+    task rd(input [11:0] addr, output [31:0] data);
         reg [1:0] r;
         begin
             axi_read(addr, data, r);
@@ -165,7 +170,7 @@ module tb_p_top;
         end
     endtask
 
-    task rd64(input [7:0] lo_addr, output [63:0] v);
+    task rd64(input [11:0] lo_addr, output [63:0] v);
         reg [31:0] lo, hi;
         begin
             rd(lo_addr, lo);
@@ -199,7 +204,7 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0001_0003, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0002_0000, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");

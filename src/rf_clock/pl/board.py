@@ -12,6 +12,10 @@ through each block's own methods:
 ``tx_buffer``  ``TXBuffer``: on-chip TX waveform buffer (AXI BRAM)
 ``rx_dma``     ``RXDMA``: the AXI DMA S2MM that writes RX windows into DDR
 ``rfdc``       ``RFDC``: xrfdc driver and the MTS result
+``slots``      ``Slots``: the slot engine, P7 (2.0)
+``burst``      ``BurstMemory``: the PRN, the packet code and the taps (2.0)
+``correlator`` ``Correlator``: P8's lock and search report (2.0)
+``queue``      ``MeasurementQueue``: measurements and the peer's packets (2.0)
 ``clock_gpio`` clock-status GPIO (``pl_clk0``), bit 0 = fabric MMCM locked
 ``overlay``    the PYNQ ``Overlay``
 ``bringup``    ``BringupResult`` (faults found and cleared at power-up)
@@ -37,7 +41,12 @@ from .bringup import (Bringup, BringupError, BringupResult, mmio_from_overlay, p
 from .client import PLClient
 from .overlay import DEFAULT_BITSTREAM, check_overlay, package_version
 from .rfdc import RFDCError, RFDCSetupResult, rfdc_driver, setup_rfdc_and_mts
+from .burst import BurstMemory
+from .measurements import MeasurementQueue
+from .mmio import MemoryMMIO, RegisterIO
 from .rxdma import RXDMA, pynq_rx_dma
+from .slots import Slots
+from .tracking import Correlator
 from .txbuf import TXBuffer
 
 LMK_FREQ_MHZ = 100.0  # xrfclk LMK04828_100.0.txt: CLKin0 = FS725 10 MHz, PL_CLK 100 MHz
@@ -314,7 +323,8 @@ class PL:
     """The PL's hardware blocks after power-up (see the module docstring)."""
 
     def __init__(self, *, ctrl: PLClient, tx_buffer: TXBuffer, rx_dma: RXDMA, rfdc: RFDC,
-                 overlay: Any, bringup: BringupResult, board: BoardSetup | None = None) -> None:
+                 overlay: Any, bringup: BringupResult, board: BoardSetup | None = None,
+                 burst_memory: RegisterIO | None = None, queue_memory: RegisterIO | None = None) -> None:
         self.ctrl = ctrl
         self.tx_buffer = tx_buffer
         self.rx_dma = rx_dma
@@ -322,6 +332,10 @@ class PL:
         self.overlay = overlay
         self.bringup = bringup
         self.board = board or BoardSetup()
+        self.slots = Slots(ctrl)
+        self.burst = BurstMemory(burst_memory if burst_memory is not None else MemoryMMIO(), ctrl)
+        self.correlator = Correlator(ctrl)
+        self.queue = MeasurementQueue(queue_memory if queue_memory is not None else MemoryMMIO(), ctrl)
 
     @property
     def clock_gpio(self) -> Any:
@@ -467,4 +481,6 @@ class PL:
             overlay=overlay,
             bringup=result,
             board=BoardSetup(serial=serial, config=config, lmx_vco=parts.get("lmx_vco", {})),
+            burst_memory=mmio_from_overlay(overlay, "burst_bram_ctrl", default_length=0x10000),
+            queue_memory=mmio_from_overlay(overlay, "queue_bram_ctrl", default_length=0x10000),
         )

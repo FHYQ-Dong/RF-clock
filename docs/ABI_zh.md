@@ -20,6 +20,8 @@
 | 控制/状态 | P2，AXI4-Lite 寄存器                   | 命令、时间戳、状态           | 32 位 MMIO 读写（§4.1–§4.6）    |
 | TX 波形   | P3 片上 buffer，经 AXI BRAM Controller | 发射波形（写一次，反复使用） | 按内存写入（§4.5.8）              |
 | RX 样本   | P4 → 异步 FIFO → AXI DMA S2MM → DDR | 每个采集窗口的样本           | DMA buffer + DMA 寄存器（§4.6.9） |
+| 突发存储器（2.0） | P3/P8/P9 的码片存储器和 FIR 系数，经 AXI BRAM Controller | 码片序列和 RRC 系数 | 时隙引擎关闭时按内存写入（§4.9） |
+| 测量队列（2.0） | P8/P9 的条目，存在 BRAM 环形缓冲区里，经 AXI BRAM Controller | 本节点的测量值和解出的对端测量包 | 按内存读，配合 `QUEUE_HEAD`/`QUEUE_TAIL`（§4.12） |
 | 时钟状态  | AXI GPIO（`pl_clk0` 域）             | fabric MMCM 是否锁定         | 32 位 MMIO 读（§4.7）             |
 
 ### 1.2 地址
@@ -28,16 +30,18 @@
 
 | 地址空间       | HWH 名称                         | 基地址      | 大小                  | 时钟域  |
 | -------------- | -------------------------------- | ----------- | --------------------- | ------- |
-| P2 寄存器      | `p_top_0`                      | 0xA000_0000 | 4 KiB（只用前 256 B） | fabric  |
+| P2 寄存器      | `p_top_0`                      | 0xA000_0000 | 4 KiB（只用前 1 KiB） | fabric  |
 | AXI DMA 寄存器 | `rx_dma`                       | 0xA001_0000 | 64 KiB                | pl_clk0 |
 | 时钟状态 GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                 | pl_clk0 |
 | RFDC 寄存器    | `rfdc`                         | 0xA004_0000 | 256 KiB               | pl_clk0 |
 | TX 波形 buffer | `tx_bram_ctrl`（`mem_dict`） | 0xA040_0000 | 4 MiB 窗口，前 69632 beat（2.125 MiB）有存储 | fabric  |
+| 突发存储器（2.0） | `burst_bram_ctrl`（`mem_dict`） | 0xA080_0000 | 64 KiB（§4.9） | fabric |
+| 测量队列（2.0） | `queue_bram_ctrl`（`mem_dict`） | 0xA081_0000 | 64 KiB（§4.12） | fabric |
 
 > **警告：总线卡死。** fabric 时钟由 LMK04828 的 PL_CLK 经 MMCM 产生。fabric 时钟没在
 > 运行时访问 P2 或 TX buffer，AXI 访问永远得不到回应，整个系统卡死，只能重启
-> （远程用 `tools/jtag_reset_board.tcl`）。**每次访问这两个地址空间之前，先确认时钟
-> 状态 GPIO bit0 = 1**（§4.7）。`pl_clk0` 域的地址不受此限制。
+> （远程用 `tools/jtag_reset_board.tcl`）。**每次访问这些地址空间（2.0 起还有突发存储器
+> 和测量队列）之前，先确认时钟状态 GPIO bit0 = 1**（§4.7）。`pl_clk0` 域的地址不受此限制。
 
 ## 2. 通信约定
 
@@ -102,13 +106,13 @@ R32 0x00  → 0x52434C4B
 
 | 地址 | 访问 | 格式                        | 复位值            |
 | ---- | ---- | --------------------------- | ----------------- |
-| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00010003（1.3） |
+| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00020000（2.0） |
 
 ```text
-R32 0x04  → 0x00010003
+R32 0x04  → 0x00020000
 ```
 
-major 不等于软件支持的值就拒绝运行；`PPS_INPUTS`、`PPS_CONFIG` 需要 minor ≥ 1，`BUILD_VERSION` 需要 minor ≥ 2，`TX_REPEAT` 需要 minor ≥ 3（§14）。Python：`PLClient.validate()`、`DeviceInfo.version`。
+major 不等于软件支持的值就拒绝运行。1.x 里 `PPS_INPUTS`、`PPS_CONFIG` 随 minor 1 加入，`BUILD_VERSION` 随 2，`TX_REPEAT` 随 3；2.0 全部保留，并新增时隙引擎、由码片生成的突发、相关器、测量包和测量队列（§4.8–§4.12，§14）。Python：`PLClient.validate()`、`DeviceInfo.version`。
 
 #### 4.1.3 `CONTROL` — 命令脉冲
 
@@ -184,6 +188,8 @@ R32 0x0C  → status
 | 3     | `tick_exhausted` | raw_tick 已饱和（正常运行不会出现）               |
 | 4     | `any_fault`      | `FAULT_BITS` 非 0                               |
 | 5     | `dma_ready`      | S2MM 正在接收（`tready` 为高）                  |
+| 6     | `slots_running`  | 时隙引擎正在运行（2.0，§4.8） |
+| 7     | `locked`         | P8 的跟踪器已锁定（2.0，§4.10） |
 | 10:8  | `tx_state`       | TX 状态，编码见 §5.1                             |
 | 14:12 | `rx_state`       | RX 状态，编码见 §5.1                             |
 
@@ -349,7 +355,7 @@ W32 0x08 0x01
 R32 0x4C  → 0x01 (ARMED)  否则见 §5.2
 ```
 
-只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改 shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING 甚至 DONE（看 `TX_SEQ` 是否增加来区分）。Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
+`SLOT_CONTROL.ENABLE` 置位时一律以 `REJ_BUSY` 拒绝（2.0）：这时 DAC 归时隙引擎使用（§4.8）。只在 TX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度和重复次数 → 是否过期。第一条不满足就给出对应拒绝码，状态不变。只有 doorbell 那一拍的 shadow 值有效，之后再改 shadow 不影响已接受的命令。target 很近时，读 `TX_RESULT` 前命令可能已经进入 RUNNING 甚至 DONE（看 `TX_SEQ` 是否增加来区分）。Python：`PLClient.arm_tx(target, beats, *, repeat=1)`。
 
 #### 4.5.4 `CONTROL.TX_CANCEL` — 取消
 
@@ -457,7 +463,7 @@ W32 0x08 0x04
 R32 0x6C  → 0x01 (ARMED)  0x14 表示 S2MM 还没就绪
 ```
 
-只在 RX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期 → DMA 就绪。Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`（§11.8）。
+`SLOT_CONTROL.ENABLE` 置位时一律以 `REJ_BUSY` 拒绝（2.0）；这时时隙窗口经 `SLOT_COPY` 进 DDR（§4.8）。只在 RX 状态为 IDLE 或 DONE 时处理。校验顺序：`time_valid` → 长度 → 是否过期 → DMA 就绪。Python：`pl.ctrl.arm_rx(target, beats)`，之前先 `pl.rx_dma.prepare(beats)`（§11.8）。
 
 #### 4.6.4 `CONTROL.RX_CANCEL` — 取消
 
@@ -528,6 +534,166 @@ R32 0xA002_0000  → 1     fabric MMCM 已锁定，可以访问 P2 和 TX buffer
 ```
 
 Xilinx AXI GPIO（全输入，1 位），在 `pl_clk0` 域，任何时候都可以读。bit0 = 1 说明 PL_CLK 存在且 MMCM 已锁定，**不说明 LMK04828 锁到了 FS725**：LMK 没有外部参考时会靠板上 VCXO 继续输出。LMK 锁到 FS725 的证据是 `PPS_LAST_PERIOD` 恒为 100000000；板上 PLL1/PLL2 LED（本项目的 LMK 文件把 Status_LD1/2 设为锁定指示）只作现场参考，LMK 没有配置 SPI 读回。Python：`PLClient.fabric_clock_locked()`、`require_fabric_clock()`。
+
+### 4.8 时隙引擎，P7（2.0 起）
+
+时隙引擎从每个 PPS 沿起运行计划第 5 节的乒乓，不需要每个时隙一条命令。时隙 k = 0 … `SLOTS_PER_SECOND` − 1 从 `PPS_TICK` + k × `SLOT_TICKS`（200 000 个 tick，2 ms）开始。在自己的时隙里（节点 A 是偶数时隙，节点 B 是奇数时隙，由 `SLOT_CONTROL.ROLE_B` 选），它在时隙开始后 `SLOT_TX_OFFSET` 个 tick 发出突发；在对端的时隙里，它在时隙开始后 `SLOT_RX_OFFSET` 个 tick 打开一个长 `RX_SPAN_BEATS` 拍的窗口。窗口的前 `RX_WINDOW_BEATS` 拍交给相关器（P8，§4.10），整段交给测量包解码器（P9，§4.11）。
+
+```text
+时隙开始 = PPS_TICK + k × SLOT_TICKS
+自己的时隙：突发第 0 拍在 raw_tick = 时隙开始 + SLOT_TX_OFFSET 那一拍出现在 DAC AXIS 上（同 TX_ACTUAL）
+对端的时隙：窗口第 0 拍 = raw_tick = 时隙开始 + SLOT_RX_OFFSET 那一拍的 ADC 数据（同 RX_ACTUAL）
+```
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x100 | `SLOT_CONTROL` | RW | 0 | bit 0 `ENABLE`，bit 1 `ROLE_B`（0：节点 A，在偶数时隙发；1：节点 B，在奇数时隙发），bit 2 `PACKETS`（每个突发后面带测量包）。下一个 PPS 沿生效 |
+| 0x104 | `SLOT_TX_OFFSET` | RW | 1000 | 从时隙开始到突发的 tick 数。下一个 PPS 沿生效 |
+| 0x108 | `SLOT_RX_OFFSET` | RW | 0 | 从时隙开始到窗口的 tick 数：对端的 `SLOT_TX_OFFSET` 加上预计到达时间，减去 125 个 tick（1.25 µs）。下一个 PPS 沿生效 |
+| 0x10C | `SLOT_STATUS` | RO | 0 | bit 0 `RUNNING`（从 `ENABLE` 之后的那个 PPS 沿起），[24:16] 当前时隙 |
+| 0x110 | `SLOT_SKIPPED_CNT` | RO | 0 | 没有开始的时隙（见下） |
+| 0x114 | `SLOT_COPY` | RW | 0 | 写 1：下一个窗口（整段）同时经 S2MM 进 DDR，S2MM 要先按 `RX_SPAN_BEATS` 拍设好（§4.6.9）；在那个窗口打开之前读出 1 |
+| 0x118 | `SLOT_TICKS` | RO | 200000 | 每个时隙的 tick 数 |
+| 0x11C | `SLOTS_PER_SECOND` | RO | 500 | |
+| 0x120 | `RX_WINDOW_BEATS` | RO | 5481 | 相关器的窗口，RTL 参数（43848 个样本） |
+| 0x124 | `RX_SPAN_BEATS` | RO | — | `RX_WINDOW_BEATS` + `BURST_GUARD_CHIPS` + `PACKET_BITS` × `PACKET_SPREAD` + 1：窗口，加上它能装下的最晚的测量包 |
+
+- 只有 `time_valid` 和 `pps_locked` 都成立时引擎才安排时隙；否则它空闲（`RUNNING` 为 0），到下一个 PPS 沿再开始。
+- 以下情况跳过一个时隙并计数：引擎安排它时它的开始时刻已经过去；`SLOT_TX_OFFSET` + `BURST_BEATS` > `SLOT_TICKS`（突发会伸进下一个时隙）；`SLOT_RX_OFFSET` + `RX_SPAN_BEATS` > `SLOT_TICKS` + `SLOT_TX_OFFSET`（本节点下一个突发发出时窗口还没关）。
+- `ENABLE` 置位期间，P2 的 TX 和 RX 命令以 `REJ_BUSY` 拒绝（§4.5.3、§4.6.3），突发存储器的写入也被拒绝（§4.9）。`TX_REPEAT` 和 TX 波形 buffer 只用于开发测试，要在引擎关闭时用。
+- 突发期间 DAC 的 `tready` 变低算故障（`FB_TX`，§5.4）：引擎停下，直到 `CONTROL.CLEAR_FAULT` 和下一个 PPS 沿。
+
+Python：`pl.slots.configure(...)`、`pl.slots.status()`（§11.14）。
+
+### 4.9 由码片生成的突发和突发存储器，P3（2.0 起）
+
+突发是一条码片流经 RRC FIR 得到的，每个 tick 一个码片（`rf_clock.plmodel.fir`，计划 §3.1）：
+
+```text
+PRN 存储器里的 BURST_PRN_CHIPS 个码片，BURST_GUARD_CHIPS 个零码片，
+若 SLOT_CONTROL.PACKETS：PACKET_BITS × PACKET_SPREAD 个测量包码片，比特为 0 时码片 m = code[m]，为 1 时为 −code[m]
+（测量包第 b 个比特，从最高位起，占码片 b·L … b·L + L − 1），最后 10 个零码片把 FIR 冲干净。
+样本 8n + k += chip[n] × tap[k]，k = 0 … 80：得到 16 位的 I 样本，Q = 0；不做舍入。
+```
+
+`BURST_BEATS` 就是码片数（含最后 10 个冲洗码片）：每个码片一拍。ARM 选取系数（round(h[k] × 幅度)）时要保证最大的一相之和 Σ\|tap[p + 8j]\| 放得进 16 位；PL 不做饱和处理。相关器的参考（§4.10）和测量包解码器的扩频码参考（§4.11）都由同一组存储器经同一个 FIR 生成，所以它们就等于对端 PL 发出的波形。
+
+突发存储器窗口（0xA080_0000，32 位字，读延迟 1）：
+
+| 字节偏移 | 内容 |
+| -------- | ---- |
+| 0x0000 … 0x1FFF | PRN 或引导码：码片 n 是第 n / 32 个字的第 n % 32 位，1 表示 +1，0 表示 −1（65536 个码片） |
+| 0x2000 … 0x3FFF | 测量包扩频码，排列方式相同（65536 个码片） |
+| 0x4000 … 0x4140 | 系数：系数 k 是第 k 个字的 bit 15:0，有符号 16 位，k = 0 … 80（读回时做符号扩展） |
+
+时隙引擎启用时写入被拒绝：存储器内容不变，由 `BURST_MEM_REJ_CNT` 计数。读随时可以。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x180 | `BURST_PRN_CHIPS` | RW | 4096 | PRN 的码片数，1 … `CHIP_MEM_CHIPS`（其他值：SLVERR）。下一个 PPS 沿生效 |
+| 0x184 | `BURST_GUARD_CHIPS` | RW | 10 | 测量包之前的零码片数，至少是 RRC 的跨度。下一个 PPS 沿生效 |
+| 0x188 | `BURST_BEATS` | RO | — | 按当前配置一个突发的拍数 |
+| 0x18C | `BURST_CNT` | RO | 0 | 引擎发出的突发数 |
+| 0x190 | `PACKET_SPREAD` | RO | 64 | L：每个测量包比特的码片数，RTL 参数 |
+| 0x194 | `PACKET_BITS` | RO | 288 | |
+| 0x198 | `CHIP_MEM_CHIPS` | RO | 65536 | 每个码片存储器的容量 |
+| 0x19C | `BURST_MEM_REJ_CNT` | RO | 0 | 被拒绝的突发存储器写入次数 |
+
+Python：`pl.burst.load(prn, taps, packet_code=None)`（§11.14）。
+
+### 4.10 相关器，P8（2.0 起）
+
+相关器有两块窗口缓冲区，每块 `RX_WINDOW_BEATS` 拍。参考有 R = 8 × `BURST_PRN_CHIPS` + 73 个样本，一个窗口有 K = 8 × `RX_WINDOW_BEATS` − R + 1 个延迟点（`P8_SEARCH_LAGS`）；延迟点 k 表示参考从窗口第 k 个样本开始。每个估计都按 `rf_clock.plmodel.correlator` 逐位定义：16 位 I、Q 与 16 位参考做精确整数相关，幅度取 ⌊√(I² + Q²)⌋，亚样本位置由过峰和两个邻点的抛物线给出，单位 2^-32 个样本（0.5 远离零取整，存为 i32：峰后正好半个样本读作 2^31 − 1），载波相位由 CORDIC 给出，单位 2^-32 圈。
+
+- **跟踪器**，每个窗口都跑：延迟点 L₀ − H … L₀ + H，H = `P8_TRACK_HALF`（4），L₀ = `P8_LOCK_LAG`，窗口以外的样本按零算。只要最大功率不在两端，并且其幅度 × 2^16 ≥ `P8_CONFIG.LOCK_MIN` × 上次锁定的幅度，就保持锁定；这时 L₀ 跟随峰的整数延迟点，测量值进入队列（`QEF_LOCKED`，§4.12）。否则失锁（`P8_LOST_CNT`），对这个窗口做整窗搜索。
+- **整窗搜索**：跟踪器没有锁定时（失锁，或开机后还没锁上；之后每来一个新窗口再搜一次，直到锁定），或收到 `P8_CONTROL.SEARCH` 时，对最新的窗口做。同一时刻只做一次：`SEARCH_BUSY` 期间的请求，以及 PRN 长到窗口里不足 3 个延迟点（此时 `P8_SEARCH_LAGS` 读出 0）时的请求，都被拒绝（`P8_REFUSED_CNT`）。被搜索的窗口所在的缓冲区冻结到搜索结束，之后的窗口进另一块缓冲区。生成参考用 `BURST_PRN_CHIPS` + 18 个 tick，各通道用 ⌈K / `P8_SEARCH_LANES`⌉ × (R + `P8_SEARCH_LANES`) 个 tick，扫描它们的结果用 K 个 tick，估计约 300 个 tick：11008 个延迟点、1024 条通道时约 3.9 ms，在两个窗口相隔的 4 ms 之内。
+- **报告**（`SR_*`）：最强峰（功率最大，并列时取最早的延迟点）；最早峰，即第一个满足功率 × 2^32 ≥ `THRESHOLD`² × 最强峰功率的功率局部极大值；旁瓣，即离最强峰超过 16 个延迟点的最大功率开方取整；以及窗口的 `PPS_COUNT`、时隙、起始 tick 和 RX 标志。`SR_SEQ` 在其他字段之后才更新：先读一次、最后再读一次，变了就重读。
+- **重新锁定**：未锁定时，只有搜索到的最强峰离 `P8_LOCK_LAG` 不超过 ±1 个延迟点、并且以前锁定过（从引擎启动或上一次 `UNLOCK` 起），PL 才自己锁上（`P8_RELOCK_CNT`）。否则置 `P8ST_WAITING`，等 ARM 核对单程延时后写 `ACCEPT_STRONGEST` 或 `ACCEPT_EARLIEST`（锁在那个峰的延迟点、幅度和相关值上；第一次报告之前写入无效），或再写 `SEARCH`。`UNLOCK` 解除锁定。锁定期间 ARM 请求的搜索不会让跟踪器的测量值失效。引擎停下时（`SLOT_STATUS.RUNNING` 为 0），锁定和尚未处理的请求都被丢掉。
+- **质量值**：⌊(Λ(P) − Λ(S) + `QUALITY_OFFSET`) × 771 / 1024⌋，限制在 0 … 255，单位 0.25 dB。P 是峰处的 I² + Q²，S 是整个窗口的 Σ(I² + Q²)，Λ(v) = 16 × ⌊log2 v⌋ 加上 v 最高位 1 之后的 4 位。ARM 由参考算出 `QUALITY_OFFSET` = 16 × log2(窗口样本数 / Σ ref²) 写入后，它近似 4 × 10 lg(峰值功率 / (参考能量 × 平均样本功率))，误差约 0.3 dB 以内。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x200 | `P8_CONTROL` | WO | — | 写 1 产生脉冲：bit 0 `SEARCH`，bit 1 `ACCEPT_STRONGEST`，bit 2 `ACCEPT_EARLIEST`，bit 3 `UNLOCK` |
+| 0x204 | `P8_CONFIG` | RW | 0x80008000 | [15:0] 最早峰的 `THRESHOLD`，[31:16] `LOCK_MIN`，单位都是 2^-16 |
+| 0x208 | `P8_STATUS` | RO | 0 | bit 0 `LOCKED`，bit 1 `SEARCH_BUSY`，bit 2 `WAITING` |
+| 0x20C | `P8_LOCK_LAG` | RO | 0 | L₀ |
+| 0x210 / 0x214 | `P8_LOCK_MAG_LO` / `_HI` | RO | 0 | 上次锁定的幅度 |
+| 0x218 | `P8_LOST_CNT` | RO | 0 | 失锁次数 |
+| 0x21C | `P8_RELOCK_CNT` | RO | 0 | PL 自己重新锁定的次数 |
+| 0x220 | `P8_SEARCH_CNT` | RO | 0 | 完成的搜索次数 |
+| 0x224 | `P8_REFUSED_CNT` | RO | 0 | 忙时被拒绝的搜索请求 |
+| 0x228 | `P8_TRACK_HALF` | RO | 4 | H |
+| 0x22C | `P8_SEARCH_LANES` | RO | 1024 | RTL 参数 |
+| 0x230 | `P8_SEARCH_LAGS` | RO | — | K |
+| 0x234 | `QUALITY_OFFSET` | RW | 0 | 有符号，单位 1/16 log2 |
+| 0x240 | `SR_SEQ` | RO | 0 | 写过的搜索报告数 |
+| 0x244 | `SR_PPS_COUNT` | RO | 0 | 窗口所在的秒 |
+| 0x248 | `SR_SLOT` | RO | 0 | 窗口的时隙 |
+| 0x24C | `SR_FLAGS` | RO | 0 | 窗口的 RX 标志（§5.3） |
+| 0x250 / 0x254 | `SR_TICK_LO` / `_HI` | RO | 0 | 窗口的起始 tick |
+| 0x258 … 0x268 | `SR_STRONG_LAG`、`_FRAC`（i32，2^-32 个样本）、`_PHASE`（i32，2^-32 圈）、`_MAG_LO`、`_MAG_HI` | RO | 0 | 最强峰 |
+| 0x26C … 0x27C | `SR_EARLY_LAG`、`_FRAC`、`_PHASE`、`_MAG_LO`、`_MAG_HI` | RO | 0 | 最早峰 |
+| 0x280 / 0x284 | `SR_SIDELOBE_LO` / `_HI` | RO | 0 | 旁瓣幅度 |
+
+Python：`pl.correlator`（§11.14）。
+
+### 4.11 测量包，P9（2.0 起）
+
+测量包就是计划 §5.1 里的 36 字节（`rf_clock.plmodel.packet`）：各字段依次排列，每个字段大端序，按最高位先发；最后两个字节是前面各字节的 CRC-16/CCITT-FALSE（多项式 0x1021，初值 0xFFFF，不反射，最后不异或）。
+
+| 字段 | 字节 | PL 填入 |
+| ---- | ---- | ------- |
+| version | 1 | `PACKET_FORMAT_VERSION`（1） |
+| config_id | 4 | `PACKET_CONFIG_ID` |
+| PPS_COUNT、slot | 4、2 | 这个突发所在的秒和时隙 |
+| TIME_EPOCH | 1 | 它的低 8 位 |
+| T_tx | 8 | (突发的 tick − `PPS_TICK`) × 10^7 fs |
+| T_rx | 8 | 对端突发最近一次的测量值：(它的窗口 tick − 那一秒的 `PPS_TICK`) × 10^7 + 延迟点 × 1 250 000 + ⌊(fraction × 1 250 000 + 2^31) / 2^32⌋ fs |
+| phase | 4 | 这次测量的相位，单位 2^-32 圈 |
+| quality | 1 | 这次测量的质量值，单位 0.25 dB |
+| status | 1 | 位 `PKST_LOCKED`、`PKST_MEASUREMENT`（T_rx、相位、质量值是测量值）、`PKST_WINDOW_VALID`、`PKST_OVERFLOW`、`PKST_PPS_LOCKED`、`PKST_CLOCKS_LOCKED` |
+| CRC | 2 | |
+
+锁定期间，若 `SLOT_CONTROL.PACKETS` 置位，解码器在每个窗口里从第 `P8_LOCK_LAG` + 8 × (`BURST_PRN_CHIPS` + `BURST_GUARD_CHIPS`) 个样本起解扩对端的测量包，以锁定时的复相关值作载波相位参考（两者都取窗口布置时的值，即来自对端上一个突发；`rf_clock.plmodel.packet.despread`）：比特 b 用测量包起点之后从 8 L b + 36 开始的 8 L 个样本与扩频码参考做相关，在锁定相关值上的投影为负时判为 1。CRC 正确就往队列放一条 `QE_TYPE_PEER`；不正确只计数。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x300 | `PACKET_CONFIG_ID` | RW | 0 | 每个测量包里的 config_id：RRC 的配置（计划 §3.1） |
+| 0x304 | `PACKET_VERSION` | RO | 1 | `PACKET_FORMAT_VERSION` |
+| 0x308 | `PACKET_TX_CNT` | RO | 0 | 发出的测量包数 |
+| 0x30C | `PACKET_RX_CNT` | RO | 0 | 解出且 CRC 正确的测量包数 |
+| 0x310 | `PACKET_CRC_CNT` | RO | 0 | CRC 错误的测量包数 |
+
+### 4.12 测量队列（2.0 起）
+
+队列窗口（0xA081_0000）里是一个环形缓冲区，有 `QUEUE_ENTRIES`（1024）个条目，每条 16 个字（64 字节）；第 i 条从第 64 i 字节开始。PL 在 `QUEUE_HEAD` 处写入一条，然后把 `QUEUE_HEAD` 加一（对 `QUEUE_ENTRIES` 取模）；ARM 从 `QUEUE_TAIL` 读到 `QUEUE_HEAD`，然后写 `QUEUE_TAIL`。环满时（下一个头指针会等于尾指针）新条目被丢弃，计入 `QUEUE_DROPPED_CNT`。这个窗口对 ARM 只读，写入被忽略。每秒 250 个测量值加 250 个测量包，环可以装下约 2 s。
+
+| 字 | `QE_TYPE_OWN`：对端突发的一次测量 | `QE_TYPE_PEER`：解出的对端测量包 |
+| -- | --------------------------------- | -------------------------------- |
+| 0 | [7:0] 类型 1，[15:8] 标志（`QEF_LOCKED`、`QEF_WINDOW_BAD`、`QEF_SEARCHED`），[31:16] 条目序号（对 2^16 取模；被丢掉的条目也占一个序号，所以序号有空缺就说明丢了条目） | [7:0] 类型 2，[31:16] 条目序号 |
+| 1 | 本节点该窗口的 `PPS_COUNT` | 同左 |
+| 2 | 窗口的时隙 | 同左 |
+| 3、4 | 窗口的起始 tick，LO、HI | 同左 |
+| 5 | 延迟点 | [31:24] version，[23:16] TIME_EPOCH，[15:8] quality，[7:0] status |
+| 6 | fraction，i32，2^-32 个样本 | config_id |
+| 7 | 相位，i32，2^-32 圈 | 对端的 `PPS_COUNT` |
+| 8 | 幅度 LO | 对端这个突发的时隙 |
+| 9 | 幅度 HI | T_tx LO |
+| 10 | T_rx LO：本节点 PPS 之后的 i64 fs | T_tx HI |
+| 11 | T_rx HI | T_rx LO |
+| 12 | 质量值，[7:0]，0.25 dB | T_rx HI |
+| 13 | 窗口的 Σ(I² + Q²)，LO | 相位，i32 |
+| 14 | 窗口的 Σ(I² + Q²)，HI | 0 |
+| 15 | 0 | 0 |
+
+字的下标就是 `p_defs.vh` 里的 `QE_*`。两类条目都在所有字写完之后才算写入。Python：`pl.queue.read()`（§11.14）。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x380 | `QUEUE_HEAD` | RO | 0 | PL 下一个要写的条目 |
+| 0x384 | `QUEUE_TAIL` | RW | 0 | ARM 下一个要读的条目；0 … `QUEUE_ENTRIES` − 1（其他值：SLVERR） |
+| 0x388 | `QUEUE_ENTRIES` | RO | 1024 | |
+| 0x38C | `QUEUE_DROPPED_CNT` | RO | 0 | 因环满丢掉的条目 |
 
 ## 5. 状态与错误报告
 
@@ -717,7 +883,7 @@ PL
 | 偏移 | 名称                | 访问 | 复位值     | 含义                                                | 详见    |
 | ---- | ------------------- | ---- | ---------- | --------------------------------------------------- | ------- |
 | 0x00 | `ID`              | RO   | 0x52434C4B | 设计标识 "RCLK"                                     | §4.1.1 |
-| 0x04 | `VERSION`         | RO   | 0x00010003 | [31:16] major，[15:0] minor                         | §4.1.2 |
+| 0x04 | `VERSION`         | RO   | 0x00020000 | [31:16] major，[15:0] minor                         | §4.1.2 |
 | 0x08 | `CONTROL`         | WO   | —         | 命令脉冲                                            | §4.1.3 |
 | 0x0C | `STATUS`          | RO   | —         | 状态字                                              | §4.2.1 |
 | 0x10 | `TIME_EPOCH`      | RO   | 0          | 时钟重新锁定次数                                    | §4.1.4 |
@@ -753,6 +919,12 @@ PL
 | 0x8C | `MIN_LEAD_TICKS`  | RO   | 64         | target 最小提前量（tick）                           | §4.1.5 |
 | 0x90 | `PPS_CONFIG`      | RW   | 0          | PPS 来源和极性（1.1）                               | §4.4.5 |
 | 0x94 | `BUILD_VERSION`   | RO   | 构建时定   | 构建时的 rf-clock 版本 0xAABBCCDD（1.2）            | §4.1.6 |
+| 0x100 … 0x124 | `SLOT_*`、`RX_WINDOW_BEATS`、`RX_SPAN_BEATS` | | | 时隙引擎（2.0） | §4.8 |
+| 0x180 … 0x19C | `BURST_*`、`PACKET_SPREAD`、`PACKET_BITS`、`CHIP_MEM_CHIPS` | | | 由码片生成的突发（2.0） | §4.9 |
+| 0x200 … 0x234 | `P8_*`、`QUALITY_OFFSET` | | | 相关器（2.0） | §4.10 |
+| 0x240 … 0x284 | `SR_*` | RO | 0 | 搜索报告（2.0） | §4.10 |
+| 0x300 … 0x310 | `PACKET_*` | | | 测量包（2.0） | §4.11 |
+| 0x380 … 0x38C | `QUEUE_*` | | | 测量队列（2.0） | §4.12 |
 
 ---
 
@@ -918,7 +1090,7 @@ client.validate()
 
 ### 11.4 `rf_clock.pl.client`
 
-#### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=1)`
+#### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=2)`
 
 P2 寄存器协议的唯一入口。构造时不访问任何寄存器。**每次访问 P2 之前都先读时钟状态 GPIO**，未锁定时抛 `ClockUnavailable`，不会把总线卡死。
 
@@ -944,9 +1116,9 @@ P2 寄存器协议的唯一入口。构造时不访问任何寄存器。**每次
 | `clear_fault()`                                      | W32`CONTROL` 0x10                                                                       | —                                                                     |
 | `latest_pps()`                                       | R64`PPS_TICK`，再 R32 `PPS_COUNT`                                                     | `(count, tick)`，同一个沿                                            |
 | `wait_next_pps(timeout=2.5, poll_interval=0.005)`    | 轮询到`PPS_COUNT` 变化                                                                  | 新沿的`(count, tick)`；超时 `WaitTimeout`                          |
-| `pps_inputs()`                                       | R32`PPS_INPUTS`                                                                         | `PPSInputs`；ABI minor < 1 时 `IdentityError`                      |
+| `pps_inputs()`                                       | R32`PPS_INPUTS`                                                                         | `PPSInputs`；ABI 1.1 之前 `IdentityError`                         |
 | `set_pps_config(*, source_trig=False, invert=False)` | W32`PPS_CONFIG`                                                                         | 同上                                                                   |
-| `build_version()`                                    | R32`BUILD_VERSION`                                                                      | `"A.B.C.D"`；ABI minor < 2 时 `IdentityError`                      |
+| `build_version()`                                    | R32`BUILD_VERSION`                                                                      | `"A.B.C.D"`；ABI 1.2 之前 `IdentityError`                         |
 
 `arm_tx`/`arm_rx` 的接受判断：提交后读到 ARMED 或 RUNNING 算接受；读到 DONE（RX 还有 RX_INVALID）时，只有 `*_SEQ` 比提交前增加才算接受，避免把上一条命令的结果当成这一条的。提交前若记下过 epoch，会先检查 epoch 未变。
 
@@ -1175,6 +1347,69 @@ $run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # 设 SF（并回读），�
 
 `align` 关掉 1 pps 锁相，取十个时间标签，用 `PP` 把 1 pps 输出移到输入上（PP 只能往前移：推后 d 等于提前一秒减 d），误差几 ns，这样双向时间比对的 RX 窗口（比时隙早 1.25 µs 打开）才能接到另一个节点的 burst。它让 PPS 相对 10 MHz 移动了：之后要检查板子捕获 PPS 的余量（M1），以及 EPG1 的余量：EPG1 用锁在同一个 10 MHz 上的时钟对这个 PPS 重新定时（EPG1 的各路输出也都跟着移动）。锁相只关到设备下次重启为止：对准之后把另一个 PPS 从后面板输入上拔掉，否则一次重启就会让设备锁到它上面。设置写进 `fs725.jsonl`（`--log`）。
 
+### 11.14 时隙引擎、突发存储器、相关器和队列（2.0 起）
+
+`PL.open()` 为 §4.8–§4.12 增加四个模块；每个都用 `PLClient`，两块存储器还各用自己的 AXI BRAM 窗口（`burst_bram_ctrl`、`queue_bram_ctrl`）。
+
+**`pl.slots`：`rf_clock.pl.slots.Slots`**（§4.8）
+
+| 方法 / 属性 | 协议 | 返回 / 异常 |
+| ----------- | ---- | ----------- |
+| `configure(*, role_b, rx_offset, tx_offset=1000, packets=True, enable=True)` | W32 `SLOT_CONTROL`（关）、`SLOT_TX_OFFSET`、`SLOT_RX_OFFSET`，检查 `BURST_BEATS` 和 `RX_SPAN_BEATS`，再置 `ENABLE` | 突发会伸进下一个时隙、或下一个突发时窗口还没关时 `ValueError` |
+| `enable()` / `disable()` | 置位 / 清除 `ENABLE` | 下一个 PPS 沿生效 |
+| `copy_next_window()` | W32 `SLOT_COPY` 1 | 先按 `span_beats` 设好 `pl.rx_dma` |
+| `status()` | R32 `SLOT_STATUS`、`SLOT_SKIPPED_CNT`、`SLOT_COPY` | `SlotStatus(running, slot, skipped, copy_pending)` |
+| `slot_ticks`、`slots_per_second`、`window_beats`、`span_beats` | R32 | int |
+
+`rx_offset_for(peer_tx_offset, arrival_ticks)` 等于对端的偏移加上预计到达时间，减去 `WINDOW_LEAD_TICKS`（125）。
+
+**`pl.burst`：`rf_clock.pl.burst.BurstMemory`**（§4.9）
+
+| 方法 | 协议 | 返回 / 异常 |
+| ---- | ---- | ----------- |
+| `load(prn, taps, *, packet_code=None, guard=10)` | 引擎开着时拒绝；写两个码和系数，再写 `BURST_PRN_CHIPS`、`BURST_GUARD_CHIPS`；读回系数核对 | 引擎开着或有写入被拒绝时 `BurstMemoryError`；码片不是 ±1、码太长、系数不是 81 个、或某一相之和超出 int16 时 `ValueError` |
+| `read_taps()`、`read_prn(count=None)` | 读存储器 | list / array |
+
+`packet_code=None` 时装入 `rf_clock.plmodel.packet.code_chips(288 × L)`；系数来自 `rf_clock.plmodel.fir.coefficients(amplitude)`。`pack_chips(chips)` / `unpack_chips(words, count)` 在码片和存储器字之间转换。
+
+**`pl.correlator`：`rf_clock.pl.tracking.Correlator`**（§4.10）
+
+| 方法 / 属性 | 协议 | 返回 / 异常 |
+| ----------- | ---- | ----------- |
+| `configure(*, threshold=0.5, lock_min=0.5, quality_offset=0)` | W32 `P8_CONFIG`（比例，单位 2^-16）、`QUALITY_OFFSET` | 超出 0 … 1 − 2^-16 时 `ValueError` |
+| `status()` | R32 `P8_STATUS` 和各计数器 | `CorrelatorStatus(locked, search_busy, waiting, lock_lag, lock_magnitude, lost, relocks, searches, refused)` |
+| `search()`、`accept(*, earliest=False)`、`unlock()` | W32 `P8_CONTROL` | — |
+| `report()` | 读 `SR_SEQ`、各字段、再读 `SR_SEQ`（变了就重读） | `SearchReport(seq, pps_count, slot, flags, tick, strongest, earliest, sidelobe)`，第一次搜索之前为 `None` |
+| `wait_report(after=0, *, timeout=1.0)` | 轮询 `report()` | 第一个 `seq > after` 的报告；`WaitTimeout` |
+| `lags` | R32 `P8_SEARCH_LAGS` | K |
+
+`Peak(lag, fraction, phase, magnitude)` 和 `rf_clock.plmodel.correlator.Peak` 一样有 `index` 和 `phase_rad`。`quality_offset(window_samples, reference)` 给出一个参考对应的 `QUALITY_OFFSET`。
+
+**`pl.queue`：`rf_clock.pl.measurements.MeasurementQueue`**（§4.12）
+
+| 方法 / 属性 | 协议 | 返回 |
+| ----------- | ---- | ---- |
+| `read(max_entries=None)` | R32 `QUEUE_HEAD`、`QUEUE_TAIL`，读条目，W32 `QUEUE_TAIL` | `OwnMeasurement` 和 `PeerPacket` 的列表，先旧后新 |
+| `pending()`、`dropped()`、`clear()` | 头尾指针，`QUEUE_DROPPED_CNT`，W32 `QUEUE_TAIL` = 头指针 | int |
+| `entries` | R32 `QUEUE_ENTRIES` | int |
+
+| 类 | 字段 |
+| -- | ---- |
+| `OwnMeasurement` | `seq`、`pps_count`、`slot`、`tick`、`locked`、`window_bad`、`searched`、`lag`、`fraction`、`phase`、`magnitude`、`t_rx_fs`、`quality`（`quality_db`）、`window_power` |
+| `PeerPacket` | `seq`、`pps_count`、`slot`、`tick`、`version`、`time_epoch`、`quality`、`status`（`peer_locked`、`measurement`、`window_valid`、`overflow`、`pps_locked`、`clocks_locked`）、`config_id`、`peer_pps_count`、`peer_slot`、`t_tx_fs`、`t_rx_fs`、`phase` |
+
+`decode_entry(words)` 解码一个 16 字的条目。建立链路（§7，最初的几个时隙）：
+
+```python
+pl.burst.load(prn, fir.coefficients(16000))          # 引擎关着
+pl.correlator.configure(quality_offset=quality_offset(43848, reference))
+pl.slots.configure(role_b=False, rx_offset=rx_offset_for(1000, arrival_ticks))
+report = pl.correlator.wait_report(timeout=3.0)      # 下一个 PPS 沿之后的第一次搜索
+# 用预计的单程延时核对 report.strongest，然后：
+pl.correlator.accept()
+for entry in pl.queue.read(): ...
+```
+
 ## 12. 异常与返回码
 
 | 异常                                     | 基类              | 来源                                                                                       |
@@ -1226,8 +1461,8 @@ M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三�
 ## 14. 版本规则
 
 - `VERSION` 的 minor 加 1：只增加寄存器或位，原有偏移和含义不变，旧软件仍可用。
-- `VERSION` 的 major 加 1：任何改变原有偏移、位域、编码或时间语义的修改。
-- 软件启动时检查 major，不匹配就拒绝运行；用到 1.x 新增功能的调用检查 minor。
+- `VERSION` 的 major 加 1：任何改变原有偏移、位域、编码或时间语义的修改，或者节点之间空口协议的改变：major 不同的两个节点无法互相测量。
+- 软件启动时检查 major，不匹配就拒绝运行；用到 1.x 新增功能的调用检查 `VERSION` 至少是那个 1.x（每个 2.x 都有这些功能）。
 
 | 版本 | 变化                                               |
 | ---- | -------------------------------------------------- |
@@ -1235,6 +1470,7 @@ M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三�
 | 1.1  | 新增`PPS_INPUTS`（0x3C）、`PPS_CONFIG`（0x90） |
 | 1.2  | 新增`BUILD_VERSION`（0x94）                      |
 | 1.3  | 新增`TX_REPEAT`（0x5C）                          |
+| 2.0  | 测量值随突发传送：时隙引擎（0x100）、由码片生成的突发和突发存储器（0x180）、相关器和搜索报告（0x200、0x240）、测量包（0x300）、测量队列（0x380）；寄存器偏移扩为 12 位；时隙引擎运行时拒绝 P2 的命令。1.x 的寄存器偏移和含义不变 |
 
 ### 14.1 软件包与 overlay
 

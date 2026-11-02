@@ -20,6 +20,8 @@ This manual describes how ARM software controls the RF-clock PL. Part I is the r
 | Control/status | P2, AXI4-Lite registers                          | Commands, timestamps, status             | 32-bit MMIO reads and writes (§4.1–§4.6)     |
 | TX waveform    | P3 on-chip buffer, through an AXI BRAM Controller | The transmit waveform (written once, reused) | Memory writes (§4.5.8)                    |
 | RX samples     | P4 → async FIFO → AXI DMA S2MM → DDR             | The samples of each capture window       | DMA buffer + DMA registers (§4.6.9)          |
+| Burst memory (2.0) | P3/P8/P9 code memories and FIR taps, through an AXI BRAM Controller | The chip sequences and the RRC taps | Memory writes while the slot engine is off (§4.9) |
+| Measurement queue (2.0) | P8/P9 entries in a BRAM ring, through an AXI BRAM Controller | This node's measurements and the peer's decoded packets | Memory reads, `QUEUE_HEAD`/`QUEUE_TAIL` (§4.12) |
 | Clock status   | AXI GPIO (`pl_clk0` domain)                      | Whether the fabric MMCM is locked        | 32-bit MMIO read (§4.7)                      |
 
 ### 1.2 Addresses
@@ -28,17 +30,20 @@ The base addresses are fixed in `PL/bd/create_rf_clock_bd.tcl`. Software reads t
 
 | Address space      | HWH name                       | Base        | Size                                          | Clock domain |
 | ------------------ | ------------------------------ | ----------- | --------------------------------------------- | ------------ |
-| P2 registers       | `p_top_0`                      | 0xA000_0000 | 4 KiB (first 256 B used)                      | fabric       |
+| P2 registers       | `p_top_0`                      | 0xA000_0000 | 4 KiB (first 1 KiB used)                      | fabric       |
 | AXI DMA registers  | `rx_dma`                       | 0xA001_0000 | 64 KiB                                        | pl_clk0      |
 | Clock-status GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                                         | pl_clk0      |
 | RFDC registers     | `rfdc`                         | 0xA004_0000 | 256 KiB                                       | pl_clk0      |
 | TX waveform buffer | `tx_bram_ctrl` (`mem_dict`)    | 0xA040_0000 | 4 MiB window; the first 69632 beats (2.125 MiB) have storage | fabric |
+| Burst memory (2.0) | `burst_bram_ctrl` (`mem_dict`) | 0xA080_0000 | 64 KiB (§4.9)                                 | fabric       |
+| Measurement queue (2.0) | `queue_bram_ctrl` (`mem_dict`) | 0xA081_0000 | 64 KiB (§4.12)                           | fabric       |
 
 > **Warning: bus hang.** The fabric clock comes from the LMK04828 PL_CLK
 > through an MMCM. An access to P2 or the TX buffer while the fabric clock is
 > not running never completes and hangs the whole system until a reset
-> (remotely: `tools/jtag_reset_board.tcl`). **Before every access to these two
-> address spaces, check that bit 0 of the clock-status GPIO is 1** (§4.7). The
+> (remotely: `tools/jtag_reset_board.tcl`). **Before every access to these address
+> spaces (and to the burst memory and the measurement queue, 2.0), check that
+> bit 0 of the clock-status GPIO is 1** (§4.7). The
 > `pl_clk0` addresses are not affected.
 
 ## 2. Conventions
@@ -104,13 +109,13 @@ Confirms that the RF-clock bitstream is loaded. On any other value, stop and do 
 
 | Address | Access | Format | Reset |
 | ------- | ------ | ------ | ----- |
-| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00010003 (1.3) |
+| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00020000 (2.0) |
 
 ```text
-R32 0x04  → 0x00010003
+R32 0x04  → 0x00020000
 ```
 
-Refuse to run when major differs from the one the software supports. `PPS_INPUTS` and `PPS_CONFIG` need minor ≥ 1, `BUILD_VERSION` needs minor ≥ 2, `TX_REPEAT` needs minor ≥ 3 (§14). Python: `PLClient.validate()`, `DeviceInfo.version`.
+Refuse to run when major differs from the one the software supports. In 1.x, `PPS_INPUTS` and `PPS_CONFIG` came with minor 1, `BUILD_VERSION` with 2 and `TX_REPEAT` with 3; 2.0 keeps all of them and adds the slot engine, bursts from chips, the correlator, the packet and the queue (§4.8–§4.12, §14). Python: `PLClient.validate()`, `DeviceInfo.version`.
 
 #### 4.1.3 `CONTROL` — command pulses
 
@@ -186,6 +191,8 @@ R32 0x0C  → status
 | 3     | `tick_exhausted` | raw_tick has saturated (never in normal operation) |
 | 4     | `any_fault`      | `FAULT_BITS` is not 0 |
 | 5     | `dma_ready`      | The S2MM is accepting data (`tready` high) |
+| 6     | `slots_running`  | The slot engine runs (2.0, §4.8) |
+| 7     | `locked`         | P8's tracker is locked (2.0, §4.10) |
 | 10:8  | `tx_state`       | TX state, encoded as in §5.1 |
 | 14:12 | `rx_state`       | RX state, encoded as in §5.1 |
 
@@ -351,7 +358,7 @@ W32 0x08 0x01
 R32 0x4C  → 0x01 (ARMED)  otherwise see §5.2
 ```
 
-Handled only when the TX state is IDLE or DONE. Checks, in order: `time_valid` → length and repeat count → stale target. The first failing check gives its reject code and the state does not change. Only the shadow values at the doorbell cycle count; changing the shadows afterwards does not affect an accepted command. With a near target, the command may already be RUNNING or even DONE when `TX_RESULT` is read (tell by whether `TX_SEQ` advanced). Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
+Refused with `REJ_BUSY` while `SLOT_CONTROL.ENABLE` is set (2.0): the slot engine owns the DAC then (§4.8). Handled only when the TX state is IDLE or DONE. Checks, in order: `time_valid` → length and repeat count → stale target. The first failing check gives its reject code and the state does not change. Only the shadow values at the doorbell cycle count; changing the shadows afterwards does not affect an accepted command. With a near target, the command may already be RUNNING or even DONE when `TX_RESULT` is read (tell by whether `TX_SEQ` advanced). Python: `PLClient.arm_tx(target, beats, *, repeat=1)`.
 
 #### 4.5.4 `CONTROL.TX_CANCEL` — cancel
 
@@ -461,7 +468,7 @@ W32 0x08 0x04
 R32 0x6C  → 0x01 (ARMED)  0x14 means the S2MM is not ready yet
 ```
 
-Handled only when the RX state is IDLE or DONE. Checks, in order: `time_valid` → length → stale target → DMA ready. Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.8).
+Refused with `REJ_BUSY` while `SLOT_CONTROL.ENABLE` is set (2.0); a slot window reaches DDR by `SLOT_COPY` then (§4.8). Handled only when the RX state is IDLE or DONE. Checks, in order: `time_valid` → length → stale target → DMA ready. Python: `pl.ctrl.arm_rx(target, beats)`, after `pl.rx_dma.prepare(beats)` (§11.8).
 
 #### 4.6.4 `CONTROL.RX_CANCEL` — cancel
 
@@ -532,6 +539,166 @@ R32 0xA002_0000  → 1     fabric MMCM locked; P2 and the TX buffer may be acces
 ```
 
 A Xilinx AXI GPIO (one input bit) in the `pl_clk0` domain, readable at any time. Bit 0 = 1 means PL_CLK is present and the MMCM is locked; it **does not mean that the LMK04828 is locked to the FS725**: without its external reference the LMK keeps running from the on-board VCXO. The evidence that the LMK follows the FS725 is `PPS_LAST_PERIOD` staying at 100000000; the PLL1/PLL2 LEDs on the board (this project's LMK file makes Status_LD1/2 lock indicators) are only a visual hint, and the LMK is not read back over SPI. Python: `PLClient.fabric_clock_locked()`, `require_fabric_clock()`.
+
+### 4.8 Slot engine, P7 (since 2.0)
+
+The slot engine runs the ping-pong of plan §5 from each PPS edge, with no command per slot. Slot k = 0 … `SLOTS_PER_SECOND` − 1 starts at `PPS_TICK` + k × `SLOT_TICKS` (200 000 ticks, 2 ms). In each of its own slots (even ones for node A, odd ones for node B, `SLOT_CONTROL.ROLE_B`) it starts a burst `SLOT_TX_OFFSET` ticks after the slot start; in each of the peer's slots it opens a window `SLOT_RX_OFFSET` ticks after the slot start, `RX_SPAN_BEATS` beats long. The first `RX_WINDOW_BEATS` beats of the window go to the correlator (P8, §4.10), the whole span to the packet decoder (P9, §4.11).
+
+```text
+slot start = PPS_TICK + k × SLOT_TICKS
+own slot:   burst beat 0 on the DAC AXIS when raw_tick = slot start + SLOT_TX_OFFSET   (as TX_ACTUAL)
+peer slot:  window beat 0 = the ADC beat of raw_tick = slot start + SLOT_RX_OFFSET     (as RX_ACTUAL)
+```
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x100 | `SLOT_CONTROL` | RW | 0 | bit 0 `ENABLE`, bit 1 `ROLE_B` (0: node A, bursts in even slots; 1: node B, in odd slots), bit 2 `PACKETS` (a measurement packet behind every burst). Taken at the next PPS edge |
+| 0x104 | `SLOT_TX_OFFSET` | RW | 1000 | ticks from the slot start to the burst. Taken at the next PPS edge |
+| 0x108 | `SLOT_RX_OFFSET` | RW | 0 | ticks from the slot start to the window: the peer's `SLOT_TX_OFFSET` plus the expected arrival, less 125 ticks (1.25 µs). Taken at the next PPS edge |
+| 0x10C | `SLOT_STATUS` | RO | 0 | bit 0 `RUNNING` (from the PPS edge after `ENABLE`), [24:16] the current slot |
+| 0x110 | `SLOT_SKIPPED_CNT` | RO | 0 | slots not started (below) |
+| 0x114 | `SLOT_COPY` | RW | 0 | write 1: the next window (its whole span) also goes to DDR through the S2MM, set up for `RX_SPAN_BEATS` beats first (§4.6.9); reads 1 until that window opens |
+| 0x118 | `SLOT_TICKS` | RO | 200000 | ticks per slot |
+| 0x11C | `SLOTS_PER_SECOND` | RO | 500 | |
+| 0x120 | `RX_WINDOW_BEATS` | RO | 5481 | the correlator's window, an RTL parameter (43848 samples) |
+| 0x124 | `RX_SPAN_BEATS` | RO | — | `RX_WINDOW_BEATS` + `BURST_GUARD_CHIPS` + `PACKET_BITS` × `PACKET_SPREAD` + 1: the window and the latest packet it can hold |
+
+- The engine schedules slots only while `time_valid` and `pps_locked`; without them it idles (`RUNNING` 0) and starts again at the next PPS edge.
+- A slot is skipped and counted when its start has passed by the time the engine schedules it, when `SLOT_TX_OFFSET` + `BURST_BEATS` > `SLOT_TICKS` (the burst would run into the next slot), or when `SLOT_RX_OFFSET` + `RX_SPAN_BEATS` > `SLOT_TICKS` + `SLOT_TX_OFFSET` (the window would still be open at the node's next burst).
+- While `ENABLE` is set, P2's TX and RX commands are refused with `REJ_BUSY` (§4.5.3, §4.6.3) and burst memory writes are refused (§4.9). `TX_REPEAT` and the TX waveform buffer serve development tests only, with the engine off.
+- A low DAC `tready` during a burst is a fault (`FB_TX`, §5.4): the engine stops until `CONTROL.CLEAR_FAULT` and the next PPS edge.
+
+Python: `pl.slots.configure(...)`, `pl.slots.status()` (§11.14).
+
+### 4.9 Bursts from chips and the burst memory, P3 (since 2.0)
+
+A burst is one chip stream through the RRC FIR, one chip per tick (`rf_clock.plmodel.fir`, plan §3.1):
+
+```text
+BURST_PRN_CHIPS chips of the PRN memory, BURST_GUARD_CHIPS zero chips,
+with SLOT_CONTROL.PACKETS: PACKET_BITS × PACKET_SPREAD packet chips, chip m = code[m] for a 0 bit, −code[m] for a 1 bit
+(bit b of the packet, most significant first, covers chips b·L … b·L + L − 1), then 10 zero chips that flush the FIR.
+sample 8n + k += chip[n] × tap[k], k = 0 … 80: the 16-bit I sample, Q = 0; no rounding.
+```
+
+`BURST_BEATS` is the number of chips (the 10 flush chips included): each chip is one beat. The ARM chooses taps (round(h[k] × amplitude)) whose largest phase sum, Σ\|tap[p + 8j]\|, fits 16 bits; the PL does not saturate. The correlator's reference (§4.10) and the packet decoder's code reference (§4.11) come from the same memories through the same FIR, so they equal what the peer's PL transmits.
+
+The burst memory window (0xA080_0000, 32-bit words, read latency 1):
+
+| Byte offset | Content |
+| ----------- | ------- |
+| 0x0000 … 0x1FFF | PRN or acquisition code: chip n is bit n % 32 of word n / 32, 1 for +1 and 0 for −1 (65536 chips) |
+| 0x2000 … 0x3FFF | packet code, packed alike (65536 chips) |
+| 0x4000 … 0x4140 | taps: tap k is a signed 16-bit value in bits 15:0 of word k, k = 0 … 80 (read back sign-extended) |
+
+Writes are refused while the slot engine is enabled: the memory keeps its contents and `BURST_MEM_REJ_CNT` counts them. Reads are always allowed.
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x180 | `BURST_PRN_CHIPS` | RW | 4096 | chips of the PRN, 1 … `CHIP_MEM_CHIPS` (other values: SLVERR). Taken at the next PPS edge |
+| 0x184 | `BURST_GUARD_CHIPS` | RW | 10 | zero chips before the packet, at least the RRC span. Taken at the next PPS edge |
+| 0x188 | `BURST_BEATS` | RO | — | beats of a burst as configured |
+| 0x18C | `BURST_CNT` | RO | 0 | bursts the engine sent |
+| 0x190 | `PACKET_SPREAD` | RO | 64 | L: chips per packet bit, an RTL parameter |
+| 0x194 | `PACKET_BITS` | RO | 288 | |
+| 0x198 | `CHIP_MEM_CHIPS` | RO | 65536 | capacity of each code memory |
+| 0x19C | `BURST_MEM_REJ_CNT` | RO | 0 | burst memory writes refused |
+
+Python: `pl.burst.load(prn, taps, packet_code=None)` (§11.14).
+
+### 4.10 Correlator, P8 (since 2.0)
+
+The correlator keeps two window buffers of `RX_WINDOW_BEATS` beats. With R = 8 × `BURST_PRN_CHIPS` + 73 reference samples, a window has K = 8 × `RX_WINDOW_BEATS` − R + 1 lags (`P8_SEARCH_LAGS`); lag k means the reference starts at window sample k. Every estimate is the one `rf_clock.plmodel.correlator` defines to the bit: exact integer correlation of the 16-bit I and Q with the 16-bit reference, magnitude ⌊√(I² + Q²)⌋, the sub-sample position of the parabola through the peak and its neighbours in 2^-32 sample (rounded half away from zero, kept in i32: half a sample after the peak reads 2^31 − 1), the carrier phase by CORDIC in 2^-32 turn.
+
+- **Tracker**, every window: lags L₀ − H … L₀ + H, H = `P8_TRACK_HALF` (4), L₀ = `P8_LOCK_LAG`, samples beyond the window taken as zero. The lock holds while the largest power is at neither end and its magnitude × 2^16 ≥ `P8_CONFIG.LOCK_MIN` × the last lock's magnitude; L₀ then follows the peak's integer lag and the measurement goes to the queue (`QEF_LOCKED`, §4.12). Otherwise the lock is lost (`P8_LOST_CNT`) and the window is searched.
+- **Search**, on the newest window when the tracker is not locked (lost, or not yet locked after start-up; then again on fresh windows until it locks), or on `P8_CONTROL.SEARCH`. One at a time: a request while `SEARCH_BUSY`, or for a PRN that leaves fewer than 3 lags (`P8_SEARCH_LAGS` then reads 0), is refused (`P8_REFUSED_CNT`). The searched window's buffer stays frozen until the search ends; later windows go to the other buffer. It takes `BURST_PRN_CHIPS` + 18 ticks to make the reference, ⌈K / `P8_SEARCH_LANES`⌉ × (R + `P8_SEARCH_LANES`) ticks in the lanes, K ticks to scan their results and about 300 for the estimates: about 3.9 ms for 11008 lags and 1024 lanes, within the 4 ms between two windows.
+- **Report** (`SR_*`): the strongest peak (largest power, the first lag on a tie); the earliest peak, the first lag that is a local maximum of power with power × 2^32 ≥ `THRESHOLD`² × the strongest's power; the sidelobe ⌊√(largest power more than 16 lags from the strongest)⌋; the window's `PPS_COUNT`, slot, start tick and RX flags. `SR_SEQ` advances after the other fields: read it first and last, and read again if it changed.
+- **Re-lock**: not locked, the PL locks on a search's strongest peak by itself only if it lies within ±1 lag of `P8_LOCK_LAG` and a lock existed before (since the engine started or the last `UNLOCK`; `P8_RELOCK_CNT`). Otherwise `P8ST_WAITING` is set until the ARM, after checking the one-way delay, writes `ACCEPT_STRONGEST` or `ACCEPT_EARLIEST` (lock on that peak's lag, magnitude and correlation; ignored before the first report) or `SEARCH`. `UNLOCK` drops the lock. A search the ARM requests while locked leaves the tracker's measurements valid. When the engine stops (`SLOT_STATUS.RUNNING` 0) the lock and any pending request are dropped.
+- **Quality** of a measurement: ⌊(Λ(P) − Λ(S) + `QUALITY_OFFSET`) × 771 / 1024⌋, clamped to 0 … 255, in 0.25 dB: P = I² + Q² at the peak, S = Σ(I² + Q²) over the window, Λ(v) = 16 × ⌊log2 v⌋ plus the 4 bits after v's leading one. With `QUALITY_OFFSET` = 16 × log2(window samples / Σ ref²), which the ARM computes from the reference, it approximates 4 × 10 lg(peak power / (reference energy × mean sample power)), within about 0.3 dB.
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x200 | `P8_CONTROL` | WO | — | write-1 pulses: bit 0 `SEARCH`, bit 1 `ACCEPT_STRONGEST`, bit 2 `ACCEPT_EARLIEST`, bit 3 `UNLOCK` |
+| 0x204 | `P8_CONFIG` | RW | 0x80008000 | [15:0] `THRESHOLD` for the earliest peak, [31:16] `LOCK_MIN`, both in 2^-16 |
+| 0x208 | `P8_STATUS` | RO | 0 | bit 0 `LOCKED`, bit 1 `SEARCH_BUSY`, bit 2 `WAITING` |
+| 0x20C | `P8_LOCK_LAG` | RO | 0 | L₀ |
+| 0x210 / 0x214 | `P8_LOCK_MAG_LO` / `_HI` | RO | 0 | the last lock's magnitude |
+| 0x218 | `P8_LOST_CNT` | RO | 0 | locks lost |
+| 0x21C | `P8_RELOCK_CNT` | RO | 0 | locks the PL took by itself |
+| 0x220 | `P8_SEARCH_CNT` | RO | 0 | searches finished |
+| 0x224 | `P8_REFUSED_CNT` | RO | 0 | search requests refused while busy |
+| 0x228 | `P8_TRACK_HALF` | RO | 4 | H |
+| 0x22C | `P8_SEARCH_LANES` | RO | 1024 | an RTL parameter |
+| 0x230 | `P8_SEARCH_LAGS` | RO | — | K |
+| 0x234 | `QUALITY_OFFSET` | RW | 0 | signed, 1/16 log2 unit |
+| 0x240 | `SR_SEQ` | RO | 0 | search reports written |
+| 0x244 | `SR_PPS_COUNT` | RO | 0 | the window's second |
+| 0x248 | `SR_SLOT` | RO | 0 | the window's slot |
+| 0x24C | `SR_FLAGS` | RO | 0 | the window's RX flags (§5.3) |
+| 0x250 / 0x254 | `SR_TICK_LO` / `_HI` | RO | 0 | the window's start tick |
+| 0x258 … 0x268 | `SR_STRONG_LAG`, `_FRAC` (i32, 2^-32 sample), `_PHASE` (i32, 2^-32 turn), `_MAG_LO`, `_MAG_HI` | RO | 0 | the strongest peak |
+| 0x26C … 0x27C | `SR_EARLY_LAG`, `_FRAC`, `_PHASE`, `_MAG_LO`, `_MAG_HI` | RO | 0 | the earliest peak |
+| 0x280 / 0x284 | `SR_SIDELOBE_LO` / `_HI` | RO | 0 | the sidelobe magnitude |
+
+Python: `pl.correlator` (§11.14).
+
+### 4.11 Measurement packet, P9 (since 2.0)
+
+The packet is the 36-byte word of plan §5.1 (`rf_clock.plmodel.packet`): the fields in order, each big-endian, sent most significant bit first; the last two bytes are the CRC-16/CCITT-FALSE of the others (polynomial 0x1021, initial 0xFFFF, no reflection, no final XOR).
+
+| Field | Bytes | The PL fills it with |
+| ----- | ----- | -------------------- |
+| version | 1 | `PACKET_FORMAT_VERSION` (1) |
+| config_id | 4 | `PACKET_CONFIG_ID` |
+| PPS_COUNT, slot | 4, 2 | this burst's second and slot |
+| TIME_EPOCH | 1 | its low 8 bits |
+| T_tx | 8 | (the burst's tick − `PPS_TICK`) × 10^7 fs |
+| T_rx | 8 | the latest measurement of the peer's burst: (its window tick − the `PPS_TICK` of that second) × 10^7 + lag × 1 250 000 + ⌊(fraction × 1 250 000 + 2^31) / 2^32⌋ fs |
+| phase | 4 | that measurement's phase, 2^-32 turn |
+| quality | 1 | that measurement's quality, 0.25 dB |
+| status | 1 | bits `PKST_LOCKED`, `PKST_MEASUREMENT` (T_rx, phase and quality are a measurement), `PKST_WINDOW_VALID`, `PKST_OVERFLOW`, `PKST_PPS_LOCKED`, `PKST_CLOCKS_LOCKED` |
+| CRC | 2 | |
+
+While locked, with `SLOT_CONTROL.PACKETS`, the decoder despreads the peer's packet in every window, from window sample `P8_LOCK_LAG` + 8 × (`BURST_PRN_CHIPS` + `BURST_GUARD_CHIPS`), with the lock's correlation as the carrier phase reference (both as they were when the window was armed: from the peer's previous burst) (`rf_clock.plmodel.packet.despread`): bit b correlates its 8 L samples, from 8 L b + 36 after the packet start, with the code reference, and is 1 when the projection on the lock's correlation is negative. A good CRC puts a `QE_TYPE_PEER` entry in the queue; a bad one only counts.
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x300 | `PACKET_CONFIG_ID` | RW | 0 | config_id in every packet: the RRC configuration (plan §3.1) |
+| 0x304 | `PACKET_VERSION` | RO | 1 | `PACKET_FORMAT_VERSION` |
+| 0x308 | `PACKET_TX_CNT` | RO | 0 | packets sent |
+| 0x30C | `PACKET_RX_CNT` | RO | 0 | packets decoded with a good CRC |
+| 0x310 | `PACKET_CRC_CNT` | RO | 0 | packets with a bad CRC |
+
+### 4.12 Measurement queue (since 2.0)
+
+The queue window (0xA081_0000) holds a ring of `QUEUE_ENTRIES` (1024) entries of 16 words (64 bytes); entry i starts at byte 64 i. The PL writes an entry at `QUEUE_HEAD` and then advances `QUEUE_HEAD` modulo `QUEUE_ENTRIES`; the ARM reads the entries from `QUEUE_TAIL` up to `QUEUE_HEAD` and then writes `QUEUE_TAIL`. When the ring is full (the next head would equal the tail) a new entry is dropped and counted in `QUEUE_DROPPED_CNT`. The window is read-only for the ARM; writes are ignored. At 250 measurements and 250 packets per second the ring holds about 2 s.
+
+| Word | `QE_TYPE_OWN`: a measurement of the peer's burst | `QE_TYPE_PEER`: a decoded peer packet |
+| ---- | ------------------------------------------------ | ------------------------------------- |
+| 0 | [7:0] type 1, [15:8] flags (`QEF_LOCKED`, `QEF_WINDOW_BAD`, `QEF_SEARCHED`), [31:16] entry sequence (mod 2^16; dropped entries take a number too, so a gap shows a drop) | [7:0] type 2, [31:16] entry sequence |
+| 1 | this node's `PPS_COUNT` of the window | the same |
+| 2 | the window's slot | the same |
+| 3, 4 | the window's start tick, LO, HI | the same |
+| 5 | lag | [31:24] version, [23:16] TIME_EPOCH, [15:8] quality, [7:0] status |
+| 6 | fraction, i32, 2^-32 sample | config_id |
+| 7 | phase, i32, 2^-32 turn | the peer's `PPS_COUNT` |
+| 8 | magnitude LO | the peer's slot |
+| 9 | magnitude HI | T_tx LO |
+| 10 | T_rx LO: i64 fs after this node's PPS | T_tx HI |
+| 11 | T_rx HI | T_rx LO |
+| 12 | quality, [7:0], 0.25 dB | T_rx HI |
+| 13 | the window's Σ(I² + Q²), LO | phase, i32 |
+| 14 | the window's Σ(I² + Q²), HI | 0 |
+| 15 | 0 | 0 |
+
+The word indices are `QE_*` in `p_defs.vh`. An entry of either type is written only after all its words. Python: `pl.queue.read()` (§11.14).
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x380 | `QUEUE_HEAD` | RO | 0 | the entry the PL writes next |
+| 0x384 | `QUEUE_TAIL` | RW | 0 | the entry the ARM reads next; 0 … `QUEUE_ENTRIES` − 1 (other values: SLVERR) |
+| 0x388 | `QUEUE_ENTRIES` | RO | 1024 | |
+| 0x38C | `QUEUE_DROPPED_CNT` | RO | 0 | entries lost to a full ring |
 
 ## 5. Status and error reporting
 
@@ -733,7 +900,7 @@ Offsets from the P2 base.
 | Offset | Name              | Access | Reset      | Meaning | See |
 | ------ | ----------------- | ------ | ---------- | ------- | --- |
 | 0x00   | `ID`              | RO     | 0x52434C4B | design identifier "RCLK" | §4.1.1 |
-| 0x04   | `VERSION`         | RO     | 0x00010003 | [31:16] major, [15:0] minor | §4.1.2 |
+| 0x04   | `VERSION`         | RO     | 0x00020000 | [31:16] major, [15:0] minor | §4.1.2 |
 | 0x08   | `CONTROL`         | WO     | —          | command pulses | §4.1.3 |
 | 0x0C   | `STATUS`          | RO     | —          | status word | §4.2.1 |
 | 0x10   | `TIME_EPOCH`      | RO     | 0          | number of clock relocks | §4.1.4 |
@@ -769,6 +936,12 @@ Offsets from the P2 base.
 | 0x8C   | `MIN_LEAD_TICKS`  | RO     | 64         | minimum target lead (ticks) | §4.1.5 |
 | 0x90   | `PPS_CONFIG`      | RW     | 0          | PPS source and polarity (1.1) | §4.4.5 |
 | 0x94   | `BUILD_VERSION`   | RO     | set at build | rf-clock version at build time, 0xAABBCCDD (1.2) | §4.1.6 |
+| 0x100 … 0x124 | `SLOT_*`, `RX_WINDOW_BEATS`, `RX_SPAN_BEATS` | | | slot engine (2.0) | §4.8 |
+| 0x180 … 0x19C | `BURST_*`, `PACKET_SPREAD`, `PACKET_BITS`, `CHIP_MEM_CHIPS` | | | bursts from chips (2.0) | §4.9 |
+| 0x200 … 0x234 | `P8_*`, `QUALITY_OFFSET` | | | correlator (2.0) | §4.10 |
+| 0x240 … 0x284 | `SR_*` | RO | 0 | search report (2.0) | §4.10 |
+| 0x300 … 0x310 | `PACKET_*` | | | measurement packet (2.0) | §4.11 |
+| 0x380 … 0x38C | `QUEUE_*` | | | measurement queue (2.0) | §4.12 |
 
 ---
 
@@ -936,7 +1109,7 @@ Generated by `python tools/generate_abi.py --write` from `p_regs.vh` and `p_defs
 
 ### 11.4 `rf_clock.pl.client`
 
-#### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=1)`
+#### `PLClient(regs, clock_status, *, clock_status_offset=0, clock_locked_mask=1, expected_major=2)`
 
 The only entry to the P2 register protocol. The constructor touches no register. **Every P2 access first reads the clock-status GPIO** and raises `ClockUnavailable` if the clock is not locked, so the bus never hangs.
 
@@ -962,9 +1135,9 @@ The only entry to the P2 register protocol. The constructor touches no register.
 | `clear_fault()` | W32 `CONTROL` 0x10 | — |
 | `latest_pps()` | R64 `PPS_TICK`, then R32 `PPS_COUNT` | `(count, tick)` of the same edge |
 | `wait_next_pps(timeout=2.5, poll_interval=0.005)` | polls until `PPS_COUNT` changes | `(count, tick)` of the new edge; `WaitTimeout` |
-| `pps_inputs()` | R32 `PPS_INPUTS` | `PPSInputs`; `IdentityError` if ABI minor < 1 |
+| `pps_inputs()` | R32 `PPS_INPUTS` | `PPSInputs`; `IdentityError` before ABI 1.1 |
 | `set_pps_config(*, source_trig=False, invert=False)` | W32 `PPS_CONFIG` | same |
-| `build_version()` | R32 `BUILD_VERSION` | `"A.B.C.D"`; `IdentityError` if ABI minor < 2 |
+| `build_version()` | R32 `BUILD_VERSION` | `"A.B.C.D"`; `IdentityError` before ABI 1.2 |
 
 How `arm_tx`/`arm_rx` decide that a command was accepted: ARMED or RUNNING read after the submit means accepted; DONE (and for RX also RX_INVALID) counts only if `*_SEQ` advanced since before the submit, so the previous command's result is never taken for this one. If an epoch was recorded, it is checked before the submit.
 
@@ -1194,6 +1367,69 @@ $run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # set SF (read back), e.g. t
 
 `align` turns the 1 pps PLL off, takes ten time tags and moves the 1 pps output onto the input by `PP` (PP only moves earlier: later by d is earlier by one second minus d), to a few ns, so that the two-way time transfer's RX windows (1.25 µs before the slot) catch the other node's bursts. It moves the PPS against the 10 MHz: check the board's PPS capture margin afterwards (M1), and the margin of the EPG1, which retimes this PPS with a clock locked to the same 10 MHz (everything fed from the EPG1 moves too). The PLL stays off only until the unit restarts: take the other PPS off the rear input once aligned, or a restart locks the unit to it. Settings go to `fs725.jsonl` (`--log`).
 
+### 11.14 The slot engine, the burst memory, the correlator and the queue (since 2.0)
+
+`PL.open()` adds four blocks for §4.8–§4.12; each takes the `PLClient`, and the two memories their AXI BRAM windows (`burst_bram_ctrl`, `queue_bram_ctrl`).
+
+**`pl.slots`: `rf_clock.pl.slots.Slots`** (§4.8)
+
+| Method / property | Protocol | Returns / raises |
+| ----------------- | -------- | ---------------- |
+| `configure(*, role_b, rx_offset, tx_offset=1000, packets=True, enable=True)` | W32 `SLOT_CONTROL` (off), `SLOT_TX_OFFSET`, `SLOT_RX_OFFSET`, checks `BURST_BEATS` and `RX_SPAN_BEATS`, then `ENABLE` | `ValueError` when the burst would run into the next slot or the window would still be open at the next burst |
+| `enable()` / `disable()` | sets / clears `ENABLE` | taken at the next PPS edge |
+| `copy_next_window()` | W32 `SLOT_COPY` 1 | set up `pl.rx_dma` for `span_beats` first |
+| `status()` | R32 `SLOT_STATUS`, `SLOT_SKIPPED_CNT`, `SLOT_COPY` | `SlotStatus(running, slot, skipped, copy_pending)` |
+| `slot_ticks`, `slots_per_second`, `window_beats`, `span_beats` | R32 | int |
+
+`rx_offset_for(peer_tx_offset, arrival_ticks)` is the peer's offset plus the expected arrival less `WINDOW_LEAD_TICKS` (125).
+
+**`pl.burst`: `rf_clock.pl.burst.BurstMemory`** (§4.9)
+
+| Method | Protocol | Returns / raises |
+| ------ | -------- | ---------------- |
+| `load(prn, taps, *, packet_code=None, guard=10)` | refuses while the engine is on; writes both codes and the taps, then `BURST_PRN_CHIPS`, `BURST_GUARD_CHIPS`; reads the taps back | `BurstMemoryError` when the engine is on or a write was refused; `ValueError` for chips other than ±1, a code too long, not 81 taps, or taps whose phase sum leaves int16 |
+| `read_taps()`, `read_prn(count=None)` | memory reads | list / array |
+
+`packet_code=None` loads `rf_clock.plmodel.packet.code_chips(288 × L)`; the taps come from `rf_clock.plmodel.fir.coefficients(amplitude)`. `pack_chips(chips)` / `unpack_chips(words, count)` convert between chips and memory words.
+
+**`pl.correlator`: `rf_clock.pl.tracking.Correlator`** (§4.10)
+
+| Method / property | Protocol | Returns / raises |
+| ----------------- | -------- | ---------------- |
+| `configure(*, threshold=0.5, lock_min=0.5, quality_offset=0)` | W32 `P8_CONFIG` (fractions in 2^-16), `QUALITY_OFFSET` | `ValueError` outside 0 … 1 − 2^-16 |
+| `status()` | R32 `P8_STATUS` and the counters | `CorrelatorStatus(locked, search_busy, waiting, lock_lag, lock_magnitude, lost, relocks, searches, refused)` |
+| `search()`, `accept(*, earliest=False)`, `unlock()` | W32 `P8_CONTROL` | — |
+| `report()` | `SR_SEQ`, the fields, `SR_SEQ` again (read again on a change) | `SearchReport(seq, pps_count, slot, flags, tick, strongest, earliest, sidelobe)` or `None` before the first search |
+| `wait_report(after=0, *, timeout=1.0)` | polls `report()` | the first report with `seq > after`; `WaitTimeout` |
+| `lags` | R32 `P8_SEARCH_LAGS` | K |
+
+`Peak(lag, fraction, phase, magnitude)` has `index` and `phase_rad` as `rf_clock.plmodel.correlator.Peak`. `quality_offset(window_samples, reference)` gives `QUALITY_OFFSET` for a reference.
+
+**`pl.queue`: `rf_clock.pl.measurements.MeasurementQueue`** (§4.12)
+
+| Method / property | Protocol | Returns |
+| ----------------- | -------- | ------- |
+| `read(max_entries=None)` | R32 `QUEUE_HEAD`, `QUEUE_TAIL`, the entries, W32 `QUEUE_TAIL` | list of `OwnMeasurement` and `PeerPacket`, oldest first |
+| `pending()`, `dropped()`, `clear()` | head and tail, `QUEUE_DROPPED_CNT`, W32 `QUEUE_TAIL` = head | int |
+| `entries` | R32 `QUEUE_ENTRIES` | int |
+
+| Class | Fields |
+| ----- | ------ |
+| `OwnMeasurement` | `seq`, `pps_count`, `slot`, `tick`, `locked`, `window_bad`, `searched`, `lag`, `fraction`, `phase`, `magnitude`, `t_rx_fs`, `quality` (`quality_db`), `window_power` |
+| `PeerPacket` | `seq`, `pps_count`, `slot`, `tick`, `version`, `time_epoch`, `quality`, `status` (`peer_locked`, `measurement`, `window_valid`, `overflow`, `pps_locked`, `clocks_locked`), `config_id`, `peer_pps_count`, `peer_slot`, `t_tx_fs`, `t_rx_fs`, `phase` |
+
+`decode_entry(words)` decodes one 16-word entry. Bringing up the link (§7, the first slots):
+
+```python
+pl.burst.load(prn, fir.coefficients(16000))          # the engine off
+pl.correlator.configure(quality_offset=quality_offset(43848, reference))
+pl.slots.configure(role_b=False, rx_offset=rx_offset_for(1000, arrival_ticks))
+report = pl.correlator.wait_report(timeout=3.0)      # the first search, after the next PPS edge
+# check report.strongest against the expected one-way delay, then:
+pl.correlator.accept()
+for entry in pl.queue.read(): ...
+```
+
 ## 12. Exceptions and result codes
 
 | Exception | Base | Raised by |
@@ -1245,8 +1481,8 @@ For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: th
 ## 14. Version rules
 
 - `VERSION` minor + 1: registers or bits added only; existing offsets and meanings unchanged, so older software still works.
-- `VERSION` major + 1: any change to existing offsets, bit fields, encodings or timing semantics.
-- Software checks the major at start-up and refuses to run on a mismatch; calls that use a 1.x addition check the minor.
+- `VERSION` major + 1: any change to existing offsets, bit fields, encodings or timing semantics, or a change of the protocol between the nodes on air: a node of one major cannot measure a node of another.
+- Software checks the major at start-up and refuses to run on a mismatch; calls that use a 1.x addition check that `VERSION` is at least that 1.x (every 2.x has them).
 
 | Version | Change |
 | ------- | ------ |
@@ -1254,6 +1490,7 @@ For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: th
 | 1.1     | added `PPS_INPUTS` (0x3C), `PPS_CONFIG` (0x90) |
 | 1.2     | added `BUILD_VERSION` (0x94) |
 | 1.3     | added `TX_REPEAT` (0x5C) |
+| 2.0     | the measurements ride in the bursts: slot engine (0x100), bursts from chips and the burst memory (0x180), correlator and search report (0x200, 0x240), measurement packet (0x300), measurement queue (0x380); register offsets widened to 12 bits; P2's commands refused while the slot engine runs. The 1.x registers keep their offsets and meanings |
 
 ### 14.1 Package and overlay
 

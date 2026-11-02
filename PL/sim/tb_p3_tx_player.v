@@ -17,6 +17,7 @@ module tb_p3_tx_player;
     reg         rst = 1'b1;
     reg  [63:0] raw_tick = 64'd0;
     reg         time_valid = 1'b1;
+    reg         ext_busy = 1'b0;
     always @(posedge clk) raw_tick <= rst ? 64'd0 : raw_tick + 64'd1;
 
     reg         doorbell = 0, cancel = 0, clear_fault = 0;
@@ -41,7 +42,7 @@ module tb_p3_tx_player;
         .DATA_W(DATA_W), .ADDR_W(ADDR_W), .DEPTH(DEPTH), .BANK_ADDR_W(BANK_W),
         .BRAM_ADDR_W(BA_W), .MIN_LEAD_TICKS(64'd16)
     ) dut (
-        .clk(clk), .rst(rst), .raw_tick(raw_tick), .time_valid(time_valid),
+        .clk(clk), .rst(rst), .raw_tick(raw_tick), .time_valid(time_valid), .ext_busy(ext_busy),
         .doorbell(doorbell), .cancel(cancel), .clear_fault(clear_fault),
         .cmd_target(cmd_target), .cmd_length(cmd_length), .cmd_repeat(cmd_repeat),
         .bram_en(bram_en), .bram_we(bram_we), .bram_addr(bram_addr),
@@ -237,6 +238,12 @@ module tb_p3_tx_player;
         submit(raw_tick + 100, 4);
         check(result == RC_REJ_LENGTH, "repeat above TX_REPEAT_MAX rejected");
         cmd_repeat = 1;
+
+        // The slot engine enabled (since 2.0): the doorbell is refused.
+        ext_busy = 1;
+        submit(raw_tick + 100, 4);
+        check(result == RC_REJ_BUSY && state == ST_DONE, "doorbell refused while the engine is on");
+        ext_busy = 0;
 
         if (errors == 0) $display("PASS tb_p3_tx_player");
         else             $display("FAIL tb_p3_tx_player (%0d errors)", errors);
