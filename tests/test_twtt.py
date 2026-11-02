@@ -165,6 +165,35 @@ def test_the_self_test_loop_measures_its_loopback_with_theta_zero():
     assert result.delay_ns == pytest.approx(230 * 1.25, abs=1e-2)
 
 
+def test_kept_windows_are_written_beside_the_loop(tmp_path):
+    from rf_clock.twtt.node import run_node
+
+    records_ = []
+    run_node(FakeBoard(delay=230), "AB", 3, records_.append, say=lambda line: None, save_every=2,
+             save_dir=str(tmp_path))
+    for thread in threading.enumerate():
+        if thread.name.startswith("save "):
+            thread.join(timeout=5)
+    assert [r["slots"]["AB"]["rx"].get("saved") for r in records_] == ["AB_1.npy", None, "AB_3.npy"]
+    assert np.load(tmp_path / "AB_3.npy").dtype == np.complex64
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["AB_1.npy", "AB_3.npy", "BA_1.npy", "BA_3.npy"]
+
+
+def test_a_window_is_dropped_while_too_many_writes_are_pending(tmp_path, monkeypatch):
+    from rf_clock.twtt.node import WindowSaver
+
+    release = threading.Event()
+    monkeypatch.setattr(np, "save", lambda path, samples: release.wait(5))
+    saver = WindowSaver(str(tmp_path), pending=1)
+    assert saver.save("AB_1.npy", np.zeros(4))
+    assert not saver.save("AB_2.npy", np.zeros(4))  # the first is still being written
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name.startswith("save "):
+            thread.join(timeout=5)
+    assert saver.save("AB_3.npy", np.zeros(4))
+
+
 def run_node_quietly(board, node, seconds, emit):
     from rf_clock.twtt.node import run_node
 

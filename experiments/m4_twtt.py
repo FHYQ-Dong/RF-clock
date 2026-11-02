@@ -20,7 +20,15 @@ Run on RF-clock-PC as the normal user, with the boards idle::
 On each board the node runs under ``--board-python`` (default PYNQ's environment,
 where docs/ABI.md 9.1 installs rf_clock).  ``--dev`` runs this repository's
 src/rf_clock there instead (copied to ``--dev-dir`` and put ahead of the installed
-package on PYTHONPATH, with the installed package's overlay linked in).  Results go to results/m4-twtt-<time>/: each board's log
+package on PYTHONPATH, with the installed package's overlay linked in).  With
+``--alternate-code DIR`` the odd-numbered runs take the rf_clock package in DIR on
+the boards instead (put there first, for example the code without the LMK04828
+divider SYNC of rf-clock 1.3.0.9), so that theta and both one-way delays under the
+two codes are compared on the same cables::
+
+    .venv/bin/python experiments/m4_twtt.py pair --seconds 60 --runs 6 --alternate-code /tmp/rf-clock-nosync
+
+Results go to results/m4-twtt-<time>/: each board's log
 (``rf_clock.twtt.link``), its console output, and summary.json with theta and the
 one-way delay (mean, sd, and the overlapping Allan deviation of theta).  ``--runs``
 repeats the run, each in ``runNN/``, and ``--reboot`` reboots the boards before each
@@ -53,6 +61,9 @@ from m3_common import ROOT, check_idle, reboot, results_dir, ssh
 BOARDS = {"A": "192.168.2.99", "B": "192.168.2.101"}  # S/N 887329260072A, 887329260101
 PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"  # the default --board-python
 DEV_DIR = "/tmp/rf-clock-dev"  # the default --dev-dir
+# The node's console output goes to RAM: on the night of 2026-10-26/27 a write to the
+# boards' SD card held a node's loop for seconds, and it missed those PPS edges.
+OUT_DIR = "/dev/shm"
 NODE = " -m rf_clock[.]twtt[.]node "  # what a running node's command line (and its link process's) holds
 
 
@@ -60,7 +71,7 @@ def node_pattern(python: str) -> str:
     """The anchored pgrep pattern of a node run by ``python``."""
     return f"^{python}{NODE}"
 START_S = 180  # PL.open and the first PPS
-K3 = 3 * 2 * math.pi * 5.8e9 * 1e-12  # rad of three times the correlation phase per ps of delay
+K1 = 2 * math.pi * 5.8e9 * 1e-12  # rad of the correlation phase per ps of delay: a turn is 172.4 ps
 
 
 def deploy_dev(ip: str, python: str = PYNQ_PYTHON, dev_dir: str = DEV_DIR) -> None:
@@ -85,9 +96,9 @@ def start(ip: str, node: str, seconds: int, dev: bool, peer: str | None = None, 
     options = f"{node} --seconds {seconds} --log /tmp/twtt_{node}.jsonl" + (f" --peer {peer}" if peer else "")
     if save_every:
         options += f" --save-every {save_every} --save-dir /tmp/rx_{node}"
-    cmd = (f"sudo -n rm -rf /tmp/twtt_{node}.jsonl /tmp/twtt_{node}.out /tmp/rx_{node}; cd /tmp && "
+    cmd = (f"sudo -n rm -rf /tmp/twtt_{node}.jsonl {OUT_DIR}/twtt_{node}.out /tmp/rx_{node}; cd /tmp && "
            f"(setsid nohup sudo -n env {env} {python} -m rf_clock.twtt.node {options} "
-           f"> /tmp/twtt_{node}.out 2>&1 < /dev/null &)")
+           f"> {OUT_DIR}/twtt_{node}.out 2>&1 < /dev/null &)")
     if ssh(ip, cmd).returncode:
         sys.exit(f"cannot start node {node} on {ip}")
     print(f"node {node} started on {ip}", flush=True)
@@ -142,8 +153,8 @@ def wait_ntp(ip: str, timeout: float = 300) -> None:
 
 
 def fetch(ip: str, node: str, out: Path, rx: bool = False) -> Path:
-    for suffix in ("jsonl", "out"):
-        subprocess.run(["scp", "-q", f"xilinx@{ip}:/tmp/twtt_{node}.{suffix}", str(out / f"twtt_{node}.{suffix}")])
+    for remote in (f"/tmp/twtt_{node}.jsonl", f"{OUT_DIR}/twtt_{node}.out"):
+        subprocess.run(["scp", "-q", f"xilinx@{ip}:{remote}", str(out / Path(remote).name)])
     if rx:
         subprocess.run(["scp", "-q", "-r", f"xilinx@{ip}:/tmp/rx_{node}", str(out)])
     return out / f"twtt_{node}.jsonl"
@@ -171,10 +182,12 @@ def allan(theta_by_second: dict[int, float]) -> dict[int, float]:
 
 
 def carrier_theta(entries: list[dict], valid: list[dict]) -> dict[int, float]:
-    """theta's change from the first valid second, in ns, from three times the carrier phase
-    of the correlation peak in both directions (as M3, results/lmx-sync-loopback-20261019
-    section 1.2); a later arrival gives a lower phase.  Changes beyond +-28 ps (half a turn
-    of 57.5 ps) would alias; with one FS725 they stay far below."""
+    """theta's change from the first valid second, in ns, from the carrier phase of the
+    correlation peak in both directions; a later arrival gives a lower phase.  The phase is
+    used as it is, not three times it as before rf-clock 1.3.0.5: since then both NCOs
+    start in one phase at every power-up (results/lmx-sync-loopback-20261019 section 4),
+    so no 120-degree steps need removing.  Changes beyond +-86 ps (half a turn of
+    172.4 ps) would alias; with one FS725 they stay far below."""
     records = {(e["node"], e["count"]): e for e in entries if e["type"] in ("local", "peer")}
     out, first = {}, None
     for r in valid:
@@ -182,9 +195,9 @@ def carrier_theta(entries: list[dict], valid: list[dict]) -> dict[int, float]:
         b = records.get(("B", r["count_b"])) or records.get(("AB", r["count_b"]))
         if a is None or b is None:
             continue
-        phases = (3 * b["slots"]["AB"]["rx"]["phase"], 3 * a["slots"]["BA"]["rx"]["phase"])
+        phases = (b["slots"]["AB"]["rx"]["phase"], a["slots"]["BA"]["rx"]["phase"])
         first = first or phases
-        d_ab, d_ba = (-((p - p0 + math.pi) % (2 * math.pi) - math.pi) / K3 for p, p0 in zip(phases, first))
+        d_ab, d_ba = (-((p - p0 + math.pi) % (2 * math.pi) - math.pi) / K1 for p, p0 in zip(phases, first))
         out[r["count_a"]] = (d_ab - d_ba) / 2 / 1000
     return out
 
@@ -207,9 +220,13 @@ def summarize(log: Path) -> dict:
             for record in {id(a): a, id(b): b}.values():
                 if record.get("die_c") is not None:
                     die.setdefault(record["node"], []).append(record["die_c"])
+    counts = [e["count_a"] for e in results]
     return {"info": [e for e in entries if e["type"] in ("info", "hello")],
             "events": [e["event"] for e in entries if e["type"] == "event"],
-            "seconds": len(results), "valid": len(valid),
+            # A second in which a board skipped its slots has no result at all: "expected"
+            # counts every second from the first result to the last.
+            "seconds": len(results), "expected": max(counts) - min(counts) + 1 if counts else 0,
+            "valid": len(valid),
             "theta_ns": stats([e["theta_ns"] for e in valid]), "delay_ns": stats([e["delay_ns"] for e in valid]),
             "m_ab_ns": stats([e["m_ab_ns"] for e in valid]), "m_ba_ns": stats([e["m_ba_ns"] for e in valid]),
             "theta_adev": allan(by_second),
@@ -222,7 +239,9 @@ def summarize(log: Path) -> dict:
 
 def report(summary: dict) -> None:
     theta, delay = summary["theta_ns"], summary["delay_ns"]
-    print(f"{summary['valid']} of {summary['seconds']} seconds paired and valid")
+    missing = summary["expected"] - summary["seconds"]
+    print(f"{summary['valid']} of {summary['seconds']} seconds paired and valid"
+          + (f"; {missing} more seconds within the run have no result" if missing else ""))
     if theta["n"]:
         print(f"theta {theta['mean']:+.4f} ns, sd {theta['sd'] * 1000:.2f} ps "
               f"(range {theta['min']:+.4f} to {theta['max']:+.4f} ns)")
@@ -255,21 +274,28 @@ def main() -> None:
                         help="keep every Nth second's RX windows (rx_<node>/)")
     parser.add_argument("--alternate", action="store_true",
                         help="with --reboot or --power-cycle: only before even-numbered runs")
+    parser.add_argument("--alternate-code", metavar="DIR",
+                        help="odd-numbered runs with the rf_clock package in DIR on the boards (PYTHONPATH), "
+                             "even ones with the board Python's own")
     args = parser.parse_args()
     if args.reboot and args.power_cycle:
         parser.error("--reboot or --power-cycle, not both")
+    if args.dev and args.alternate_code:
+        parser.error("--dev or --alternate-code, not both")
 
     nodes = {"AB": BOARDS["A"]} if args.mode == "self" else dict(BOARDS)
     ips = sorted(set(nodes.values()))
     for ip in ips:
         check_idle(ip)
+        if args.alternate_code and ssh(ip, f"test -d {args.alternate_code}/rf_clock").returncode:
+            sys.exit(f"no {args.alternate_code}/rf_clock on {ip}")
     out = results_dir(f"m4-twtt-{args.mode}")
     (out / "settings.json").write_text(json.dumps({"mode": args.mode, "seconds": args.seconds, "dev": args.dev,
                                                    "runs": args.runs, "reboot": args.reboot,
                                                    "power_cycle": args.power_cycle, "alternate": args.alternate,
                                                    "save_every": args.save_every, "board_python": args.board_python,
                                                    "dev_dir": args.dev_dir if args.dev else None,
-                                                   "boards": nodes},
+                                                   "alternate_code": args.alternate_code, "boards": nodes},
                                                   indent=2) + "\n", newline="\n")
     series = []
     for n in range(1, args.runs + 1):
@@ -293,9 +319,12 @@ def main() -> None:
         if args.dev:
             for ip in ips:
                 deploy_dev(ip, args.board_python, args.dev_dir)
+        old = bool(args.alternate_code) and n % 2 == 1
+        code = args.alternate_code if old else args.dev_dir if args.dev else "installed"
         for node, ip in nodes.items():  # A first, so that it listens when B connects
-            start(ip, node, args.seconds, args.dev, peer=BOARDS["A"] if node == "B" else None,
-                  save_every=args.save_every, python=args.board_python, dev_dir=args.dev_dir)
+            start(ip, node, args.seconds, args.dev or old, peer=BOARDS["A"] if node == "B" else None,
+                  save_every=args.save_every, python=args.board_python,
+                  dev_dir=args.alternate_code if old else args.dev_dir)
         finished = wait_all(ips, args.seconds + START_S, args.board_python)
         logs = {node: fetch(ip, node, run, rx=bool(args.save_every)) for node, ip in nodes.items()}
         if not finished:
@@ -308,7 +337,8 @@ def main() -> None:
             report(s)
         first = next(iter(summary.values()), None)
         if first and first["theta_ns"]["n"]:
-            series.append({"run": n, "rebooted": rebooted, "power_cycled": power_cycled, "valid": first["valid"],
+            series.append({"run": n, "code": code, "rebooted": rebooted, "power_cycled": power_cycled,
+                           "valid": first["valid"],
                            "theta_ns": first["theta_ns"]["mean"], "m_ab_ns": first["m_ab_ns"]["mean"],
                            "m_ba_ns": first["m_ba_ns"]["mean"], "carrier_phase_deg": first["carrier_phase_deg"],
                            "die_c": {k: v.get("mean") for k, v in first["die_c"].items()},
@@ -316,14 +346,14 @@ def main() -> None:
     if args.runs > 1:
         (out / "series.json").write_text(json.dumps(series, indent=2) + "\n", newline="\n")
         print(f"{'run':>3} {'boot':>4} {'s':>4} {'theta/ns':>10} {'m_AB/ns':>10} {'m_BA/ns':>10} {'phase AB':>9} "
-              f"{'phase BA':>9} {'die A':>6} {'die B':>6}")
+              f"{'phase BA':>9} {'die A':>6} {'die B':>6}  code")
         for r in series:
             phase, die = r["carrier_phase_deg"], r["die_c"]
             boot = "yes" if r["rebooted"] else "off" if r["power_cycled"] else ""
             print(f"{r['run']:3d} {boot:>4} {r['valid']:4d} {r['theta_ns']:10.4f} "
                   f"{r['m_ab_ns']:10.4f} {r['m_ba_ns']:10.4f} {phase.get('AB', float('nan')):9.1f} "
                   f"{phase.get('BA', float('nan')):9.1f} {die.get('A') or float('nan'):6.1f} "
-                  f"{die.get('B') or float('nan'):6.1f}")
+                  f"{die.get('B') or float('nan'):6.1f}  {r['code']}")
 
 if __name__ == "__main__":
     main()

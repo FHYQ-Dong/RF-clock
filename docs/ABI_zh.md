@@ -803,7 +803,8 @@ wheel 用发布的那个（§14.1）；开发中的版本在板上从仓库打�
 | `rf_clock.pl.waveform` | `WaveformGenerator`：PRN + RRC 发射波形                                 |
 | `rf_clock.pl.beats`    | 256 bit beat 的打包和解包                                                 |
 | `rf_clock.correlator`  | 互相关时延估计（不依赖 PL）                                               |
-| `rf_clock.twtt`        | 两块板之间的双向时间比对（§11.12） |
+| `rf_clock.twtt`        | 两块板之间的双向时间比对，以及修正 B 的 FS725（§11.12） |
+| `rf_clock.fs725`       | 经 RS-232 控制 FS725 铷钟（§11.13） |
 
 ## 10. 快速上手
 
@@ -1123,6 +1124,7 @@ pl.ctrl.arm_tx(target, len(beats), repeat=10)  # 10 遍首尾相接，6.55 ms
 | `timing` | 时隙（`SLOTS`：AB 在 PPS 沿后 100 ms，BA 在 600 ms；RX 窗口比时隙早 `PRE_TICKS` = 1.25 µs 打开）、记录格式、`two_way()`（m_AB、m_BA、θ = (m_AB − m_BA)/2、单程延时 (m_AB + m_BA)/2）和 `Pairer`（按系统时间把 A、B 对同一个 PPS 沿的记录配对） |
 | `node` | PL 循环和启动命令：`PL.open()` 之后，每秒在 PPS 沿后立即按本节点的时隙收发（A 在 AB 发、在 BA 收，B 相反；AB 两个时隙都收发，即一块板经自己的回环线），对每个窗口做相关，每秒一条记录 |
 | `link` | 第二个进程，由 `node` 启动，不碰硬件：与另一块板的 TCP 连接（A 在 50725 端口监听，B 连接 `--peer` 并在断开后重连）、配对、日志 |
+| `steer` | 按 B 的日志修正 B 的 FS725（M5）：估计 θ 和两台时钟相对频率的卡尔曼滤波器，以及把 θ 拉到目标值的频率偏移 SF |
 
 ```bash
 run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
@@ -1131,7 +1133,43 @@ $run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # 第二块板
 $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 ```
 
-日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。每条记录还带有本板的芯片温度（`die_c`，AMS 传感器中最热的那个，`rf_clock.pl.board.die_c`）。`--save-every N` 每隔 N 秒把这一秒的 RX 窗口存为 complex64 的 `<时隙>_<计数>.npy`，放在 `--save-dir`（默认 `rx_<节点>`），记录里写有文件名。`experiments/m4_twtt.py` 从 RF-clock-PC 在板上启动节点并汇总日志；`experiments/m4_channel.py` 用存下的窗口估计每个方向的信道响应。
+日志（`twtt_<节点>.jsonl`，或 `--log`）里有本板的 `info`（序列号、VCO 档位、MTS T1 捕获码）、对方的 `hello`、两块板的记录（`local`、`peer`）、每个配对成功的秒一条 `result`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`；某个时隙失败或相关峰 PSL 低于 10 dB 时为 null）以及 `event`（连接、错误）。θ 是 B 的时钟读数减 A 的，不含非互易项 Δ。两块板的记录按 PPS 沿的系统时间配对，所以 A、B 的时钟都要经 NTP 同步（§9.1）；否则命令拒绝启动（`--no-ntp-check` 可跳过）。link 进程一旦结束，PL 循环也随之停止。每条记录还带有本板的芯片温度（`die_c`，AMS 传感器中最热的那个，`rf_clock.pl.board.die_c`）。`--save-every N` 每隔 N 秒把这一秒的 RX 窗口存为 complex64 的 `<时隙>_<计数>.npy`，放在 `--save-dir`（默认 `rx_<节点>`），记录里写有文件名。写文件由单独的线程完成，慢的磁盘不会拖住循环（2026-10-26/27 夜里，写板子 SD 卡曾让循环卡住最长 5 s，错过了这几个 PPS 沿）；已有 8 个文件还没写完时，这个窗口不再保存，记录里把文件名写在 `not_saved` 下。`experiments/m4_twtt.py` 从 RF-clock-PC 在板上启动节点并汇总日志；`experiments/m4_channel.py` 用存下的窗口估计每个方向的信道响应。
+
+`rf_clock.twtt.steer` 在 B 上与节点 B 一起运行，跟踪它的日志，修正接在 `--port` 上的 FS725（M5：每块板用自己的参考，只修正 B）：
+
+```bash
+$run -m rf_clock.twtt.steer --target-ns T --log twtt_B.jsonl --port /dev/ttyUSB0
+```
+
+每个配对成功的秒的 θ 更新一个卡尔曼滤波器，状态是 θ 和两台时钟的相对频率（`--clock-adev`：这对时钟在 1 s 处的 Allan 偏差，默认 2e-11，即 FS725 的指标；`--theta-sd`：θ 的离散，默认 3 ps；偏离预测超过 5 个标准差的 θ 被剔除）。滤波 `--settle` 秒（默认 60）之后，每隔 `--interval` 秒（默认 10）设一次 SF，让 θ 的误差按时间常数 `--tau`（默认 50 s）衰减。`--target-ns` 是这套接线下 θ 的零基线值（计划第 8 节），没有默认值。SF 是整数：每次修正把取整的余数留给下一次。每次最多改 `--max-step`（默认 100），并且离起始值不超过 `--max-offset`（默认 500），否则抛 `SteeringError`，SF 保持不变。这个限制并不能说明环路是闭合的：两块板共用一台 FS725 时（M4），θ 不随 SF 变，滤波器会把缺失的响应当成时钟噪声；所以先确认 SF 的一个阶跃让 θ 的变化率变了同样多。1 pps 锁相开着时，命令会把它关掉（否则 SF 不起作用）。每次修正前，它检查锁相仍然关着、SF 仍是它上次设的值（`check_unit`）：设备重启会恢复电位器设定的频率和锁相（后面板输入上有 PPS 时，设备随即锁到它上面），别的程序也可能改了 SF；出现这两种情况，或者 FS725 不再应答（`FS725Error`），驾驭就停止。`--dry-run` 只计算、不写入，`--replay` 不接 FS725、回放一份记录好的日志。修正日志（`steer_B.jsonl`，或 `--steer-log`）每秒一行，每次修正一行；停止后 SF 保持最后的值。FS725 经 EPG1 是共用的：日志的 `stop` 一行和最后打印的一行给出开始时的 SF，实验结束后用 `rf_clock.fs725 sf` 把它设回去。`experiments/m5_steer_sim.py` 仿真这个环路：θ 的残差约为 σ_y(1 s)·√(τ/2)，几乎与 θ 的测量噪声无关；按 FS725 的指标在 τ = 50 s 时约 100 ps rms，一对 5e-12 的时钟约 26 ps。
+
+### 11.13 `rf_clock.fs725`（FS725 铷钟）
+
+FS725 把后面板 DB9（DCE，用直通线；9600 波特，8N1，XON/XOFF，不用握手线）上的每条命令原样转给内部的 PRS10，回复也原样返回；命令集就是 PRS10 手册的 "RS-232 Instruction Set"。本模块用标准库的 `termios`，除 PYNQ 环境外不需要别的包。
+
+| `FS725` 的方法 | 命令 | 含义 |
+| -------------- | ---- | ---- |
+| `FS725.open(port)` | `VB0` | 打开串口设备（默认 `/dev/ttyUSB0`）；写入的每个设置都交给 `log` |
+| `query(cmd)` | 任意 `…?` | 一条查询的回复；其他命令一律拒绝 |
+| `identify()` | `ID?` | 型号、固件版本和序列号 |
+| `status()` | `ST?` | 六个状态字节，返回 `Status`：`conditions()` 列出每个置位的含义，另有 `rb_locked`、`pps_locked`、`command_errors`；读一次就清掉锁存的位 |
+| `frequency()`、`set_frequency(sf)` | `SF?`、`SF` | 频率偏移，单位 1e-12（−2000 到 +2000，相对 EEPROM 里的校准值；断电后不保存）；设置后读回，没生效就抛 `FS725Error` |
+| `phase_lock()`、`set_phase_lock(on)` | `PL?`、`PL` | 是否锁相到后面板 BNC 上的 1 pps 输入；关掉后直到下次重启 |
+| `time_tag()` | `TT?` | 最近一个 1 pps 输入比 1 pps 输出晚多少，0 到 999 999 999 ns（没有新的就返回 None） |
+| `place_pulse(ns)` | `PP` | 把 1 pps 输出提前 1 到 999 999 999 ns |
+| `magnetic_dac()` | `MR?` | 磁场的 12 位 DAC，SF 就是通过它起作用的 |
+| `case_temperature()` | `AD10?` | 机壳温度，°C |
+
+第一次发 SF 之后，校准电位器失效，直到重启，所以 SF 0 不是"不变"：修正要从 `frequency()` 读到的值开始。1 pps 锁相锁住输入时，SF 被忽略。SF 通过磁场起作用，频率随 DAC 设定值按平方关系变化：在标称工作点附近，一个 DAC 步长约相当于 4 个 SF 单位（由 PRS10 手册推断；可以用 `magnetic_dac()` 核对）。本模块不写 EEPROM（`!`），不改任何校准（MO、SP、SS、TS、PS、TO、FC、GA、LO、PH、MS、SD），也不重启设备（RS、RC）。
+
+```bash
+run="sudo /usr/local/share/pynq-venv/bin/python"
+$run -m rf_clock.fs725 status --port /dev/ttyUSB0   # 型号、状态、SF、锁相、时间标签、机壳温度
+$run -m rf_clock.fs725 align --port /dev/ttyUSB0    # 另一个节点的 PPS 接在后面板 1 pps 输入上
+$run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # 设 SF（并回读），例如设回驾驭开始时的值
+```
+
+`align` 关掉 1 pps 锁相，取十个时间标签，用 `PP` 把 1 pps 输出移到输入上（PP 只能往前移：推后 d 等于提前一秒减 d），误差几 ns，这样双向时间比对的 RX 窗口（比时隙早 1.25 µs 打开）才能接到另一个节点的 burst。它让 PPS 相对 10 MHz 移动了：之后要检查板子捕获 PPS 的余量（M1），以及 EPG1 的余量：EPG1 用锁在同一个 10 MHz 上的时钟对这个 PPS 重新定时（EPG1 的各路输出也都跟着移动）。锁相只关到设备下次重启为止：对准之后把另一个 PPS 从后面板输入上拔掉，否则一次重启就会让设备锁到它上面。设置写进 `fs725.jsonl`（`--log`）。
 
 ## 12. 异常与返回码
 
@@ -1151,6 +1189,8 @@ $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 | `BoardConfigError`                     | `BringupError`  | 板级配置格式不对、指定了却不存在，或属于另一块板（§11.1）                                  |
 | `RFDCError`                            | `RuntimeError`  | tile 未启动或 MTS 状态非 OK                                                                |
 | `VersionMismatch`                      | `RuntimeError`  | overlay 或`BUILD_VERSION` 与安装的 rf-clock A.B.C 不同，或文件与 manifest 不符（§14.1） |
+| `FS725Error` | `RuntimeError` | `rf_clock.fs725`：没有回复、回复格式不对，或设置没有生效（§11.13） |
+| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`：一次修正会让 SF 超出允许的偏移，或者 FS725 已不是驾驭设下的状态（§11.12） |
 
 | 返回码（§5.2）  | Python 表现                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------- |

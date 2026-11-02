@@ -15,7 +15,8 @@ PRN reference and hands the second's record to the link.  M4 wiring: A's DAC_A -
 attenuator -> B's ADC_B and B's DAC_A -> attenuator -> A's ADC_B, both boards on one
 FS725.  With ``--save-every N`` every Nth second's RX windows are also kept, as
 complex64 ``<slot>_<count>.npy`` in ``--save-dir`` (``rx_<node>`` unless given), for
-looking at the waveform itself; the record names the file.
+looking at the waveform itself; the record names the file.  They are written by
+threads of their own, so that a slow disk cannot hold up the loop.
 
 The two boards' records are matched by the system time of their PPS edges, so A and
 B need NTP-synchronized clocks (docs/ABI.md 9.1): the command refuses to start
@@ -30,6 +31,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from multiprocessing import Pipe, Process
 from typing import Any, Callable
@@ -50,6 +52,34 @@ def ntp_synchronized() -> bool:
     return done.stdout.strip() == "yes"
 
 
+class WindowSaver:
+    """Writes kept RX windows from threads of their own, so that a slow disk never holds
+    up the per-second loop: on the night of 2026-10-26/27 a board's SD card held a
+    write for up to 5 s and the loop missed those PPS edges.  The threads are not
+    daemons, so the process finishes its files before it exits; while ``pending``
+    writes are still under way a window is dropped instead."""
+
+    def __init__(self, directory: str, pending: int = 8) -> None:
+        self.directory = directory
+        self.free = threading.BoundedSemaphore(pending)
+
+    def save(self, name: str, samples: Any) -> bool:
+        """Start writing ``samples`` to ``name``; False (and nothing written) if too many are pending."""
+        if not self.free.acquire(blocking=False):
+            return False
+
+        def write() -> None:
+            import numpy as np
+
+            try:
+                np.save(os.path.join(self.directory, name), samples)
+            finally:
+                self.free.release()
+
+        threading.Thread(target=write, name=f"save {name}").start()
+        return True
+
+
 def run_node(pl: Any, node: str, seconds: int, emit: Callable[[dict], None], *,
              amplitude: float = AMPLITUDE, say: Callable[[str], None] = print,
              save_every: int = 0, save_dir: str = "") -> int:
@@ -68,6 +98,7 @@ def run_node(pl: Any, node: str, seconds: int, emit: Callable[[dict], None], *,
     pl.tx_buffer.write_beats(beats)
     rx_beats = len(beats) + PRE_TICKS + MARGIN_BEATS
     slots = plan(node)
+    saver = WindowSaver(save_dir)
     done = 0
     while not seconds or done < seconds:
         count, pps_tick = pl.ctrl.wait_next_pps()
@@ -98,8 +129,8 @@ def run_node(pl: Any, node: str, seconds: int, emit: Callable[[dict], None], *,
                            "psl_db": peak.peak_to_sidelobe_db}
             if save_every and done % save_every == 0:
                 name = f"{slot}_{count}.npy"
-                np.save(os.path.join(save_dir, name), samples.astype(np.complex64))
-                entry["rx"]["saved"] = name
+                kept = saver.save(name, samples.astype(np.complex64))
+                entry["rx"]["saved" if kept else "not_saved"] = name
         record["die_c"] = die_c()
         emit(record)
         say(describe(record))

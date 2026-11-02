@@ -129,7 +129,8 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | `src/rf_clock/checks/` | Board checks for milestones M1–M3 |
 | `src/rf_clock/examples/` | Annotated examples: fake PL, board bring-up, raw PYNQ and C++ access |
 | `src/rf_clock/correlator.py` | Cross-correlation delay estimation |
-| `src/rf_clock/twtt/` | Two-way time transfer between two boards (M4): slots, the PL loop, the link between the boards |
+| `src/rf_clock/twtt/` | Two-way time transfer between two boards (M4): slots, the PL loop, the link between the boards; steering B's FS725 (M5) |
+| `src/rf_clock/fs725.py` | The FS725 rubidium standard over RS-232: status, frequency offset, 1 pps time tags and placement |
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
 | `boards/` | A copy of each board's config (`/etc/rf-clock/board.json`): reference and backup |

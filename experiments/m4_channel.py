@@ -74,14 +74,17 @@ def records(run: Path, node: str) -> tuple[float, dict[str, dict]]:
 def response(run: Path, slot: str) -> dict | None:
     """The run's mean H(f) of one direction and the envelope peaks of its windows."""
     from rf_clock.pl.waveform import WaveformGenerator
+    from rf_clock.twtt.timing import MIN_PSL_DB
 
     node = DIRECTIONS[slot]
     amplitude, kept = records(run, node)
-    files = sorted((run / f"rx_{node}").glob(f"{slot}_*.npy"))
+    saved = sorted((run / f"rx_{node}").glob(f"{slot}_*.npy"))
+    # A window without the other board's burst (it had not started, or skipped that second) is noise.
+    files = [f for f in saved if f.name in kept and kept[f.name]["psl_db"] >= MIN_PSL_DB]
     if not files:
         return None
     ref = WaveformGenerator(amplitude=amplitude).generate().astype(np.float64)
-    peaks = [kept[f.name]["peak"] for f in files if f.name in kept]
+    peaks = [kept[f.name]["peak"] for f in files]
     k0 = int(round(statistics.median(peaks)))
     peak = statistics.fmean(peaks)  # the run's envelope peak, samples
     n = 1 << int(np.ceil(np.log2(len(np.load(files[0])) + len(ref))))
@@ -101,7 +104,7 @@ def response(run: Path, slot: str) -> dict | None:
     group = -np.gradient(phase, f) / (2 * np.pi) * 1e12 + (peak - k0) * SAMPLE_PS  # ps, from sample k0
     db = 20 * np.log10(np.abs(h) / np.abs(h[np.argmin(np.abs(f))]))
     line = np.polyfit(f, db, 1, w=w)
-    return {"f": f, "db": db, "group_ps": group, "windows": len(files),
+    return {"f": f, "db": db, "group_ps": group, "windows": len(files), "skipped": len(saved) - len(files),
             "envelope_ps": (peak - k0) * SAMPLE_PS,
             "group_mean_ps": float(np.average(group, weights=w)),
             "group_center_ps": float(np.interp(0.0, f, group)),
@@ -128,7 +131,7 @@ def main() -> None:
                 print(f"{run.name} {slot}: no kept windows")
                 continue
             found = True
-            print(f"{run.name} {slot}: {r['windows']} windows; envelope {r['envelope_ps']:+.1f} ps, "
+            print(f"{run.name} {slot}: {r['windows']} windows ({r['skipped']} without a burst skipped); envelope {r['envelope_ps']:+.1f} ps, "
                   f"group delay {r['group_mean_ps']:+.1f} ps (weighted by |A|; at the carrier {r['group_center_ps']:+.1f}, "
                   f"spread {r['group_spread_ps']:.1f} ps over +-50 MHz); tilt {r['tilt_db_per_100mhz']:+.2f} dB/100 MHz, "
                   f"ripple {r['ripple_db']:.2f} dB")

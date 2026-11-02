@@ -819,7 +819,8 @@ Modules:
 | `rf_clock.pl.waveform` | `WaveformGenerator`: PRN + RRC transmit waveform |
 | `rf_clock.pl.beats`    | packing and unpacking of 256-bit beats |
 | `rf_clock.correlator`  | cross-correlation delay estimation (independent of the PL) |
-| `rf_clock.twtt`        | two-way time transfer between two boards (§11.12) |
+| `rf_clock.twtt`        | two-way time transfer between two boards, and steering B's FS725 (§11.12) |
+| `rf_clock.fs725`       | the FS725 rubidium standard over RS-232 (§11.13) |
 | `rf_clock.checks`      | board checks for milestones M1–M3 (§13) |
 | `rf_clock.examples`    | annotated examples |
 
@@ -1142,6 +1143,7 @@ One board's side of the two-way time transfer of plan section 4, for M4 (two boa
 | `timing` | the slots (`SLOTS`: AB 100 ms and BA 600 ms after the PPS edge; an RX window opens `PRE_TICKS` = 1.25 µs before its slot), the record format, `two_way()` (m_AB, m_BA, θ = (m_AB − m_BA)/2, one-way delay (m_AB + m_BA)/2) and `Pairer` (A's and B's records of one PPS edge, matched by system time) |
 | `node` | the PL loop and the command: `PL.open()`, then every second, right after the PPS edge, the slots of the node (A transmits in AB and receives in BA, B the reverse; AB does both in both, one board through its own loopback cable), the correlation of each window, one record per second |
 | `link` | the second process, started by `node` and never touching the hardware: TCP to the other board (A listens on port 50725, B connects to `--peer` and reconnects), pairing, the log |
+| `steer` | steering B's FS725 from B's log (M5): a Kalman filter for θ and the clocks' relative frequency, and the frequency offset SF that brings θ to its target |
 
 ```bash
 run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python"
@@ -1150,7 +1152,43 @@ $run -m rf_clock.twtt.node B --peer 192.168.2.99 --seconds 600   # second board
 $run -m rf_clock.twtt.node AB --seconds 60    # one board through its own loopback cable
 ```
 
-The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial number, VCO bands, MTS T1 codes), the other board's `hello`, both boards' records (`local`, `peer`), a `result` for every paired second (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`; null when a slot failed or its correlation peak is below 10 dB PSL) and `event`s (connections, errors). θ is B's clock reading minus A's, without the non-reciprocity Δ. The two boards' records are paired by the system time of their PPS edges, so A and B need NTP-synchronized clocks (§9.1); the command refuses to start otherwise (`--no-ntp-check`). If the link process ends, the PL loop stops. Each record also carries the board's die temperature (`die_c`, the hottest AMS sensor, `rf_clock.pl.board.die_c`). `--save-every N` keeps every Nth second's RX windows as complex64 `<slot>_<count>.npy` in `--save-dir` (default `rx_<node>`), and the record names the file. `experiments/m4_twtt.py` runs the nodes on the boards from RF-clock-PC and summarizes the logs; `experiments/m4_channel.py` estimates each direction's channel response from the kept windows.
+The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial number, VCO bands, MTS T1 capture codes), the other board's `hello`, both boards' records (`local`, `peer`), a `result` for every paired second (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`; null when a slot failed or its correlation peak is below 10 dB PSL) and `event`s (connections, errors). θ is B's clock reading minus A's, without the non-reciprocity Δ. The two boards' records are paired by the system time of their PPS edges, so A and B need NTP-synchronized clocks (§9.1); the command refuses to start otherwise (`--no-ntp-check`). If the link process ends, the PL loop stops. Each record also carries the board's die temperature (`die_c`, the hottest AMS sensor, `rf_clock.pl.board.die_c`). `--save-every N` keeps every Nth second's RX windows as complex64 `<slot>_<count>.npy` in `--save-dir` (default `rx_<node>`), and the record names the file. Threads of their own write them, so that a slow disk cannot hold up the loop (a write to a board's SD card held it for up to 5 s on the night of 2026-10-26/27, and it missed those PPS edges); while 8 writes are still under way a window is dropped and the record names it under `not_saved`. `experiments/m4_twtt.py` runs the nodes on the boards from RF-clock-PC and summarizes the logs; `experiments/m4_channel.py` estimates each direction's channel response from the kept windows.
+
+`rf_clock.twtt.steer` runs on B beside node B, follows its log and steers the FS725 on `--port` (M5: each board on its own reference, only B steered):
+
+```bash
+$run -m rf_clock.twtt.steer --target-ns T --log twtt_B.jsonl --port /dev/ttyUSB0
+```
+
+Each paired second's θ updates a Kalman filter for θ and the two clocks' relative frequency (`--clock-adev`: the pair's Allan deviation at 1 s, default 2e-11, the FS725's specification; `--theta-sd`: θ's scatter, default 3 ps; a θ more than 5 standard deviations from the prediction is rejected). Every `--interval` seconds (default 10), after `--settle` seconds (default 60), SF is set so that θ's error decays with time constant `--tau` (default 50 s). `--target-ns` is θ's zero-baseline value for this wiring (plan section 8) and has no default. SF is an integer: each correction carries the rounding remainder to the next. It changes by at most `--max-step` (default 100) per correction and stays within `--max-offset` (default 500) of its starting value, else `SteeringError` and SF stays. That bound does not show that the loop closes: with both boards on one FS725 (M4) θ does not follow SF and the filter takes the missing response for clock noise; check first that a step of SF changes θ's rate by as much. With the 1 pps PLL on, the command turns it off (SF is ignored otherwise). Before each correction it checks that the PLL is still off and SF still the value it last set (`check_unit`): a restart brings back the pot's frequency and the PLL (with a PPS on the rear input the unit would then lock to it), and another program may have changed SF; then, or if the FS725 stops answering (`FS725Error`), steering stops. `--dry-run` computes without writing, `--replay` runs a recorded log without an FS725. The steering log (`steer_B.jsonl`, or `--steer-log`) has one line per second and one per correction; stopping leaves SF at its last value. The FS725 is shared through the EPG1: the log's `stop` line and the last line printed give the SF at the start, which `rf_clock.fs725 sf` sets back after an experiment. `experiments/m5_steer_sim.py` simulates the loop: θ's residual goes as σ_y(1 s)·√(τ/2) and hardly depends on θ's measurement noise, about 100 ps rms at τ = 50 s for the FS725's specification and 26 ps for a pair at 5e-12.
+
+### 11.13 `rf_clock.fs725` (the FS725 rubidium standard)
+
+The FS725 passes every command on its rear DB9 (DCE, a straight-through cable; 9600 baud, 8N1, XON/XOFF, no handshake lines) to the PRS10 inside it and returns its replies; the commands are the PRS10 manual's "RS-232 Instruction Set". The module uses the standard library's `termios`, so it needs no package beyond PYNQ's environment.
+
+| Method of `FS725` | Command | Meaning |
+| ----------------- | ------- | ------- |
+| `FS725.open(port)` | `VB0` | open the serial device (default `/dev/ttyUSB0`); `log` receives every setting written |
+| `query(cmd)` | any `…?` | the reply of one query; anything else is refused |
+| `identify()` | `ID?` | model, firmware and serial number |
+| `status()` | `ST?` | the six status bytes as `Status`: `conditions()` names every set bit, `rb_locked`, `pps_locked`, `command_errors`; reading clears the latched bits |
+| `frequency()`, `set_frequency(sf)` | `SF?`, `SF` | the frequency offset in parts in 1e12 (−2000 to +2000, relative to the EEPROM calibration; lost at power-off); setting reads it back and raises `FS725Error` if it did not take |
+| `phase_lock()`, `set_phase_lock(on)` | `PL?`, `PL` | whether the unit phase-locks to a 1 pps input on its rear BNC; off until the next restart |
+| `time_tag()` | `TT?` | when the latest 1 pps input arrived after the 1 pps output, 0 to 999 999 999 ns (None if no new one) |
+| `place_pulse(ns)` | `PP` | move the 1 pps output earlier by 1 to 999 999 999 ns |
+| `magnetic_dac()` | `MR?` | the 12-bit DAC of the magnetic field, which SF sets |
+| `case_temperature()` | `AD10?` | the case temperature, °C |
+
+The first SF disables the calibration pot until the unit restarts, so SF 0 is not "unchanged": steering starts from what `frequency()` reads. SF is ignored while the 1 pps PLL is locked to an input. SF acts through the magnetic field, whose frequency goes as the square of the DAC setting: near the nominal operating point one DAC step is about 4 SF units (inferred from the PRS10 manual; `magnetic_dac()` checks it). Nothing writes the EEPROM (`!`), changes a calibration (MO, SP, SS, TS, PS, TO, FC, GA, LO, PH, MS, SD) or restarts the unit (RS, RC).
+
+```bash
+run="sudo /usr/local/share/pynq-venv/bin/python"
+$run -m rf_clock.fs725 status --port /dev/ttyUSB0   # identity, status, SF, PLL, time tag, case temperature
+$run -m rf_clock.fs725 align --port /dev/ttyUSB0    # the other node's PPS on the rear 1 pps input
+$run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # set SF (read back), e.g. to where steering started
+```
+
+`align` turns the 1 pps PLL off, takes ten time tags and moves the 1 pps output onto the input by `PP` (PP only moves earlier: later by d is earlier by one second minus d), to a few ns, so that the two-way time transfer's RX windows (1.25 µs before the slot) catch the other node's bursts. It moves the PPS against the 10 MHz: check the board's PPS capture margin afterwards (M1), and the margin of the EPG1, which retimes this PPS with a clock locked to the same 10 MHz (everything fed from the EPG1 moves too). The PLL stays off only until the unit restarts: take the other PPS off the rear input once aligned, or a restart locks the unit to it. Settings go to `fs725.jsonl` (`--log`).
 
 ## 12. Exceptions and result codes
 
@@ -1170,6 +1208,8 @@ The log (`twtt_<node>.jsonl`, or `--log`) holds this board's `info` (serial numb
 | `BoardConfigError` | `BringupError` | the board config is malformed, is missing where named, or is for another board (§11.1) |
 | `RFDCError` | `RuntimeError` | a tile did not start, or an MTS status is not OK |
 | `VersionMismatch` | `RuntimeError` | overlay or `BUILD_VERSION` A.B.C differs from the installed rf-clock, or a file does not match the manifest (§14.1) |
+| `FS725Error` | `RuntimeError` | `rf_clock.fs725`: no reply, a malformed reply, or a setting that did not take (§11.13) |
+| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`: a correction would take SF beyond its allowed offset, or the FS725 no longer holds the setting the steering made (§11.12) |
 
 | Result code (§5.2) | In Python |
 | ------------------ | --------- |
