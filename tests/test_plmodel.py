@@ -9,6 +9,7 @@ from rf_clock.correlator import estimate_delay
 from rf_clock.pl.waveform import WaveformGenerator
 from rf_clock.plmodel import correlator as p8
 from rf_clock.plmodel import fir
+from rf_clock.plmodel import packet as p9
 
 
 def test_the_integer_fir_is_the_first_waveform_to_a_few_lsb():
@@ -82,3 +83,53 @@ def test_the_tracker_gives_the_search_peak_or_no_lock():
     sidelobe = p8.track(rx_i, rx_q, ref, predicted=720)  # 716 .. 724: a sidelobe's local maximum
     assert sidelobe is not None and sidelobe.magnitude < found.strongest.magnitude / 2
     assert p8.track(rx_i, rx_q, ref, predicted=720, min_magnitude=found.strongest.magnitude // 2) is None
+
+
+MEASUREMENT = p9.Measurement(config_id=2134958710, pps_count=1234567, slot=499, time_epoch=3,
+                             t_tx_fs=2 * 10**12 + 5, t_rx_fs=-(2**62) + 7, phase=-123456789, quality=88, status=0x5A)
+
+
+def test_crc16_is_ccitt_false():
+    assert p9.crc16(b"123456789") == 0x29B1
+
+
+def test_a_packet_round_trips_and_a_flipped_bit_fails_its_crc():
+    data = p9.pack(MEASUREMENT)
+    assert len(data) == p9.PACKET_BYTES == 36
+    assert p9.unpack(data) == MEASUREMENT
+    assert p9.from_bits(p9.to_bits(data)) == data
+    bad = bytearray(data)
+    bad[17] ^= 0x04
+    assert p9.unpack(bytes(bad)) is None
+
+
+def test_the_packet_code_is_maximal_and_unlike_the_prn():
+    code = p9.code_chips(65535 + 100)
+    assert np.array_equal(code[:100], code[65535:])  # period 65535 ...
+    assert not np.array_equal(code[:100], code[65535 - 1:65535 + 99])
+    prn = WaveformGenerator().chips().astype(float)
+    cross = np.correlate(p9.code_chips(p9.PACKET_BITS * p9.SPREAD).astype(float), prn, mode="valid")
+    assert np.abs(cross).max() < 0.06 * prn.size  # no stretch of the code looks like the PRN
+
+
+def burst_window(data: bytes, lag: int, angle: float, noise: float, seed: int = 1):
+    """A window holding a burst (PRN, guard, packet) at ``lag``, rotated, in integer noise."""
+    taps = fir.coefficients(16000)
+    chips = fir.burst_chips(WaveformGenerator().chips(), p9.spread(data), guard=p9.GUARD_CHIPS)
+    burst = fir.shape(chips, taps).astype(float)
+    rng = np.random.default_rng(seed)
+    size = lag + burst.size + 200
+    x = rng.normal(0, noise, size) + 1j * rng.normal(0, noise, size)
+    x[lag:lag + burst.size] += 0.01 * burst * np.exp(1j * angle)
+    return np.rint(x.real).astype(np.int64), np.rint(x.imag).astype(np.int64), taps
+
+
+@pytest.mark.parametrize("angle", [0.0, 2.0, -2.9])
+def test_the_packet_is_despread_coherently_from_the_peak(angle):
+    data = p9.pack(MEASUREMENT)
+    rx_i, rx_q, taps = burst_window(data, 300, angle, noise=8.0)
+    ref = fir.shape(WaveformGenerator().chips(), taps).astype(np.int64)
+    peak = p8.track(rx_i, rx_q, ref, predicted=301)
+    assert peak is not None and peak.lag == 300
+    bits = p9.despread(rx_i, rx_q, p9.packet_start(peak.lag), peak.c_i, peak.c_q, p9.code_reference(taps))
+    assert p9.unpack(p9.from_bits(bits)) == MEASUREMENT

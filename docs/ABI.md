@@ -411,7 +411,7 @@ Python: `TXBuffer.write_beats(beats)`.
 
 #### 4.5.9 `TX_REPEAT` — repeated playback (shadow, since 1.3)
 
-Removed in rf-clock 2 (branch `v2-rf-data-transfer`), where bursts are made in the PL from chip sequences.
+**Development tests only** (rf-clock 2): continuous signals for spectrum and scope measurements. It is not part of the protocol: the protocol's bursts come from the slot engine (P7), which refuses single commands, this one included, while it runs.
 
 | Address | Access    | Format          | Reset |
 | ------- | --------- | --------------- | ----- |

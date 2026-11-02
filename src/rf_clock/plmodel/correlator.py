@@ -43,6 +43,8 @@ class Peak:
     fraction: int  # sub-sample position, 2^-32 sample, |fraction| <= 2^31
     phase: int  # carrier phase at ``lag``, 2^-32 turn, -2^31 .. 2^31 - 1
     magnitude: int  # floor(sqrt(I^2 + Q^2)) at ``lag``
+    c_i: int  # the correlation at ``lag``: the carrier phase reference of P9's despreader
+    c_q: int
 
     @property
     def index(self) -> float:
@@ -125,7 +127,8 @@ def peak_at(i: np.ndarray, q: np.ndarray, k: int, first: int = 0) -> Peak:
     """The estimate at array index ``k`` of correlations that start at lag ``first``."""
     mags = [magnitude(i[j], q[j]) for j in (k - 1, k, k + 1) if 0 <= j < i.size]
     fraction = subsample(*mags) if 0 < k < i.size - 1 else 0
-    return Peak(lag=first + k, fraction=fraction, phase=phase(i[k], q[k]), magnitude=magnitude(i[k], q[k]))
+    return Peak(lag=first + k, fraction=fraction, phase=phase(i[k], q[k]), magnitude=magnitude(i[k], q[k]),
+                c_i=int(i[k]), c_q=int(q[k]))
 
 
 def track(rx_i: np.ndarray, rx_q: np.ndarray, ref: np.ndarray, predicted: int, half: int = 4,

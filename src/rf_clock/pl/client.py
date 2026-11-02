@@ -339,7 +339,10 @@ class PLClient:
         """Play TX buffer beats 0..beats-1 from tick ``target``.
 
         ``repeat`` plays them that many times back to back without a gap
-        (TX_REPEAT, ABI 1.3); TX_ACTUAL is the start of the first pass.
+        (TX_REPEAT, ABI 1.3); TX_ACTUAL is the start of the first pass.  For
+        development tests only (continuous signals for spectrum and scope
+        measurements): from ABI 2.0 the protocol's bursts come from the slot
+        engine, which refuses single commands while it runs.
         """
         self._command("TX", target, beats, rx=False, repeat=repeat)
 

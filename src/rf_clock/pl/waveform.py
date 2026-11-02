@@ -168,7 +168,9 @@ class WaveformGenerator:
 
     ``periodic=True`` gives one period of the repeated sequence instead of a
     burst with RRC tails: ``chip_count * sps`` samples (``chip_count`` beats
-    at 8 samples per chip) for ``arm_tx(..., repeat=n)``.
+    at 8 samples per chip) for ``arm_tx(..., repeat=n)``, a development test
+    (continuous signals); the protocol's bursts are made in the PL from chips
+    (``rf_clock.plmodel.fir``).
     """
 
     amplitude: float = DEFAULT_DAC_AMPLITUDE

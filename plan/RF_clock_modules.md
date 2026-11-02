@@ -150,13 +150,13 @@ pair j = slots 2j and 2j + 1: one θ
 | `TIME_EPOCH` | u8 | changes when the sender's clocks relock: data across a change is not comparable |
 | T_tx | i64, fs after the sender's PPS | start of this burst |
 | T_rx | i64, fs after the sender's PPS | arrival of the peer's burst in the previous slot (P8's tracked peak) |
-| carrier phase | i16, 2π/65536 | at that peak |
+| carrier phase | i32, 2^-32 turn | at that peak, P8's phase as it is |
 | quality | u8, 0.25 dB | the tracker's peak power over the window's noise power (the peak-to-sidelobe ratio needs a whole-window search, P8) |
 | status | u8 | locked, measurement present, window valid, FIFO overflow, PPS locked, clocks locked |
 | CRC-16 | u16 | |
 
-- 34 bytes (272 bits). Times are in time units, not ticks or samples, so the packet survives a change of sample rate; T_rx must not pass through float32, which resolves only about 0.15 ps near sample 1000.
-- Modulation: BPSK spread at 100 Mchip/s with a code different from the PRN, L chips per bit. L follows from the link budget, measured on the link rather than assumed: about 10 dB Eb/N0 per bit gives a 1e-5 bit error rate before the CRC, and Eb/N0 = Es/N0 + 10·lg L, with Es/N0 the chip's signal-to-noise ratio at the receiver. The tracker's quality (§5.1 table; the peak power over the window's noise power) is Es/N0 + 36.1 dB for the 4096-chip PRN (10·lg 4096), so it gives Es/N0 on the link itself; L is the smallest power of two that leaves a margin above 10 dB, measured on the cabled link (M4b) and again on the air link (M6). Until then L = 64, which makes the packet 0.17 ms long; P3 and P9 take L as a parameter.
+- 36 bytes (288 bits). The phase keeps P8's full 2^-32 turn: 16 bits (2π/65536, 0.0026 ps at 5.8 GHz) would round it more coarsely than the 0.001 ps P8 is held to. Times are in time units, not ticks or samples, so the packet survives a change of sample rate; T_rx must not pass through float32, which resolves only about 0.15 ps near sample 1000.
+- Modulation: BPSK spread at 100 Mchip/s with a code different from the PRN, L chips per bit. L follows from the link budget, measured on the link rather than assumed: about 10 dB Eb/N0 per bit gives a 1e-5 bit error rate before the CRC, and Eb/N0 = Es/N0 + 10·lg L, with Es/N0 the chip's signal-to-noise ratio at the receiver. The tracker's quality (§5.1 table; the peak power over the window's noise power) is Es/N0 + 36.1 dB for the 4096-chip PRN (10·lg 4096), so it gives Es/N0 on the link itself; L is the smallest power of two that leaves a margin above 10 dB, measured on the cabled link (M4b) and again on the air link (M6). Until then L = 64, which makes the packet 0.18 ms long (288 × 64 chips); P3 and P9 take L as a parameter.
 - The receiving PL despreads coherently with the arrival time and carrier phase of the peer's previous burst, which move far less than a chip and a degree in 4 ms, and checks the CRC; a packet that fails is dropped, not repeated.
 - The PL queues its own measurements and the decoded packets; the ARM reads the queue in batches.
 - Pairing needs no NTP: each node learns the offset between the peer's `PPS_COUNT` and its own from every packet; a change of the offset (a missed PPS edge) discards that second.
@@ -168,6 +168,35 @@ pair j = slots 2j and 2j + 1: one θ
 - B moves its 1 pps output by that offset with the FS725's PP command (`place_pulse()` in `rf_clock.fs725`, 1 ns steps) and starts its slots. A's whole-window search then finds B's bursts if they arrive within its lag range, that is, if the delay is known to within a quarter of it (about ±3.4 µs, 1 km, for today's 13.8 µs); otherwise A searches a long window as B did.
 - With both directions measured, B removes the rest of its PPS offset with PP and then steers the FS725's frequency (§7.1).
 - After losing the peer, the PL searches the window (P8); it re-locks by itself only if the peak did not move (within ±1 sample), otherwise the ARM decides after checking the one-way delay; a peak outside the lag range goes back to long-window acquisition.
+
+### 5.3 Timing of one pair of slots (P7)
+
+~~~text
+        slot 2j (A transmits)                     slot 2j+1 (B transmits)                   slot 2j+2 (A)
+        |<---------------- 2 ms ---------------->|<---------------- 2 ms ---------------->|
+A  TX   |-o-|PRN|g|  packet: m_BA of 2j-1  |    |                                        |-o-|PRN|g| packet: m_BA of 2j+1 |
+B  RX   |-o-|-d-|[ window: P8 ][ packet span: P9 ]                                        |
+B  TX   |                                        |-o-|PRN|g|  packet: m_AB of 2j    |    |
+A  RX   |                                        |-o-|-d-|[ window: P8 ][ packet span: P9 ]
+                    tracker result ──> B's next packet           tracker result ──> A's next packet
+~~~
+
+| Interval | Value | Set by |
+| --- | --- | --- |
+| slot | 200 000 ticks (2 ms) from PPS + k × 2 ms, k = 0 … 499 | P7, fixed |
+| o: burst start in its slot | a few µs, the same on both nodes | P7 register |
+| PRN | 4096 chips, 40.96 µs | P3 (chip memory) |
+| g: guard | 10 chips, 0.1 µs | P3 |
+| packet | 288 × L chips: 0.18 ms at L = 64 | P3, P9 (L an RTL parameter) |
+| RRC tail | 73 samples after the last chip | P3 |
+| d: expected arrival after the peer's burst start | path plus hardware delay | P7 register, from the ARM |
+| window | opens 1.25 µs before the expected arrival; 43848 samples (54.8 µs) to start, an RTL parameter | P7, P8 |
+| packet span | from the window's end to the packet's last chip, captured for P9 only | P7, P9 |
+
+- B measures A's burst of slot 2j (its window and P8's tracker give T_rx and the phase) and sends that measurement, m_AB, in its own packet of slot 2j + 1; A does the same with B's burst of slot 2j + 1 in slot 2j + 2. A has both halves of pair j (slots 2j and 2j + 1) once it has decoded B's packet of slot 2j + 1, B once it has decoded A's packet of slot 2j + 2.
+- Each node's own next burst leaves 2 ms after the peer's burst it measures: the tracker (well under 0.2 ms) and the packet's assembly fit with a wide margin, and a whole-window search (2.4 ms) runs on a frozen window while the next window of the same node, 4 ms later, goes to the other buffer.
+- A node's window and packet span end long before its own burst of the next slot: at 40 km the path adds 133 µs, and window, packet span and path together stay under 0.5 ms.
+- The despreader takes the arrival time and carrier phase from the same peer's burst of two slots before (4 ms earlier), so it decodes the packet while its samples arrive; the first packet after lock is the first one it can decode.
 
 ## 6. PL modules
 
@@ -197,7 +226,7 @@ All timing-relevant logic is in one clock domain: the RFDC DAC AXIS, ADC AXIS, r
 
 - Chip memories (BRAM) hold the fixed codes the ARM writes (PRN or acquisition code, packet spreading code); the packet's bits come from P9; a later keyed-code generator feeds the same stream;
 - the chip stream (PRN, a guard of zeros, packet chips) passes a polyphase RRC FIR (81 taps, 8 samples per chip; the chips are ±1, so it needs adders only) into 16-bit I/Q beats;
-- a test mode plays a sample waveform the ARM preloads into the BRAM/URAM buffer (CW, scope and spectrum measurements), as the first version did;
+- a test mode plays a sample waveform the ARM preloads into the BRAM/URAM buffer (CW, scope and spectrum measurements), as the first version did, including `TX_REPEAT`'s back-to-back passes for a continuous signal; it serves development tests only, by P2's single commands, which the slot engine refuses while it runs;
 - states: IDLE → ARMED → RUNNING → DONE / FAULT;
 - starting on the cycle where `raw_tick` equals the slot's start tick (or `TX_TARGET_TICK` in test mode), output one beat (8 complex samples) per clock without a gap until the burst ends; output zeros outside the burst;
 - an ARM write to the chip or sample memories while ARMED/RUNNING is an error: the burst being transmitted cannot change;

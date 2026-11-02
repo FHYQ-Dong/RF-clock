@@ -45,7 +45,8 @@ def shape(chips: Sequence[int] | np.ndarray, taps: np.ndarray) -> np.ndarray:
     return np.convolve(up, np.asarray(taps, dtype=np.int64)).astype(np.int16)
 
 
-def burst_chips(prn: Sequence[int], packet: Sequence[int] = (), guard: int = 10) -> np.ndarray:
+def burst_chips(prn: Sequence[int] | np.ndarray, packet: Sequence[int] | np.ndarray = (),
+                guard: int = 10) -> np.ndarray:
     """A burst's chip stream (plan section 5): the PRN, ``guard`` zero chips (at
     least the RRC span), then the measurement packet's chips, if any."""
     if packet is None or len(packet) == 0:
