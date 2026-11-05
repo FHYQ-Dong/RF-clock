@@ -251,6 +251,34 @@ class FS725:
         """MR: the 12-bit DAC setting of the magnetic field, from the calibration and SF."""
         return self._int("MR?")
 
+    def frequency_control(self) -> tuple[int, int]:
+        """FC: the crystal's tuning as the frequency lock loop sets it, (high, low) DAC; the
+        low step is about 1.5e-12 of frequency (PRS10 manual p. 24-25).  It changes every
+        0.2 s, at each of the loop's corrections; about 30 reads a second are possible."""
+        reply = self.query("FC?")
+        try:
+            high, low = (int(v) for v in reply.split(","))
+        except ValueError as exc:
+            raise FS725Error(f"FC? returned {reply!r}") from exc
+        return high, low
+
+    def gain(self) -> int:
+        """GA: the frequency lock loop's gain, 0 (the loop stopped) to 10; each step up halves
+        the loop's time constant, 7 (about 2 s) in normal operation, 8 about 1 s, 10 about
+        0.25 s, and doubles its noise bandwidth (PRS10 manual p. 26-27)."""
+        return self._int("GA?")
+
+    def set_gain(self, ga: int) -> None:
+        """Set GA until the next restart (not written to EEPROM) and read it back."""
+        if not isinstance(ga, int) or not 0 <= ga <= 10:
+            raise ValueError(f"GA takes 0 to 10: {ga!r}")
+        before = self.gain()
+        self._set("GA", ga)
+        after = self.gain()
+        self.log({"time": time.time(), "command": "GA", "value": ga, "before": before, "after": after})
+        if after != ga:
+            raise FS725Error(f"GA {ga} not taken: GA? returns {after}")
+
     def case_temperature(self) -> float:
         """The case temperature sensor, degrees C (AD10, 10 mV/degree)."""
         return float(self.query("AD10?")) * 100
@@ -299,15 +327,16 @@ def align(unit: FS725, *, samples: int = 10, say: Callable[[str], None] = print)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    parser.add_argument("command", choices=("status", "align", "sf"),
+    parser.add_argument("command", choices=("status", "align", "sf", "gain"),
                         help="status: read everything; align: move the 1 pps output onto the rear 1 pps input; "
-                             "sf: set the frequency offset to VALUE")
-    parser.add_argument("value", nargs="?", type=int, help="sf: parts in 1e12, -2000 to 2000")
+                             "sf: set the frequency offset to VALUE; gain: set the frequency lock loop's "
+                             "gain to VALUE until the next restart (not written to EEPROM)")
+    parser.add_argument("value", nargs="?", type=int, help="sf: parts in 1e12, -2000 to 2000; gain: 0 to 10")
     parser.add_argument("--port", default=DEFAULT_PORT, help=f"serial device (default {DEFAULT_PORT})")
     parser.add_argument("--log", default="fs725.jsonl", help="JSON-lines log of every setting written")
     args = parser.parse_args()
-    if (args.command == "sf") != (args.value is not None):
-        parser.error("sf takes a value, and only sf")
+    if (args.command in ("sf", "gain")) != (args.value is not None):
+        parser.error("sf and gain take a value, and only they")
 
     def log(entry: dict) -> None:
         with open(args.log, "a") as f:
@@ -322,6 +351,7 @@ def main() -> int:
             print(f"rubidium lock {'yes' if status.rb_locked else 'NO'}")
             print(f"SF            {unit.frequency()} (parts in 1e12)")
             print(f"magnetic DAC  {unit.magnetic_dac()}")
+            print(f"FLL gain      GA {unit.gain()}; FC {','.join(map(str, unit.frequency_control()))}")
             print(f"1 pps PLL     {'enabled' if unit.phase_lock() else 'disabled'}"
                   f"{', active (SF is ignored)' if status.pps_locked else ''}")
             tag = unit.time_tag()
@@ -331,6 +361,10 @@ def main() -> int:
             before = unit.frequency()
             unit.set_frequency(args.value)
             print(f"SF {before} -> {args.value}")
+        elif args.command == "gain":
+            before = unit.gain()
+            unit.set_gain(args.value)
+            print(f"GA {before} -> {args.value} (until the next restart)")
         else:
             align(unit)
     finally:

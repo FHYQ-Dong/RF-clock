@@ -58,6 +58,11 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         from the first lock on; at the end SF goes back to its starting
                         value unless ``--keep-sf``.
 
+``--fc-every S``         on B with ``--fs725``: read the FS725's FC (the frequency lock
+                        loop's tuning of its crystal, PRS10 manual p. 24-25) every S
+                        seconds and write it as ``fc`` lines with the time on this
+                        node's PPS count; the loop changes it every 0.2 s.
+
 ``--pps-out OFFSET`` turns on this node's output PPS (``rf_clock.pl.pps_out``, DAC_B) at
 OFFSET ticks after each PPS_TICK with ``--pps-out-amplitude`` (default -24000: DAC_B is
 inverted, so the leading edge rises) and ``--pps-out-idle`` between pulses (default 0),
@@ -187,9 +192,10 @@ class FrequencyControl:
                 target_ps=args.steer_target_ns * 1000, sf0=self.sf0,
                 filter=steer.filter_for(args.steer_clock_adev, args.steer_theta_sd), tau_s=args.steer_tau,
                 interval_s=args.steer_interval, settle_s=args.steer_settle, max_step=args.steer_max_step,
-                max_offset=args.steer_max_offset, response_delay_s=args.steer_response_delay)
+                max_offset=args.steer_max_offset, response_delay_s=args.steer_response_delay,
+                response_lag_s=args.steer_response_lag)
         emit("frequency_control", identity=self.unit.identify(), sf0=self.sf0, status=list(status.bytes),
-             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac())
+             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=self.unit.gain())
         mark(f"FS725 SF {self.sf0} at the start; 1 pps PLL off")
 
     def set(self, sf: int, why: str, at_count: float | None = None) -> None:
@@ -329,7 +335,11 @@ def main() -> None:
     parser.add_argument("--steer-theta-sd", type=float, default=3.0)
     parser.add_argument("--steer-response-delay", type=float, default=1.9,
                         help="s after the second that asked for it that a change of SF acts (B's FS725, 2026-11-03)")
+    parser.add_argument("--steer-response-lag", type=float, default=0.0,
+                        help="then the frequency follows with this first-order time constant, s (0: at once)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
+    parser.add_argument("--fc-every", type=float, default=0.0, metavar="S",
+                        help="on B with --fs725: log the FS725's FC every S seconds (0.1 catches every update)")
     parser.add_argument("--pps-out", type=int, default=None, metavar="OFFSET",
                         help="the output PPS on DAC_B, OFFSET ticks after each PPS_TICK")
     parser.add_argument("--pps-out-amplitude", type=int, default=-24000, help="its DAC code")
@@ -375,7 +385,7 @@ def main() -> None:
                                               "sf_step_at", "sf_step_for", "steer_target_ns", "steer_tau",
                                               "steer_interval", "steer_settle", "steer_max_step",
                                               "steer_max_offset", "steer_clock_adev", "steer_theta_sd",
-                                              "steer_response_delay", "pps_out", "pps_out_amplitude",
+                                              "steer_response_delay", "steer_response_lag", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle")})
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
@@ -386,9 +396,9 @@ def main() -> None:
         time.sleep(max(0.0, start_at + args.acquire_after - time.time()))
         acquire_peer(pl, prn, taps, args, emit)
     control = None
-    if args.sf_step or args.steer_target_ns is not None:
+    if args.sf_step or args.steer_target_ns is not None or args.fc_every:
         if args.role != "B" or args.fs725 is None:
-            raise SystemExit("--sf-step and --steer-target-ns are for node B, with --fs725")
+            raise SystemExit("--sf-step, --steer-target-ns and --fc-every are for node B, with --fs725")
         control = FrequencyControl(args, emit)
     seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset)
     pl.queue.clear()
@@ -414,7 +424,7 @@ def main() -> None:
     step_state = 0  # 0 before the SF step, 1 during, 2 after
     steps: list[tuple[float, int]] = []  # (when on this node's PPS count, change of SF)
     thetas: list[tuple[int, float]] = []  # (second, theta ps) for the step's fit
-    next_status = time.monotonic()
+    next_status = next_fc = time.monotonic()
     begin = time.monotonic()
     end = begin + (stop_at - time.time())
     while time.monotonic() < end:
@@ -541,6 +551,11 @@ def main() -> None:
             outcome["burst_memory_unchanged"] = int(pl.burst.memory.read(ABI.BMEM.TAPS_OFFSET)) == before
             mark(f"refusals: {outcome}")
             emit("refusals", **outcome)
+        if args.fc_every and control is not None and time.monotonic() >= next_fc:
+            next_fc += args.fc_every
+            at = pps_now(pl)
+            high, low = control.unit.frequency_control()
+            emit("fc", count=at, high=high, low=low)
         if time.monotonic() >= next_status:
             next_status += 1.0
             slots = pl.slots.status()

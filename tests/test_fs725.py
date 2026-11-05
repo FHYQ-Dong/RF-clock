@@ -11,6 +11,7 @@ class FakePRS10:
 
     def __init__(self, *, sf: int = 37, pll: int = 1, pps_locked: bool = False, input_ns: int = 0) -> None:
         self.sf, self.pll, self.pps_locked = sf, pll, pps_locked
+        self.ga = 7
         self.input_ns = input_ns  # when the 1 pps input arrives, from a fixed origin
         self.output_ns = 0
         self.replies: list[bytes] = []
@@ -22,7 +23,7 @@ class FakePRS10:
         self.sent.append(command)
         name, arg = command[:2], command[2:]
         if arg == "?":
-            reply = {"ID": "PRS10_3.24_SN_12345", "SF": str(self.sf), "PL": str(self.pll), "MR": "3010",
+            reply = {"ID": "PRS10_3.24_SN_12345", "SF": str(self.sf), "PL": str(self.pll), "MR": "3010", "GA": str(self.ga), "FC": "1675,1618",
                      "TT": str((self.input_ns - self.output_ns) % 1_000_000_000),
                      "ST": f"0,0,0,0,{4 if self.pps_locked else 128},0"}[name]
             if self.restart_pending:
@@ -36,6 +37,8 @@ class FakePRS10:
         elif name == "PL":
             self.pll = int(arg)
             self.pps_locked = self.pps_locked and bool(self.pll)
+        elif name == "GA":
+            self.ga = int(arg)
         elif name == "PP":
             self.output_ns -= int(arg)  # earlier
 
@@ -57,7 +60,21 @@ def test_queries_read_the_unit():
     assert unit.phase_lock() is True
     assert unit.magnetic_dac() == 3010
     assert unit.case_temperature() == pytest.approx(51.2)
+    assert unit.frequency_control() == (1675, 1618)
+    assert unit.gain() == 7
     assert log == []  # queries are not logged
+
+
+def test_set_gain_reads_back_logs_and_never_writes_eeprom():
+    prs, log = FakePRS10(), []
+    unit = FS725(prs, log=log.append)
+    unit.set_gain(8)
+    assert prs.ga == 8
+    assert log[-1] | {"time": 0} == {"time": 0, "command": "GA", "value": 8, "before": 7, "after": 8}
+    assert not any(c.startswith("GA!") for c in prs.sent)
+    for bad in (11, -1, 7.5):
+        with pytest.raises(ValueError):
+            unit.set_gain(bad)  # type: ignore[arg-type]
 
 
 def test_set_frequency_reads_back_and_logs():

@@ -5,7 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import ClockFilter, Steering, SteeringError, check_unit, filter_for, fit_sf_response, follow
+from rf_clock.twtt.steer import (ClockFilter, Steering, SteeringError, check_unit, filter_for, fit_sf_response, follow,
+                                  lag_phase)
 
 
 def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float = 2e-11, theta_sd: float = 3.0,
@@ -53,6 +54,34 @@ def test_a_delayed_response_is_modelled(model_delay, model_sd, restarts):
     if not restarts:
         assert np.sqrt(np.mean(xs[200:] ** 2)) < 30
         assert np.abs(xs[100:]).max() < 2000  # no run past the target
+
+
+def test_lag_phase():
+    assert lag_phase(-1.0, 2.0) == lag_phase(0.0, 2.0) == 0.0
+    assert lag_phase(3.0, 0.0) == 3.0
+    assert lag_phase(0.01, 2.0) == pytest.approx(0.01 ** 2 / 4, rel=0.01)  # s^2 / (2 lag) at first
+    assert lag_phase(40.0, 2.0) == pytest.approx(38.0)  # then a ramp, lag later
+
+
+@pytest.mark.parametrize("model_lag, rejects", [(2.0, False), (0.0, True)])
+def test_a_lagging_response_is_counted_as_it_acts(model_lag, rejects):
+    # A change of 100 ps/s that begins at 1.3 s and follows with a 2 s lag (a PRS10 at GA 7); no clock noise.
+    # The lag model predicts theta exactly; the delay-only model runs 100 ps/s x 2 s ahead and is rejected.
+    steering = Steering(target_ps=0.0, sf0=0, filter=ClockFilter(q_wfm=0.01, q_rwfm=1e-8, r=0.25), tau_s=1e4,
+                        interval_s=1000, settle_s=10_000, response_lag_s=model_lag, response_sd_s=0.0)
+    steering.step(0, 0.0)
+    steering.pending.append((1.3, 100.0))
+    rejected = False
+    for count in range(1, 40):
+        truth = 100 * lag_phase(count - 1.3, 2.0)
+        record = steering.step(count, truth)
+        rejected |= record.get("rejected", False)
+        if not rejects:
+            assert record["x_ps"] == pytest.approx(truth, abs=0.5)
+    assert rejected == rejects
+    if not rejects:
+        assert not steering.pending  # counted whole once settled, in the filter's y
+        assert steering.filter.y == pytest.approx(100.0, abs=0.5)
 
 
 def test_the_filter_finds_a_constant_frequency():

@@ -24,7 +24,11 @@ about 1.1-1.6 s later (B's FS725, results/m5-v2-20261103); with theta averaged o
 each second that is ``response_delay_s`` = 1.9 s after that second.  The filter counts
 a change from then on (until then it is pending, and the control law already counts it
 in y), and while a change is new it widens its outlier gate by the change times
-``response_sd_s``, the uncertainty of that delay.  The default delay 0 is the model of
+``response_sd_s``, the uncertainty of that delay.  With ``response_lag_s`` the frequency
+then follows the change with that first-order time constant, as the PRS10's frequency
+lock loop moves the crystal (about 2 s at its normal gain, GA 7): the filter adds the
+phase this gives (``lag_phase``) and counts the change whole after ``LAG_SETTLED`` time
+constants.  The default delay 0 is the model of
 the 1.x node: the change counted from the second that asked for it.  On the bench
 (2026-11-03) that model, with tau = 5 s, made the filter reject ten thetas in a row at
 the first large step and start again, while SF stayed and theta ran 6 ns past its target.
@@ -79,6 +83,15 @@ GATE = 5.0  # reject a theta further than this many standard deviations from the
 MAX_REJECTS = 10  # rejections in a row after which the filter starts again
 SF_LIMIT = 2000  # the FS725's SF range, parts in 1e12
 DAY_S = 86400.0
+LAG_SETTLED = 8  # a lagging change is counted whole this many time constants after it begins
+
+
+def lag_phase(s: float, lag: float) -> float:
+    """theta's answer (ps) to a frequency step of 1 ps/s that begins at s = 0 and follows
+    with a first-order time constant ``lag``: s - lag (1 - exp(-s / lag)) once it begins."""
+    if s <= 0:
+        return 0.0
+    return s if lag <= 0 else s - lag * (1 - float(np.exp(-s / lag)))
 
 
 @dataclass
@@ -163,6 +176,7 @@ class Steering:
     max_offset: int = 500
     apply: bool = True  # False: compute corrections without changing the plant (dry run)
     response_delay_s: float = 0.0  # a change of SF counts this long after the second that asked for it
+    response_lag_s: float = 0.0  # then the frequency follows it with this first-order time constant
     response_sd_s: float = 0.5  # uncertainty of that delay: widens the gate while a change is new
     max_saturated_s: int = 120  # the control law asking beyond max_offset this long stops the steering
     sf: int = 0
@@ -193,12 +207,14 @@ class Steering:
             return record
         assert self.last_count is not None and self.first_count is not None
         f.predict(count - self.last_count)
-        for when, u in [c for c in self.pending if c[0] < count]:  # changes that count from within this step
-            f.x += u * (count - max(when, self.last_count))
-            f.y += u
-            self.pending.remove((when, u))
+        lag = self.response_lag_s
+        for when, u in [c for c in self.pending if c[0] < count]:  # changes acting within this step
+            f.x += u * (lag_phase(count - when, lag) - lag_phase(self.last_count - when, lag))
+            if count - when >= LAG_SETTLED * lag:  # the rest of it the filter's y carries
+                f.y += u
+                self.pending.remove((when, u))
         self.last_count = count
-        horizon = self.response_delay_s + 3 * self.response_sd_s + 1
+        horizon = self.response_delay_s + self.response_lag_s + 3 * self.response_sd_s + 1
         self.recent = [c for c in self.recent if count - c[0] <= horizon]
         extra = sum((u * self.response_sd_s) ** 2 for _, u in self.recent)
         if theta_ps is not None:
