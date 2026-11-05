@@ -83,12 +83,12 @@ FS725 自己的 10 MHz 正弦经分配器后太弱（LMK04828 曾因此进入 ho
 
 ### 5.1 rf-clock 2：链路，以及两台钟（M5）
 
-rf-clock 2 把测量放在突发里传递。用一个参考时（同上），在 RF-clock-PC 上：`.venv/bin/python experiments/m4c_v2_link.py --seconds 60`（`--scenario` 选协议测试；`experiments/m4c_check.py scenario results/<运行>` 评判一次运行）。做 M5 时每块板接自己那台 FS725 的 10 MHz 和 1PPS，每台 FS725 的 RS-232 接到它所在板的 USB host 上的 USB 转 RS-232 适配器（内核带 FTDI 驱动；端口用 `/dev/serial/by-id/` 下的名字，B 的即脚本里的 `FS725_B`）。然后：
+rf-clock 2 把测量放在突发里传递。用一个参考时（同上），在 RF-clock-PC 上：`.venv/bin/python experiments/m4c_v2_link.py --seconds 60`（`--scenario` 选协议测试；`experiments/m4c_check.py scenario results/<运行>` 评判一次运行）。做 M5 时每块板接自己那台 FS725 的 10 MHz 和 1PPS，每台 FS725 的 RS-232 接到它所在板的 USB host 上的 USB 转 RS-232 适配器（内核带 FTDI 驱动；端口用 `/dev/serial/by-id/` 下的名字，第 2 步会把它记进板级配置）。然后：
 
 1. B 的 PPS 边沿在 tick 内的位置：在 B 上运行 `rf_clock.checks.pps_pp_scan --fs725 PORT`（ABI_zh.md §13），它以 1 ns 步进 PP，最后把边沿放到 tick 中间。通过标准：边沿离两侧采样沿都超过约 3 ns。A 的边沿没法这样移动；上电之间 theta 跳 10 ns 说明它临界。
-2. 把每块板的 FS725 记进它的板级配置，在每块板上运行：`$run -m rf_clock.checks.fs725_loop --port PORT --gain GA --write`，被修正的 B 用 GA 8，A 用 7（ABI_zh.md §13）。它把 SF 阶跃 200 再回来，共四次，只用 FC 拟合出设备的锁频环，约 3 分钟，不需要链路。通过标准：各次阶跃一致（k 相差不超过约 25 %，预测控制律能容忍这么多）。此后 `m4c_link --fs725` 会拒绝别的设备，并在每次启动时设定设备的 GA（ABI_zh.md §11.13）；把配置复制到 `boards/<S/N>/board.json`。
+2. 把每块板的 FS725 记进它的板级配置，在每块板上运行：`$run -m rf_clock.checks.fs725_loop --port PORT --gain GA --write`，被修正的 B 用 GA 8，A 用 7（ABI_zh.md §13）。它把 SF 阶跃 200 再回来，共四次，只用 FC 拟合出设备的锁频环，约 3 分钟，不需要链路，并记下设备、端口和环路。通过标准：再测一次，k 和滞后相差不超过约 25 %（预测控制律能容忍这么多）；FC 响应弱的设备，如 A 那台（每 SF 单位 0.5-0.7 个 FC 步，B 的是 1.0-1.2），要用 `--step 400 --steps 6`。此后 `m4c_link --fs725`（不用给端口）会拒绝别的设备，并在每次启动时设定设备的 GA（ABI_zh.md §11.13）；把配置复制到 `boards/<S/N>/board.json`。
 3. `.venv/bin/python experiments/m4c_v2_link.py --scenario sf-step --scope --seconds 420`：B 捕获 A 的 PPS，按整 tick 移动自己的 PPS，再把 SF 阶跃 100。通过标准：theta 的变化率改变 100 ps/s，示波器上两路 10 MHz（C1、C2）的读数相同。
-4. `--scenario steer --scope --seconds N`：B 修正自己的 FS725，使 theta 趋于共用参考时的 theta（脚本里的 `TARGET_NS`，在这套射频接线上测得）。
+4. `--scenario steer --scope --seconds N`：B 修正自己的 FS725，使 theta 趋于 θ₀，即台架上现在这套接线在共用参考时的 theta（`links/887329260072A_8873292600AB.json` 里的 `current` 那条；[links/README_zh.md](../links/README_zh.md)）。
 
 结果写入 `results/m4c-v2-<场景>-<时间>/`；`results/m5-v2-20261103/` 是第一个这样的夜晚。
 
@@ -101,7 +101,7 @@ rf-clock 2 把测量放在突发里传递。用一个参考时（同上），在
 | LMK04828 或 LMX2594 的寄存器文件 | 第 4.3–4.7 步和第 5 节 |
 | 手工改了强制的 VCO 档位 | 第 4.4、4.7 步和第 5 节 |
 | PPS 电缆或 EPG1 延时 | 第 4.1、4.2 步和第 5 节 |
-| 射频电缆、衰减器或滤波器 | 第 4.6 步和第 5 节（改的是回环线则还有 4.7） |
+| 射频电缆、衰减器或滤波器 | 第 4.6 步和第 5 节（改的是回环线则还有 4.7），并在 `links/` 里新加一条 θ₀ |
 | `PL.open()` 关于档位或捕获码的警告 | 它点名的那一步 |
 | 板上换了一台 FS725，或把 FS725 接到了另一块板 | 第 5.1 节第 2 步（在此之前链路会拒绝这台设备） |
 | 重写了 SD 卡（新的 PYNQ 镜像） | 第 1、2 节，然后放回 `boards/<S/N>/board.json`（[boards/README_zh.md](../boards/README_zh.md)），或重做第 4 节 |

@@ -94,6 +94,7 @@
   "fs725": {
     "serial": "107129",
     "identity": "PRS10_3.56_SN_107129",
+    "port": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9NRKYDL-if00-port0",
     "gain": 8,
     "loops": {
       "7": {

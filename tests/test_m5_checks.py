@@ -1,16 +1,16 @@
-"""The per-second two-way computation of rf_clock.checks.m4c_link and the crossing
-interpolation of rf_clock.checks.pps_pp_scan, on synthetic data."""
+"""The per-second two-way computation and the node's control of rf_clock.twtt (pairs,
+control), which rf_clock.checks.m4c_link runs, and the crossing interpolation of
+rf_clock.checks.pps_pp_scan, on synthetic data."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from rf_clock.checks.m4c_link import SecondTheta, StepTheta, SyncedRule, configure_fs725
-from rf_clock.fs725 import FS725
-from rf_clock.pl.board_config import BoardConfig
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
+from rf_clock.fs725 import FS725, FS725Error
+from rf_clock.pl.board_config import BoardConfig, BoardConfigError
+from rf_clock.twtt.control import SyncedRule, configure_fs725
+from rf_clock.twtt.pairs import SecondTheta, StepTheta
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
 
@@ -182,15 +182,19 @@ class NamedPRS10:
 def test_the_link_checks_its_fs725_against_the_board_config(monkeypatch):
     prs = NamedPRS10()
     monkeypatch.setattr(FS725, "open", lambda path, **kwargs: FS725(prs, **kwargs))
-    entry = {"serial": "107129", "gain": 8, "loops": {"8": {"k_per_s": 2.2, "lag_s": 1.2, "dead_s": 0.12}}}
-    pl = SimpleNamespace(board=SimpleNamespace(config=BoardConfig(serial="0" * 32, fs725=entry)))
+    entry = {"serial": "107129", "port": "/dev/serial/by-id/B", "gain": 8,
+             "loops": {"8": {"k_per_s": 2.2, "lag_s": 1.2, "dead_s": 0.12}}}
+    config = BoardConfig(serial="0" * 32, fs725=entry)
     lines: list[str] = []
     with pytest.warns(UserWarning, match="GA 7 -> 8"):
-        assert configure_fs725(pl, "PORT", lambda kind, **fields: lines.append(kind)) == (2.2, 1.2, 0.12)
+        found = configure_fs725(config, None, lambda kind, **fields: lines.append(kind))
+    assert found == ("/dev/serial/by-id/B", (2.2, 1.2, 0.12))  # the config's port
     assert prs.ga == 8 and lines == ["fs725", "fs725_config"]
-    pl.board.config = BoardConfig(serial="0" * 32, fs725=entry | {"serial": "41175"})
-    with pytest.raises(SystemExit, match="for FS725 S/N 41175, this board's is S/N 107129"):
-        configure_fs725(pl, "PORT", lambda kind, **fields: None)
-    pl.board.config = None
-    with pytest.raises(SystemExit, match="no board config"):
-        configure_fs725(pl, "PORT", lambda kind, **fields: None)
+    assert configure_fs725(config, "/dev/ttyUSB0", lambda kind, **fields: None)[0] == "/dev/ttyUSB0"
+    with pytest.raises(FS725Error, match="for FS725 S/N 41175, this board's is S/N 107129"):
+        configure_fs725(BoardConfig(serial="0" * 32, fs725=entry | {"serial": "41175"}), None, lambda kind, **f: None)
+    no_port = {k: v for k, v in entry.items() if k != "port"}
+    with pytest.raises(BoardConfigError, match="names no FS725 port"):
+        configure_fs725(BoardConfig(serial="0" * 32, fs725=no_port), None, lambda kind, **fields: None)
+    with pytest.raises(BoardConfigError, match="no board config"):
+        configure_fs725(None, "PORT", lambda kind, **fields: None)

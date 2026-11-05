@@ -352,7 +352,7 @@ The ARM reads the PL's measurement queue in batches; estimation and steering hap
 | RFDC path latency | on-board DAC → attenuator → ADC cable loopback, compared across many reboots | after RFDC configuration changes; also proves MTS works |
 | Output PPS delay D_board (P10) | J20's edge on the scope against the node's FS725 1PPS, less OFFSET × 10 ns + SAMPLE × 1.25 ns and the PPS capture margin (row 2); compared across power-ups | after RFDC configuration changes or changes to the DAC_B path |
 
-Calibration values live in software with a version number. Never subtract a guessed constant in code.
+Calibration values live in software with a version number. Never subtract a guessed constant in code. What belongs to one board is in its board config (`boards/`); θ₀, which depends on both boards and the wiring between them, is in `links/<A's S/N>_<B's S/N>.json`, one entry per wiring with how and when it was measured.
 
 ## 9. Milestones and acceptance
 

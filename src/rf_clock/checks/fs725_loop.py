@@ -9,10 +9,11 @@ crystal, lagging behind FC, gets there.  So FC's answer to the step alone gives 
 the integrator's gain k, the crystal's lag and the dead time (``rf_clock.twtt.steer.fit_loop``,
 results/fs725-fll-20261105 section 5.1), and neither the other board nor the link is
 needed.  The predictive control law steers by that loop, so it must be this unit's at the
-gain it runs at: at GA 7, A's unit's integrator is 1.5 times B's (results/two-loops-20261105
+gain it runs at: at GA 7, A's unit's integrator is 1.7 times B's (results/two-loops-20261105
 section 5.5).
 
-Wiring: the FS725's RS-232 on this board's USB (``--port``).  The unit's frequency moves by
+Wiring: the FS725's RS-232 on this board's USB (``--port``, by default the port the board
+config records).  The unit's frequency moves by
 ``--step`` parts in 1e12 and back, ``--steps`` times, ``--hold`` seconds each, so its 10 MHz
 and 1PPS move by up to step x hold (8 ns at the defaults) and return: no link may use this
 board's clock meanwhile.  One k, lag and dead time are fitted to all the steps together:
@@ -22,8 +23,8 @@ from steps of 200 (2026-11-05).  The 1 pps PLL is off for the run and back on at
 on; SF ends where it started; GA stays at ``--gain`` with ``--write`` and goes back to what it
 was otherwise.
 
-``--write`` records the unit (its PRS10's serial number and identity), ``--gain`` as the gain
-the link sets at its start, and the loop at that gain in the board config (``fs725``, docs/ABI.md 11.1); another unit's entry is replaced, loops at other
+``--write`` records the unit (its PRS10's serial number and identity), the port, ``--gain`` as
+the gain the link sets at its start, and the loop at that gain in the board config (``fs725``, docs/ABI.md 11.1); another unit's entry is replaced, loops at other
 gains of the same unit are kept.  One record per run, with every FC read, goes to ``--log``.
 
     sudo /usr/local/share/pynq-venv/bin/python -m rf_clock.checks.fs725_loop \\
@@ -86,7 +87,7 @@ def measure(unit: FS725, *, sf0: int, step: int, steps: int, hold_s: float, fc_e
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--port", required=True, help="this board's FS725 serial port")
+    parser.add_argument("--port", default=None, help="this board's FS725 serial port (default: the board config's)")
     parser.add_argument("--gain", type=int, required=True, help="the frequency lock loop's gain GA to measure at (0-10)")
     parser.add_argument("--step", type=int, default=200, help="the change of SF, parts in 1e12")
     parser.add_argument("--steps", type=int, default=4, help="changes of SF, alternately up and back")
@@ -105,6 +106,9 @@ def main() -> None:
     if config is None:
         raise SystemExit(f"no board config at {config_path()}: write it first (docs/board_setup.md section 4)")
     check_board(config, board)
+    args.port = args.port or config.fs725.get("port")
+    if not args.port:
+        raise SystemExit(f"{config_path()} records no FS725 port: give it, --port /dev/serial/by-id/...")
     written: list[dict] = []
     unit = FS725.open(args.port, log=written.append)
     locked = unit.status().rb_locked
@@ -155,8 +159,8 @@ def main() -> None:
             "rms_steps": round(fit["rms_steps"], 1),
             "steps": [{key: round(f[key], 3) for key in ("sf_change", "k_per_s", "lag_s", "dead_s", "rms_steps")}
                       for f in steps]}}}
-        path = save_board_config(replace(config, fs725={"serial": serial, "identity": identity, "gain": args.gain,
-                                                        "loops": loops}), args.config)
+        path = save_board_config(replace(config, fs725={"serial": serial, "identity": identity, "port": args.port,
+                                                        "gain": args.gain, "loops": loops}), args.config)
         print(f"written to {path}: the link checks this unit and sets GA {args.gain} at its start "
               f"(copy the file to boards/<S/N>/board.json in the repository)")
     t0 = reads[0][0]

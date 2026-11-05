@@ -32,8 +32,10 @@ slope and the scatter about the fitted line.  The M5 scenarios, each board on it
 own FS725, all start with B's acquisition and log one line per second instead of
 the queue entries: ``free`` lets the clocks run, ``sf-step`` raises B's SF by 100
 from 120 s to 240 s (theta's rate must rise by 100 ps/s), and ``steer`` steers B's
-FS725 so that theta goes to ``--target-ns`` (default: the shared-reference theta of
-this RF wiring, 2026-11-03).  ``--scope`` logs the two FS725s' 10 MHz on the
+FS725 so that theta goes to theta0, the shared-reference theta of the wiring on the bench
+(links/887329260072A_8873292600AB.json: its ``current`` wiring, or ``--wiring NAME``;
+``--target-ns`` overrides it).  B's FS725 is the one its board config names, on the port
+the config records (``m4c_link --fs725``).  ``--scope`` logs the two FS725s' 10 MHz on the
 HDO9404-MS for the length of the run (experiments/m5_hdo_phase.py, run as root
 through sudo), with ``--scope-pps`` the two 1PPS too, with ``--scope-out-pps`` the two
 output PPS instead (C3 A's DAC_B, C4 B's; pass ``--node-args "--pps-out 20"``).  ``--a-args`` / ``--b-args`` go to
@@ -45,9 +47,8 @@ to enable their slot engines at one time and disable them at another, half a
 second into a second, so that both run from the same PPS edge to the same PPS edge.  Results go
 to results/m4c-v2-link-<time>/: each node's queue log and console output, and
 summary.json with each node's result, theta, m_AB, m_BA and the one-way delay
-(mean, sd), computed on each node from its own measurement of the peer's burst in
-slot k and the peer's packet in that burst (the peer's measurement of this node's
-burst in slot k - 1).
+(mean, sd), computed from each node's own queue as the node does
+(``rf_clock.twtt.logs.pairs``).
 """
 
 from __future__ import annotations
@@ -64,12 +65,14 @@ from pathlib import Path
 
 from m3_common import check_idle, results_dir, ssh
 
+from rf_clock.twtt import logs
+
 BOARDS = {"A": "192.168.2.99", "B": "192.168.2.100"}  # S/N 887329260072A, 8873292600AB
 PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"
 OUT_DIR = "/dev/shm"  # node output in RAM: SD card writes have stalled node loops
 NODE = " -m rf_clock[.]checks[.]m4c_link "
 START_S = 150  # time for both PL.open
-FS725_B = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9NRKYDL-if00-port0"  # B's FS725, on B's USB
+LINK = Path(__file__).parents[1] / "links" / "887329260072A_8873292600AB.json"  # theta0 by wiring
 SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "link": ("", ""),
     "copy": ("--copy-every 5", "--copy-every 5"),
@@ -81,14 +84,11 @@ SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "refusals": ("--refusal-checks --pause-reads-at 20 --pause-for 3",
                  "--refusal-checks --pause-reads-at 20 --pause-for 3"),
     # each board on its own FS725: B finds A's PPS and moves its own onto it (plan section 5.2)
-    "acquire": ("", f"--acquire --fs725 {FS725_B}"),
-    "free": ("--no-entries", f"--no-entries --acquire --fs725 {FS725_B}"),
-    "sf-step": ("--no-entries", f"--no-entries --acquire --fs725 {FS725_B} --sf-step 100 --sf-step-at 120 "
-                                "--sf-step-for 120"),
-    "steer": ("--no-entries", f"--no-entries --acquire --fs725 {FS725_B} --steer-target-ns {{target}}"),
+    "acquire": ("", "--acquire --fs725"),
+    "free": ("--no-entries", "--no-entries --acquire --fs725"),
+    "sf-step": ("--no-entries", "--no-entries --acquire --fs725 --sf-step 100 --sf-step-at 120 --sf-step-for 120"),
+    "steer": ("--no-entries", "--no-entries --acquire --fs725 --steer-target-ns {target}"),
 }
-TARGET_NS = -0.0215  # theta on this RF wiring with both boards on one reference (2026-11-03, 4 power-ups)
-TICK_FS = 10_000_000
 
 
 def start(ip: str, role: str, start_at: float, stop_at: float, extra: str) -> None:
@@ -121,37 +121,23 @@ def stats(values: list[float]) -> dict:
             "sd": statistics.stdev(values) if len(values) > 1 else 0.0}
 
 
-def two_way(entries: list[dict], role: str) -> dict:
-    """theta, m_AB, m_BA and the one-way delay from one node's queue: for each window
-    (this node's second and slot k) its own T_rx and, from the peer's packet in that
-    burst, the peer's T_tx (slot k) and T_rx of this node's burst in slot k - 1."""
-    config = next(e for e in entries if e["type"] == "config")
-    slots, slot_ticks, tx_offset = config["slots_per_second"], config["slot_ticks"], config["tx_offset"]
-    own = {(e["pps_count"], e["slot"]): e for e in entries if e["type"] == "own" and e["locked"]}
-    peer_to_own, own_to_peer, theta, delay, when = [], [], [], [], []
-    for p in (e for e in entries if e["type"] == "peer"):
-        mine = own.get((p["pps_count"], p["slot"]))
-        if mine is None or not p["status"] & 2:  # PKST_MEASUREMENT
-            continue
-        own_tx = (((p["slot"] - 1) % slots) * slot_ticks + tx_offset) * TICK_FS  # this node's burst in slot k - 1
-        m_in = (mine["t_rx_fs"] - p["t_tx_fs"]) / 1e6  # ns, peer -> this node
-        m_out = (p["t_rx_fs"] - own_tx) / 1e6  # ns, this node -> peer
-        m_ab, m_ba = (m_out, m_in) if role == "A" else (m_in, m_out)
-        peer_to_own.append(m_in)
-        own_to_peer.append(m_out)
-        theta.append((m_ab - m_ba) / 2)
-        delay.append((m_ab + m_ba) / 2)
-        when.append(p["pps_count"] + p["slot"] * slot_ticks / 1e8)
-    m_ab_list, m_ba_list = (own_to_peer, peer_to_own) if role == "A" else (peer_to_own, own_to_peer)
+def two_way(log: Path, entries: list[dict]) -> dict:
+    """theta, m_AB, m_BA and the one-way delay of every pair in one node's queue
+    (``rf_clock.twtt.logs.pairs``), and the quality of its own measurements."""
+    slot_ticks = logs.config(entries)["slot_ticks"]
+    pairs = logs.pairs(log)
+    theta = [p.theta_ns for p in pairs]
+    when = [p.count + p.slot * slot_ticks / 1e8 for p in pairs]
+    own = [e for e in entries if e["type"] == "own" and e["locked"]]
     fit = {}
     if len(theta) > 2:
         t0 = when[0]
         slope, icept = np.polyfit(np.array(when) - t0, np.array(theta), 1)
         resid = np.array(theta) - (slope * (np.array(when) - t0) + icept)
         fit = {"slope_ps_per_s": float(slope * 1000), "residual_sd_ps": float(resid.std(ddof=2) * 1000)}
-    return {"pairs": len(theta), "theta_ns": stats(theta), "theta_fit": fit, "delay_ns": stats(delay),
-            "m_ab_ns": stats(m_ab_list), "m_ba_ns": stats(m_ba_list),
-            "quality_db": stats([e["quality"] / 4 for e in own.values()])}
+    return {"pairs": len(theta), "theta_ns": stats(theta), "theta_fit": fit,
+            "delay_ns": stats([p.delay_ns for p in pairs]), "m_ab_ns": stats([p.m_ab_ns for p in pairs]),
+            "m_ba_ns": stats([p.m_ba_ns for p in pairs]), "quality_db": stats([e["quality"] / 4 for e in own])}
 
 
 def per_second(entries: list[dict]) -> dict:
@@ -172,14 +158,14 @@ def per_second(entries: list[dict]) -> dict:
     return out
 
 
-def summarize(log: Path, role: str) -> dict:
-    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+def summarize(log: Path) -> dict:
+    entries = logs.read(log)
     result = next((e for e in reversed(entries) if e["type"] == "result"), None)
     reports = [e for e in entries if e["type"] == "report"]
     return {"result": result, "searches": len(reports),
             "first_report": reports[0] if reports else None,
             "accepted": [e for e in entries if e["type"] == "accept"],
-            **two_way(entries, role), "per_second": per_second(entries)}
+            **two_way(log, entries), "per_second": per_second(entries)}
 
 
 def main() -> None:
@@ -187,7 +173,9 @@ def main() -> None:
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="link")
     parser.add_argument("--node-args", default="", help="extra arguments for rf_clock.checks.m4c_link")
-    parser.add_argument("--target-ns", type=float, default=TARGET_NS, help="steer: theta to steer to")
+    parser.add_argument("--target-ns", type=float, default=None,
+                        help="steer: theta to steer to (default: theta0 of the wiring, from links/)")
+    parser.add_argument("--wiring", default=None, help="the wiring of links/ (default: its current one)")
     parser.add_argument("--scope", action="store_true", help="log the two 10 MHz on the HDO9404-MS")
     parser.add_argument("--scope-pps", action="store_true", help="with --scope: also the two 1PPS on C3 (B) and C4 (A)")
     parser.add_argument("--scope-out-pps", action="store_true",
@@ -196,14 +184,22 @@ def main() -> None:
     parser.add_argument("--b-args", default="", help="extra arguments for node B only")
     args = parser.parse_args()
 
+    link = json.loads(LINK.read_text(encoding="utf-8"))
+    wiring = args.wiring or link["current"]
+    target = args.target_ns if args.target_ns is not None else link["wirings"][wiring]["theta0_ns"]
+    if args.scenario == "steer":
+        print(f"steering to {target * 1000:+.1f} ps"
+              + ("" if args.target_ns is not None else f", theta0 of wiring {wiring} ({LINK.name})"), flush=True)
     for ip in BOARDS.values():
         check_idle(ip)
     out = results_dir(f"m4c-v2-{args.scenario}")
     own = {"A": args.a_args, "B": args.b_args}
-    extra = {role: f"{a.format(target=args.target_ns)} {args.node_args} {own[role]}".strip()
+    extra = {role: f"{a.format(target=target)} {args.node_args} {own[role]}".strip()
              for role, a in zip(BOARDS, SCENARIOS[args.scenario])}
     (out / "settings.json").write_text(json.dumps({"seconds": args.seconds, "boards": BOARDS,
-                                                   "scenario": args.scenario, "node_args": extra},
+                                                   "scenario": args.scenario, "node_args": extra,
+                                                   "link": {"file": LINK.name, "wiring": wiring,
+                                                            "target_ns": target}},
                                                   indent=2) + "\n",
                                        encoding="utf-8", newline="\n")
     start_at = int(time.time() + START_S) + 0.5  # both PL.open done by then
@@ -232,7 +228,7 @@ def main() -> None:
     summary = {}
     for role, ip in BOARDS.items():
         log = fetch(ip, role, out)
-        summary[role] = summarize(log, role) if log.exists() else {"error": "no log"}
+        summary[role] = summarize(log) if log.exists() else {"error": "no log"}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8", newline="\n")
     for role, s in summary.items():
         r = s.get("result") or {}

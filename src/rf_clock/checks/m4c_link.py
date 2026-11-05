@@ -42,14 +42,16 @@ Protocol tests, all while the link runs (times in seconds after the start):
                         with ``--fs725 PORT``, move this node's PPS onto it with the
                         FS725's PP, wait for the PL's PPS lock, and acquire again to check.
 
-``--fs725 PORT`` names this node's FS725.  At the start it is checked against the board
-config (``rf_clock.fs725.check_config``): it must be the unit the config names, and its
+``--fs725 [PORT]`` names this node's FS725, on the port the board config records when no
+PORT is given.  At the start it is checked against the board config
+(``rf_clock.twtt.control.configure_fs725``): it must be the unit the config names, and its
 frequency lock loop's gain GA is set to the config's, with a warning that says from what
 to what; a unit the config does not name stops the node (``rf_clock.checks.fs725_loop
 --write`` measures and records it).
 
 Every second the node also writes one ``second`` line: theta, the one-way delay and
-their scatter over that second's pairs, from its own queue alone (``SecondTheta``);
+their scatter over that second's pairs, from its own queue alone
+(``rf_clock.twtt.pairs.SecondTheta``; ``rf_clock.twtt.logs`` reads the log);
 ``--no-entries`` leaves out the queue entries themselves, for runs of hours.  With
 two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
 
@@ -81,7 +83,7 @@ OFFSET ticks after each PPS_TICK with ``--pps-out-amplitude`` (default -24000: D
 inverted, so the leading edge rises) and ``--pps-out-idle`` between pulses (default 0),
 and puts its status into the status lines; it is left on at the end.  While it runs the
 node sets SYNCED (PPS_OUT_CONTROL: the validity line on the Pmod header and the LED) by
-``SyncedRule``: node A while its link is locked and B's packets come in; node B while
+``rf_clock.twtt.control.SyncedRule``: node A while its link is locked and B's packets come in; node B while
 its link is locked, the steering runs, and over the last 60 s the steering error's rms
 is below ``--synced-rms`` and its mean below ``--synced-mean``, cleared when the link
 or the steering stops or the last 10 s exceed ``--synced-clear-rms``.  SYNCED is
@@ -100,23 +102,27 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import statistics
 import time
 from dataclasses import asdict
 
 import numpy as np
 
 from .board_common import RunLog, add_common_args, add_rfdc_args, mark, open_pl
+from rf_clock.fs725 import FS725Error
 from rf_clock.pl import acquire as acq
 from rf_clock.pl.abi import ABI, ResultCode
 from rf_clock.pl.board import die_c
+from rf_clock.pl.board_config import BoardConfigError
 from rf_clock.pl.client import CommandRejected
-from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
+from rf_clock.pl.measurements import OwnMeasurement
 from rf_clock.pl.slots import rx_offset_for
 from rf_clock.pl.tracking import quality_offset
 from rf_clock.pl.waveform import (DEFAULT_BETA, DEFAULT_SAMPLES_PER_SYMBOL, DEFAULT_SPAN_CHIPS, generate_test_chips,
                                   rrc_config_id)
 from rf_clock.plmodel import fir
+from rf_clock.twtt import steer
+from rf_clock.twtt.control import FrequencyControl, SyncedRule, configure_fs725
+from rf_clock.twtt.pairs import SecondTheta, StepTheta
 
 PRN_CHIPS = 4096
 PRN_SEED = 0xACE1
@@ -133,272 +139,6 @@ def iq_of(buffer, beats: int) -> tuple[np.ndarray, np.ndarray]:
     return words[:, :8].ravel().copy(), words[:, 8:].ravel().copy()
 
 
-class SecondTheta:
-    """theta and the one-way delay of each pair (plan section 4.2) from this node's queue
-    alone, averaged over the pairs whose window lies in one second of this node's
-    PPS_COUNT: for each peer packet with a measurement, this node's T_rx of that burst
-    (its OWN entry of the same window) and, from the packet, the peer's T_tx of it and
-    the peer's T_rx of this node's burst one slot earlier (experiments/m4c_v2_link.py
-    computes the same offline)."""
-
-    def __init__(self, role: str, slots_per_second: int, slot_ticks: int, tx_offset: int, late_slots: int = 0,
-                 pair_sink=None) -> None:
-        self.role_a = role == "A"
-        self.pair_sink = pair_sink  # also gets (count, slot, theta_ns) of every pair
-        self.slots, self.slot_ticks, self.tx_offset = slots_per_second, slot_ticks, tx_offset
-        self.late_slots = late_slots  # also theta over the last this many slots of each second
-        self.own: dict[tuple[int, int], int] = {}
-        self.count: int | None = None
-        self.theta: list[float] = []
-        self.late: list[float] = []
-        self.delay: list[float] = []
-
-    def add(self, entry: OwnMeasurement | PeerPacket) -> dict | None:
-        """Take one queue entry; when it is the first pair of a new second, return the
-        record of the second before."""
-        if isinstance(entry, OwnMeasurement):
-            if entry.locked:
-                self.own[(entry.pps_count, entry.slot)] = entry.t_rx_fs
-            return None
-        t_rx = self.own.pop((entry.pps_count, entry.slot), None)
-        if t_rx is None or not entry.measurement:
-            return None
-        done = self.flush() if self.count is not None and entry.pps_count != self.count else None
-        self.count = entry.pps_count
-        own_tx = (((entry.slot - 1) % self.slots) * self.slot_ticks + self.tx_offset) * 10_000_000  # fs
-        m_in = (t_rx - entry.t_tx_fs) / 1e6  # ns, peer -> this node
-        m_out = (entry.t_rx_fs - own_tx) / 1e6  # ns, this node -> peer
-        m_ab, m_ba = (m_out, m_in) if self.role_a else (m_in, m_out)
-        self.theta.append((m_ab - m_ba) / 2)
-        if self.pair_sink is not None:
-            self.pair_sink(entry.pps_count, entry.slot, (m_ab - m_ba) / 2)
-        if self.late_slots and entry.slot >= self.slots - self.late_slots:
-            self.late.append((m_ab - m_ba) / 2)
-        self.delay.append((m_ab + m_ba) / 2)
-        return done
-
-    def flush(self) -> dict | None:
-        """The record of the second gathered so far (None if it has no pair)."""
-        if not self.theta:
-            return None
-        n = len(self.theta)
-        steps = [b - a for a, b in zip(self.theta, self.theta[1:])]
-        record = dict(count=self.count, pairs=n, theta_ns=statistics.fmean(self.theta),
-                      theta_sd_ps=statistics.stdev(self.theta) * 1000 if n > 1 else None,
-                      # from pair to pair, the clocks' drift within the second left out
-                      theta_pair_sd_ps=statistics.stdev(steps) / 2 ** 0.5 * 1000 if n > 2 else None,
-                      delay_ns=statistics.fmean(self.delay),
-                      delay_sd_ps=statistics.stdev(self.delay) * 1000 if n > 1 else None)
-        if self.late_slots:
-            record["theta_late_ns"] = statistics.fmean(self.late) if self.late else None
-        self.theta, self.late, self.delay = [], [], []
-        assert self.count is not None
-        self.own = {k: v for k, v in self.own.items() if k[0] >= self.count}
-        return record
-
-
-class StepTheta:
-    """theta over the last ``late_slots`` slots of each step of ``step_slots`` slots, for a
-    law that corrects more often than once a second: fed every pair by ``SecondTheta``, it
-    finishes a step's record when the first pair of a later step comes in (``done``)."""
-
-    def __init__(self, step_slots: int, late_slots: int, slots_per_second: int) -> None:
-        self.step_slots, self.late_slots = step_slots, late_slots
-        self.steps_per_second = slots_per_second // step_slots
-        self.key: tuple[int, int] | None = None
-        self.pairs = 0
-        self.late: list[float] = []
-        self.done: list[dict] = []
-
-    def add(self, count: int, slot: int, theta_ns: float) -> None:
-        key = (count, slot // self.step_slots)
-        if self.key is not None and key != self.key:
-            self.flush()
-        self.key = key
-        self.pairs += 1
-        if slot % self.step_slots >= self.step_slots - self.late_slots:
-            self.late.append(theta_ns)
-
-    def flush(self) -> None:
-        if self.key is not None and self.pairs:
-            count, step = self.key
-            self.done.append(dict(count=count, step=step, index=count * self.steps_per_second + step, pairs=self.pairs,
-                                  theta_late_ns=statistics.fmean(self.late) if self.late else None))
-        self.pairs, self.late = 0, []
-
-
-class SyncedRule:
-    """When this node's output PPS is declared synchronized (SYNCED: the validity line
-    and the LED).  Node A, the master: while its link is locked and a second brings at
-    least ``min_pairs`` pairs (B's packets come in).  Node B: the same, while the steering
-    runs, and over the last ``window_s`` seconds the steering error (theta, the mean over
-    each second, minus the target) has an rms below ``set_rms_ps`` and a mean below
-    ``set_mean_ps``; cleared when the link or the steering stops, or the last
-    ``clear_window_s`` seconds have an rms above ``clear_rms_ps``."""
-
-    def __init__(self, role_b: bool, *, set_rms_ps: float = 100.0, set_mean_ps: float = 30.0,
-                 clear_rms_ps: float = 200.0, min_pairs: int = 200, window_s: int = 60,
-                 clear_window_s: int = 10) -> None:
-        self.role_b = role_b
-        self.set_rms, self.set_mean, self.clear_rms = set_rms_ps, set_mean_ps, clear_rms_ps
-        self.min_pairs, self.window, self.clear_window = min_pairs, window_s, clear_window_s
-        self.errors: list[float] = []  # the steering error of consecutive good seconds
-        self.last_count: int | None = None
-        self.synced = False
-
-    def _change(self, synced: bool) -> bool | None:
-        if synced == self.synced:
-            return None
-        self.synced = synced
-        return synced
-
-    def second(self, record: dict, locked: bool, error_ps: float | None) -> bool | None:
-        """One second's record; ``error_ps`` is theta minus the target (None on node A or
-        without steering).  The new state when it changes, else None."""
-        good = locked and record["pairs"] >= self.min_pairs
-        consecutive = self.last_count is not None and record["count"] == self.last_count + 1
-        self.last_count = record["count"]
-        if not self.role_b:
-            return self._change(good)
-        if not good or error_ps is None:
-            self.errors = []
-            return self._change(False)
-        self.errors = (self.errors if consecutive else []) + [error_ps]
-        self.errors = self.errors[-self.window:]
-        e = np.array(self.errors)
-        if self.synced:
-            last = e[-self.clear_window:]
-            return self._change(not float(np.sqrt(np.mean(last * last))) > self.clear_rms)
-        full = e.size >= self.window
-        return self._change(full and float(np.sqrt(np.mean(e * e))) < self.set_rms and abs(float(e.mean())) < self.set_mean)
-
-    def lost(self) -> bool | None:
-        """The link lost its lock between seconds."""
-        self.errors = []
-        return self._change(False)
-
-
-class FrequencyControl:
-    """This node's FS725 for ``--sf-step`` and ``--steer-target-ns`` (role B): the unit's
-    1 pps PLL off, so that SF takes effect, and SF back at its starting value at the end."""
-
-    def __init__(self, args, emit, late_s: float = 0.0, loop: tuple[float, float, float] | None = None) -> None:
-        from rf_clock.fs725 import FS725
-        from rf_clock.twtt import steer
-
-        self.emit = emit
-        self.unit = FS725.open(args.fs725, log=lambda e: emit("fs725", **e))
-        status = self.unit.status()
-        if not status.rb_locked:
-            raise SystemExit("the FS725 is not locked to rubidium")
-        self.pll_restore = False
-        if (args.sf_step or args.steer_target_ns is not None) and self.unit.phase_lock():
-            self.unit.set_phase_lock(False)  # SF is ignored while it phase-locks to a 1 pps input
-            self.pll_restore = True  # back on at the end, as found
-        self.sf0 = self.sf = self.unit.frequency()
-        if args.sf_step or args.steer_target_ns is not None:
-            # A unit that has had no SF command since power-up takes SF from its calibration
-            # pot, whose reading flickers by a unit (A's: 2 and 3, 2026-11-05), so check_unit
-            # would see a change nobody made.  The first SF command hands SF over from the pot
-            # until the next restart: set the value read, once, here.
-            self.unit.set_frequency(self.sf0)
-        self.keep = args.keep_sf
-        self.steer_module = steer
-        self.steering = None
-        self.late = late_s > 0  # steer on theta over the end of each second
-        self.step_s = args.steer_step
-        self.steps_taken = 0
-        gain = self.unit.gain()
-        if args.steer_target_ns is not None and args.steer_mode == "predictive":
-            if loop is None:
-                self.unit.close()
-                raise SystemExit(f"the board config has no frequency lock loop of this FS725 at GA {gain}: "
-                                 f"python -m rf_clock.checks.fs725_loop --port {args.fs725} --gain {gain} --write")
-            overrides = {k: v for k, v in (("horizon", args.steer_horizon), ("moves", args.steer_moves),
-                                           ("lam", args.steer_lambda)) if v is not None}
-            if args.steer_ar is not None:
-                overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
-            try:
-                self.steering = steer.predictive_for(
-                    args.steer_target_ns * 1000, self.sf0, loop, late_s=late_s, step_s=self.step_s,
-                    settle_s=args.steer_settle, max_step=args.steer_max_step, max_offset=args.steer_max_offset,
-                    **overrides)
-            except steer.SteeringError as exc:
-                self.unit.close()
-                raise SystemExit(str(exc)) from exc
-        elif args.steer_target_ns is not None:
-            self.steering = steer.Steering(
-                target_ps=args.steer_target_ns * 1000, sf0=self.sf0,
-                filter=steer.filter_for(args.steer_clock_adev, args.steer_theta_sd), tau_s=args.steer_tau,
-                interval_s=args.steer_interval, settle_s=args.steer_settle, max_step=args.steer_max_step,
-                max_offset=args.steer_max_offset, response_delay_s=args.steer_response_delay,
-                response_lag_s=args.steer_response_lag)
-        emit("frequency_control", identity=self.unit.identify(), sf0=self.sf0, status=list(status.bytes),
-             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=gain)
-        mark(f"FS725 SF {self.sf0} at the start; GA {gain}; 1 pps PLL {'on' if self.unit.phase_lock() else 'off'}")
-
-    def set(self, sf: int, why: str, at_count: float | None = None) -> None:
-        """Set SF (``at_count``: when, on this node's PPS count, for the step's fit)."""
-        self.steer_module.check_unit(self.unit, self.sf)
-        before = self.sf
-        self.unit.set_frequency(sf)
-        self.sf = sf
-        self.emit("sf", sf=sf, why=why, magnetic_dac=self.unit.magnetic_dac(), at_count=at_count, change=sf - before)
-
-    def step(self, record: dict, at_count: float) -> None:
-        """One step's theta (``StepTheta``) into a law faster than a second; SF written at
-        once without a read-back (``at_count``: now on this node's PPS count, logged), the
-        unit checked once a second."""
-        if self.steering is None:
-            return
-        try:
-            theta = record["theta_late_ns"]
-            out = self.steering.step(record["index"], None if theta is None else theta * 1000)
-            out["index"] = out.pop("count")
-            self.emit("steer", count=record["count"], step=record["step"], **out)
-            if out["sf"] is not None:
-                before = self.sf
-                self.unit.write_frequency(out["sf"])
-                self.sf = out["sf"]
-                self.emit("sf", sf=self.sf, why="steer", at_count=at_count, change=self.sf - before)
-            self.steps_taken += 1
-            if self.steps_taken % round(1 / self.step_s) == 0:
-                self.steer_module.check_unit(self.unit, self.sf)
-        except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
-            self.emit("steer_stopped", reason=str(exc), sf=self.sf)
-            mark(f"steering stopped: {exc}")
-            self.steering = None
-
-    def second(self, record: dict) -> None:
-        """One second's theta into the steering; a correction when it is due."""
-        if self.steering is None or self.step_s < 1:
-            return
-        try:
-            theta = record.get("theta_late_ns") if self.late else record["theta_ns"]
-            out = self.steering.step(record["count"], None if theta is None else theta * 1000)
-            self.emit("steer", **out)
-            if out["sf"] is not None:
-                self.set(out["sf"], "steer")
-        except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
-            self.emit("steer_stopped", reason=str(exc), sf=self.sf)
-            mark(f"steering stopped: {exc}")
-            self.steering = None
-
-    def close(self) -> None:
-        if not self.keep and self.sf != self.sf0:
-            try:
-                self.set(self.sf0, "restore")
-            except Exception as exc:
-                self.emit("restore_failed", reason=str(exc), sf=self.sf, sf0=self.sf0)
-        if self.pll_restore:
-            try:
-                self.unit.set_phase_lock(True)
-            except Exception as exc:
-                self.emit("restore_failed", reason=f"1 pps PLL: {exc}")
-        mark(f"FS725 SF {self.sf} at the end (started at {self.sf0})")
-        self.unit.close()
-
-
 def pps_now(pl) -> float:
     """Now on this node's PPS count: the latest edge's count plus the fraction of its second."""
     count, tick = pl.ctrl.latest_pps()
@@ -406,32 +146,35 @@ def pps_now(pl) -> float:
 
 
 def steer_fit(thetas: list[tuple[int, float]], at_count: float) -> dict | None:
-    from rf_clock.twtt.steer import fit_sf_response
-
-    return fit_sf_response([c for c, _ in thetas], [t for _, t in thetas], at_count)
+    return steer.fit_sf_response([c for c, _ in thetas], [t for _, t in thetas], at_count)
 
 
-def configure_fs725(pl, port: str, emit) -> tuple[float, float, float] | None:
-    """Check this node's FS725 against its board config and set its gain from it
-    (``rf_clock.fs725.check_config``); return the loop measured at that gain, or None."""
-    from rf_clock.fs725 import FS725, FS725Error, check_config
-    from rf_clock.pl.board_config import config_path
+def steering_law(args, late_s: float, loop: tuple[float, float, float] | None):
+    """The control law ``--steer-target-ns`` and ``--steer-mode`` ask for, as a function of the
+    unit's SF and GA (``FrequencyControl`` calls it once it has read them); None without a target."""
+    if args.steer_target_ns is None:
+        return None
+    target_ps = args.steer_target_ns * 1000
 
-    config = pl.board.config
-    if config is None:
-        raise SystemExit(f"no board config at {config_path()}: --fs725 needs one that names the unit "
-                         f"(docs/board_setup.md section 4, then rf_clock.checks.fs725_loop --write)")
-    unit = FS725.open(port, log=lambda e: emit("fs725", **e))
-    try:
-        loop = check_config(unit, config.fs725, str(config_path()))
-    except FS725Error as exc:
-        raise SystemExit(str(exc)) from exc
-    finally:
-        unit.close()
-    emit("fs725_config", serial=config.fs725["serial"], gain=config.fs725["gain"], loop=loop)
-    mark(f"FS725 S/N {config.fs725['serial']} as the board config names it: GA {config.fs725['gain']}, "
-         f"loop {loop if loop else 'not measured at this gain'}")
-    return loop
+    def build(sf0: int, gain: int):
+        if args.steer_mode == "predictive":
+            if loop is None:
+                raise steer.SteeringError(f"the board config has no frequency lock loop of this FS725 at GA {gain}: "
+                                          f"python -m rf_clock.checks.fs725_loop --gain {gain} --write")
+            overrides = {k: v for k, v in (("horizon", args.steer_horizon), ("moves", args.steer_moves),
+                                           ("lam", args.steer_lambda)) if v is not None}
+            if args.steer_ar is not None:
+                overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
+            return steer.predictive_for(target_ps, sf0, loop, late_s=late_s, step_s=args.steer_step,
+                                        settle_s=args.steer_settle, max_step=args.steer_max_step,
+                                        max_offset=args.steer_max_offset, **overrides)
+        return steer.Steering(target_ps=target_ps, sf0=sf0,
+                              filter=steer.filter_for(args.steer_clock_adev, args.steer_theta_sd),
+                              tau_s=args.steer_tau, interval_s=args.steer_interval, settle_s=args.steer_settle,
+                              max_step=args.steer_max_step, max_offset=args.steer_max_offset,
+                              response_delay_s=args.steer_response_delay, response_lag_s=args.steer_response_lag)
+
+    return build
 
 
 def acquire_peer(pl, prn, taps, args, emit) -> None:
@@ -465,7 +208,7 @@ def acquire_peer(pl, prn, taps, args, emit) -> None:
         return
     from rf_clock.fs725 import FS725
 
-    unit = FS725.open(args.fs725)
+    unit = FS725.open(args.fs725)  # the port configure_fs725 resolved
     try:
         unit.place_pulse(move)
     finally:
@@ -486,8 +229,6 @@ def acquire_peer(pl, prn, taps, args, emit) -> None:
 
 
 def main() -> None:
-    from rf_clock.twtt import steer as steer_defaults
-
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--role", choices=("A", "B"), required=True)
     parser.add_argument("--seconds", type=int, default=60)
@@ -514,7 +255,8 @@ def main() -> None:
     parser.add_argument("--pause-for", type=float, default=3.0)
     parser.add_argument("--acquire", action="store_true")
     parser.add_argument("--acquire-after", type=float, default=2.5)
-    parser.add_argument("--fs725", default=None, help="this node's FS725 serial port, for PP and SF")
+    parser.add_argument("--fs725", nargs="?", const="", default=None, metavar="PORT",
+                        help="this node's FS725, for PP, SF and FC: its serial port, or the board config's without one")
     parser.add_argument("--no-entries", action="store_true", help="write the per-second lines, not the queue entries")
     parser.add_argument("--sf-step", type=int, default=0, help="test: SF + this (1e-12) for a while")
     parser.add_argument("--sf-step-at", type=float, default=60.0)
@@ -542,7 +284,7 @@ def main() -> None:
                         help="steer on theta over the last N slots of each step (with 1 s steps the second "
                              "lines get theta_late_ns)")
     parser.add_argument("--steer-step", type=float, default=1.0, metavar="S",
-                        help=f"predictive: correct every S seconds ({sorted(steer_defaults.STEP_SETTINGS)})")
+                        help=f"predictive: correct every S seconds ({sorted(steer.STEP_SETTINGS)})")
     parser.add_argument("--steer-ar", default=None,
                         help="predictive: AR coefficients of the frequency about its 60 s mean (default: the step's)")
     parser.add_argument("--steer-horizon", type=int, default=None, help="predictive: steps held on the target")
@@ -604,7 +346,17 @@ def main() -> None:
                                               "steer_lambda", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle", "synced_rms", "synced_mean",
                                               "synced_clear_rms", "fs725", "fc_every")})
-    loop = configure_fs725(pl, args.fs725, emit) if args.fs725 is not None else None
+    loop = None
+    if args.fs725 is not None:
+        config = pl.board.config
+        try:
+            args.fs725, loop = configure_fs725(config, args.fs725 or None, emit)
+        except (BoardConfigError, FS725Error) as exc:
+            raise SystemExit(str(exc)) from exc
+        assert config is not None  # configure_fs725 refuses a board without one
+        fs = config.fs725
+        mark(f"FS725 S/N {fs['serial']} on {args.fs725}, as the board config names it: GA {fs['gain']}, "
+             f"loop {loop if loop else 'not measured at this gain'}")
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
     if time.time() < start_at:
@@ -619,7 +371,13 @@ def main() -> None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
-        control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second, loop)
+        late_s = args.steer_late_slots / pl.slots.slots_per_second
+        try:
+            control = FrequencyControl(args.fs725, emit, set_sf=bool(args.sf_step or args.steer_target_ns is not None),
+                                       law=steering_law(args, late_s, loop), step_s=args.steer_step, late=late_s > 0,
+                                       keep_sf=args.keep_sf, say=mark)
+        except (steer.SteeringError, FS725Error) as exc:
+            raise SystemExit(str(exc)) from exc
     step_theta = None
     if args.steer_step < 1:
         step_slots = round(args.steer_step * pl.slots.slots_per_second)

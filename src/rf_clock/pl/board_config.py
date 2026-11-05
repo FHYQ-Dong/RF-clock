@@ -29,7 +29,8 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   ``measured``)
 ``fs725``         the FS725 that clocks this board, written by
                   ``rf_clock.checks.fs725_loop``: ``serial``, its PRS10's serial
-                  number (``ID?``), and ``identity``, the whole reply; ``gain``, the
+                  number (``ID?``), and ``identity``, the whole reply; ``port``, the
+                  serial device it answers on (``/dev/serial/by-id/...``); ``gain``, the
                   frequency lock loop's gain GA the link sets at its start; ``loops``,
                   per GA the loop measured from FC's answer to SF steps (``k_per_s``,
                   ``lag_s``, ``dead_s``, and ``measured``: when and how), which the
@@ -47,7 +48,8 @@ Example (887329260072A; the delays from results/lmx-sync-loopback-20261019)::
                     "scanned": {"time": "...", "die_c": 43.1, "rf_clock": "1.3.0.6", "writes": 20},
                     "measured": {"time": "...", "die_c": 43.5, "rf_clock": "1.3.0.6",
                                  "runs": 3, "reference": {"adc": 118, "dac": 122}}},
-     "fs725": {"serial": "41175", "identity": "PRS10_3.24_SN_41175", "gain": 7,
+     "fs725": {"serial": "41175", "identity": "PRS10_3.24_SN_41175",
+               "port": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9HYBQZO-if00-port0", "gain": 7,
                "loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65, "dead_s": 0.125, "measured": {...}}}}}
 """
 
@@ -137,11 +139,12 @@ def check_fs725(entry: Any, source: str = "board config") -> None:
                 and loop["k_per_s"] > 0 and loop["lag_s"] > 0 and loop["dead_s"] >= 0)
 
     loops = entry.get("loops", {}) if isinstance(entry, dict) else None
-    if (not isinstance(entry, dict) or not set(entry) <= {"serial", "identity", "gain", "loops"}
+    if (not isinstance(entry, dict) or not set(entry) <= {"serial", "identity", "port", "gain", "loops"}
             or not isinstance(entry.get("serial"), str) or not entry["serial"].isdigit()
+            or not isinstance(entry.get("port", ""), str)
             or type(entry.get("gain")) is not int or not 0 <= entry["gain"] <= 10
             or not isinstance(loops, dict) or not all(loop_ok(ga, loop) for ga, loop in loops.items())):
-        raise BoardConfigError(f"{source}: fs725 must hold serial (digits), gain (0-10) and loops (per gain "
+        raise BoardConfigError(f"{source}: fs725 must hold serial (digits), port, gain (0-10) and loops (per gain "
                                f"k_per_s, lag_s, dead_s, measured), not {entry!r}")
 
 

@@ -1,0 +1,19 @@
+{
+  "boards": {"A": "887329260072A", "B": "8873292600AB"},
+  "current": "cabled-20261103",
+  "wirings": {
+    "cabled-20261103": {
+      "rf": "887329260072A DAC_A -> 5800 MHz band-pass -> attenuator -> ADC_B of 8873292600AB; 8873292600AB DAC_A -> 5800 MHz band-pass -> attenuator -> ADC_B of 887329260072A; the attenuators are 10 dB and 20 dB, one per direction (which one on which way is not recorded)",
+      "theta0_ns": -0.0215,
+      "measured": {
+        "date": "2026-11-03",
+        "reference": "both boards on one reference: the FS725's 10 MHz through the EPG1 and a resistive splitter, its 1PPS through EPG1 outputs 4 (887329260072A) and 1 (8873292600AB), both delayed 6.5 ns",
+        "rf_clock": "2.0.1.0",
+        "runs": {"m4c-v2-relock-20261103_131754": -0.0193, "m4c-v2-link-20261103_132117": -0.0207,
+                 "m4c-v2-link-20261103_132440": -0.0223, "m4c-v2-link-20261103_132803": -0.0238},
+        "spread_ps": 1.95,
+        "report": "results/v2-link-20261103/REPORT.md section 2"
+      }
+    }
+  }
+}

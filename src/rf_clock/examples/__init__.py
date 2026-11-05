@@ -1,1 +1,2 @@
-"""Annotated examples of the ARM <-> PL interface (see pl/README.md)."""
+"""Annotated examples: the ARM <-> PL interface (pl/README.md) and the two-way time transfer
+(twtt/README.md)."""

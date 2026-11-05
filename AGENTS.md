@@ -18,7 +18,7 @@ The current design is in `plan/RF_clock_modules.md` (Chinese: `plan/RF_clock_mod
 
 - **Timestamps are tick anchors:** each burst/window has one start tick; per-sample time is `start_tick` plus sample index / Fs. Do not attach per-sample timestamps. Sub-sample timing comes from the correlation of the window in the PL.
 
-- **Calibrated constants are explicit:** non-reciprocity Δ, PPS sub-tick phase and RFDC latency are measured and stored with a version. Never subtract a guessed constant.
+- **Calibrated constants are explicit:** non-reciprocity Δ, PPS sub-tick phase and RFDC latency are measured and stored with a version. Never subtract a guessed constant. θ₀, B's steering target (Δ/2 and the two PPS paths of the shared reference), depends on both boards and the wiring between them, so it lives in `links/<A's S/N>_<B's S/N>.json`, one entry per wiring, not in a board config or the package.
 
 - **What belongs to one board lives in its board config:** `/etc/rf-clock/board.json` (`rf_clock.pl.board_config`, docs/ABI.md §11.1), named by the board's AT24MAC402 serial number; `PL.open()` refuses a config for another board. Each LMX2594's VCO band is forced from it, because the calibrated band can change at every clock write and move a converter by 8-10 ps, and MTS picks its SYSREF capture windows by the codes it records, because the window nearest code 64 can change by a whole sample. The FS725 that clocks the board is recorded there too, by its serial number, with the gain the link sets at its start and its frequency lock loop at that gain, which the predictive control law steers by: at the same gain, one unit's integrator is 1.7 times the other's. Never put one board's value in the package.
 

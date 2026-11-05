@@ -112,6 +112,7 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | [plan/RF_clock_modules.md](plan/RF_clock_modules.md) ([中文](plan/RF_clock_modules_zh.md)) | Design plan |
 | [plan/checklist.md](plan/checklist.md) ([中文](plan/checklist_zh.md)) | Open items, with evidence for each closed one |
 | [docs/ABI.md](docs/ABI.md) ([中文](docs/ABI_zh.md)) | ARM ↔ PL programming manual: registers, timing, power-up, the Python library, board setup, releases |
+| [docs/handoff_2x.md](docs/handoff_2x.md) ([中文](docs/handoff_2x_zh.md)) | Moving from 1.x to 2.x: what changed, how to run the link, the metrics before and after and what improved them |
 | [docs/board_setup.md](docs/board_setup.md) ([中文](docs/board_setup_zh.md)) | From a new board to one in service: system, installation, wiring, the checks and per-board calibrations in order, what to redo after a change |
 | [docs/debug_overview.md](docs/debug_overview.md) ([中文](docs/debug_overview_zh.md)) | Every problem found on the bench, along the 10 MHz distribution: a diagram of each module marking where the problems sat; what was seen, the cause, the change and the version, with links to the reports |
 | [src/rf_clock/clocks/files/README.md](src/rf_clock/clocks/files/README.md) | Clock plan and the LMK/LMX register files |
@@ -128,13 +129,14 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | `src/rf_clock/clocks/` | LMK04828/LMX2594 register files and their decoders |
 | `src/rf_clock/overlay/` | The bitstream (`.bit`/`.hwh`/`.xsa`, Git LFS) shipped with the package |
 | `src/rf_clock/checks/` | Board checks for milestones M1–M3 |
-| `src/rf_clock/examples/` | Annotated examples: fake PL, board bring-up, raw PYNQ and C++ access |
+| `src/rf_clock/examples/` | Annotated examples: fake PL, board bring-up, one node of the rf-clock 2 link, the two-way equations and the steering on a development machine, raw PYNQ and C++ access |
 | `src/rf_clock/correlator.py` | Cross-correlation delay estimation |
-| `src/rf_clock/twtt/` | Two-way time transfer between two boards (M4): slots, the PL loop, the link between the boards; steering B's FS725 (M5) |
+| `src/rf_clock/twtt/` | Two-way time transfer between two boards: rf-clock 2's two-way equations from a node's queue (`pairs`), the node's FS725 and SYNCED (`control`), the control laws that steer B's FS725 (`steer`), the node's log read back (`logs`); the 1.x exchange over Ethernet (`timing`, `node`, `link`) |
 | `src/rf_clock/fs725.py` | The FS725 rubidium standard over RS-232: status, frequency offset, 1 pps time tags and placement |
 | `tests/` | Unit tests (pytest, no hardware) |
 | `tools/` | ABI generator, overlay packaging, release notes, JTAG board reset |
 | `boards/` | A copy of each board's config (`/etc/rf-clock/board.json`): reference and backup |
+| `links/` | θ₀, B's steering target, per pair of boards and wiring ([links/README.md](links/README.md)) |
 | `experiments/` | Bench experiments, run on RF-clock-PC: `m<N>_*.py` is a sub-experiment of milestone M<N> (plan section 9), one question each; `m3_common.py` holds what the M3 loopback series share; `epg1.py`, `lnb.py`, `sa_sweep.py` are the bench tools they use (EPG1 PPS distribution, scope .lnb files, SA124B) |
 | `.github/workflows/release.yml` | Builds and publishes a GitHub release when a `vA.B.C.D` tag is pushed |
 | `.gitea/workflows/release.yml` | The same for a Gitea release, plus an upload to the Gitea PyPI registry (Gitea Actions) |
