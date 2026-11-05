@@ -392,6 +392,9 @@ class PredictiveSteering:
             self.first_count = count
             record["event"] = "started"
         index = count - self.first_count
+        if index < len(self.free):  # a second already taken (or an earlier one): nothing to do
+            record["event"] = "second already taken"
+            return record
         while len(self.free) < index:  # seconds without theta: the free clocks as predicted
             self.free.append(self.free[-1] + (self._predict(1)[0] if len(self.free) > len(self.ar) + 1 else 0.0))
         if theta_ps is None:

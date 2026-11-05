@@ -56,7 +56,11 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
 ``--steer-target-ns T`` steer the FS725 (``rf_clock.twtt.steer``: the Kalman filter and
                         the control law, one theta per second) so that theta goes to T,
                         from the first lock on; at the end SF goes back to its starting
-                        value unless ``--keep-sf``.
+                        value unless ``--keep-sf``.  ``--steer-mode predictive`` uses
+                        ``PredictiveSteering`` instead, with the model of the frequency
+                        lock loop at the unit's GA (refused for a GA without one), and
+                        ``--steer-late-slots N`` steers on theta over the last N slots
+                        of each second (100: 0.2 s, results/predictive-steering-20261105).
 
 ``--fc-every S``         on B with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S

@@ -248,6 +248,14 @@ def test_predictive_steering_rides_over_missing_seconds():
     assert np.sqrt(np.mean((theta[330:] - free[0]) ** 2)) < 1.6 * np.std(np.diff(free))
 
 
+def test_predictive_steering_ignores_a_second_given_twice():
+    steering = PredictiveSteering(target_ps=0.0, sf0=0, model=LoopModel(*LOOPS[8]))
+    steering.step(10, 5.0)
+    steering.step(11, 6.0)
+    assert steering.step(11, 99.0)["event"] == "second already taken"
+    assert steering.free == [5.0, 6.0]
+
+
 def test_predictive_needs_a_known_gain():
     with pytest.raises(SteeringError, match="GA 5"):
         predictive_for(0.0, 0, 5)
