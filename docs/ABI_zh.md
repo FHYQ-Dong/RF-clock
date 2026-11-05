@@ -1381,7 +1381,7 @@ FS725 把后面板 DB9（DCE，用直通线；9600 波特，8N1，XON/XOFF，不
 | `frequency_control()` | `FC?` | 锁频环给晶振的调谐量 `(high, low)`：两个 12 位 DAC 按 1000:1 相加，低位一步约 1.5e-12（2.2.0.1 起） |
 | `gain()`、`set_gain(ga)` | `GA?`、`GA` | 锁频环的增益，0（环路停止）到 10；正常为 7（时间常数约 2 s），每加 1 时间常数减半；设定后回读，保持到下次重启（2.2.0.1 起） |
 
-第一次发 SF 之后，校准电位器失效，直到重启，所以 SF 0 不是"不变"：修正要从 `frequency()` 读到的值开始。1 pps 锁相锁住输入时，SF 被忽略。SF 通过磁场起作用，频率随 DAC 设定值按平方关系变化：在标称工作点附近，一个 DAC 步长按 PRS10 手册约相当于 4 个 SF 单位，B 那台实测 3.4（2026-11-03，`magnetic_dac()`）。本模块不写 EEPROM（`!`），不改任何校准（MO、SP、SS、TS、PS、TO、FC、LO、PH、MS、SD），也不重启设备（RS、RC）；GA 只由 `set_gain`（`gain` 命令）设定，用于锁频环的实验，重启后恢复 EEPROM 里的增益（7）。
+第一次发 SF 之后，校准电位器失效，直到重启，所以 SF 0 不是"不变"：修正要从 `frequency()` 读到的值开始。在那之前 SF 读的是电位器，读数可能抖动一个单位（A 那台读到过 3 和 2）；所以凡是要改 SF 的运行，`m4c_link` 在开始时把读到的值写一次 SF（2.2.0.5 起）。1 pps 锁相锁住输入时，SF 被忽略。SF 通过磁场起作用，频率随 DAC 设定值按平方关系变化：在标称工作点附近，一个 DAC 步长按 PRS10 手册约相当于 4 个 SF 单位，B 那台实测 3.4（2026-11-03，`magnetic_dac()`）。本模块不写 EEPROM（`!`），不改任何校准（MO、SP、SS、TS、PS、TO、FC、LO、PH、MS、SD），也不重启设备（RS、RC）；GA 只由 `set_gain`（`gain` 命令）设定，用于锁频环的实验，重启后恢复 EEPROM 里的增益（7）。
 
 ```bash
 run="sudo /usr/local/share/pynq-venv/bin/python"

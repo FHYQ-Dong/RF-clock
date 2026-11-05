@@ -253,6 +253,12 @@ class FrequencyControl:
             self.unit.set_phase_lock(False)  # SF is ignored while it phase-locks to a 1 pps input
             self.pll_restore = True  # back on at the end, as found
         self.sf0 = self.sf = self.unit.frequency()
+        if args.sf_step or args.steer_target_ns is not None:
+            # A unit that has had no SF command since power-up takes SF from its calibration
+            # pot, whose reading flickers by a unit (A's: 2 and 3, 2026-11-05), so check_unit
+            # would see a change nobody made.  The first SF command hands SF over from the pot
+            # until the next restart: set the value read, once, here.
+            self.unit.set_frequency(self.sf0)
         self.keep = args.keep_sf
         self.steer_module = steer
         self.steering = None
@@ -654,19 +660,24 @@ def main() -> None:
                 pl.slots.enable()
                 silent_state = 2
                 emit("enabled_again")
-        if args.sf_step and control is not None:
-            if step_state == 0 and now >= args.sf_step_at:
-                at = pps_now(pl)
-                control.set(control.sf0 + args.sf_step, "step", at)
-                steps.append((at, args.sf_step))
-                step_state = 1
-                mark(f"SF step: {control.sf}")
-            elif step_state == 1 and now >= args.sf_step_at + args.sf_step_for:
-                at = pps_now(pl)
-                control.set(control.sf0, "step back", at)
-                steps.append((at, -args.sf_step))
+        if args.sf_step and control is not None and step_state < 2:
+            try:
+                if step_state == 0 and now >= args.sf_step_at:
+                    at = pps_now(pl)
+                    control.set(control.sf0 + args.sf_step, "step", at)
+                    steps.append((at, args.sf_step))
+                    step_state = 1
+                    mark(f"SF step: {control.sf}")
+                elif step_state == 1 and now >= args.sf_step_at + args.sf_step_for:
+                    at = pps_now(pl)
+                    control.set(control.sf0, "step back", at)
+                    steps.append((at, -args.sf_step))
+                    step_state = 2
+                    mark(f"SF back to {control.sf}")
+            except Exception as exc:  # SteeringError, FS725Error: no more steps, keep the link
                 step_state = 2
-                mark(f"SF back to {control.sf}")
+                emit("sf_step_stopped", reason=str(exc), sf=control.sf)
+                mark(f"SF step stopped: {exc}")
         if args.refusal_checks and not refusals_done and first_lock is not None and now >= first_lock + 2.0:
             refusals_done = True
             outcome = {}
