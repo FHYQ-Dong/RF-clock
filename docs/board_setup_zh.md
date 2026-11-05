@@ -22,7 +22,7 @@ run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/pyth
 
 1. 把 RFSoC 4x2 的 PYNQ 3.1.1 镜像写进 micro-SD 卡，从卡启动板子。
 2. 在 RF-clock-PC 上打开它的串口控制台：`/dev/serial/by-id/usb-Xilinx_JTAG+Serial_<JTAG 序列号>-if01-port0`，115200 波特，用户名和密码都是 `xilinx`。用 `if01`；`if00` 是 JTAG 通道，绝不要往里写。
-3. 接入共用网络之前先改地址：每个 PYNQ 镜像的静态地址都是 192.168.2.99，而它已被占用。改 `/etc/network/interfaces.d/eth0` 后重启。已占用：192.168.2.99 = 887329260072A，192.168.2.101 = 887329260101，192.168.2.100 = 别的组的板子。
+3. 接入共用网络之前先改地址：每个 PYNQ 镜像的静态地址都是 192.168.2.99，而它已被占用。改 `/etc/network/interfaces.d/eth0` 后重启。已占用：192.168.2.99 = 887329260072A，192.168.2.101 = 887329260101，192.168.2.100 = 8873292600AB。
 4. 在 RF-clock-PC 上：`ssh-copy-id xilinx@<地址>`，它把 RF-clock-PC 的 SSH 公钥加进板子的 `~/.ssh/authorized_keys`（第一次要输一次板子的密码）。此后 ssh 不再需要密码，`experiments/` 里的脚本都依赖这一点。
 5. 从 RF-clock-PC 对时，两块板的秒配对要用（ABI_zh.md §9.1）：
 
@@ -62,7 +62,7 @@ FS725 自己的 10 MHz 正弦经分配器后太弱（LMK04828 曾因此进入 ho
 按顺序做：每一步都依赖前面的步骤。板级配置 `/etc/rf-clock/board.json` 收集属于这块板的一切（ABI_zh.md §11.1）；`PL.open()` 拒绝为另一块板写的配置，所以 SD 卡换到另一块板上会被拒绝，直到在那块板上做完第 4 节。配置只存在 SD 卡上：做完第 4 节后把它拷进仓库，存为 `boards/<S/N>/board.json` 并提交（[boards/README_zh.md](../boards/README_zh.md)）。
 
 1. **时间基准（M1）。** `$run -m rf_clock.checks.m1_check 60`。通过标准：每个 PPS 周期都是 100 000 000 个 tick，抖动计数 0，结束时 `pps_locked`，M1 PASS。周期恒定为别的值，说明板子没有 10 MHz（99 992 670 个 tick、慢 73 ppm 的那次就是参考断开）；没有 PPS 沿，说明 J7 上没有信号。
-2. **PPS 捕获余量。** 在 RF-clock-PC 上：`.venv/bin/python experiments/m1_pps_phase_scan.py --pair <地址>:<EPG1 输出>`（它步进那一路输出的延时）。通过标准：在使用的延时下，PPS 沿离 10 ns 采样沿超过约 1 ns。否则在 `experiments/epg1.py pps` 里给那一路设延时（887329260072A 的输出 2 是 6.6 ns）；新延时在 EPG1 下次重启 RUN 时生效，重启会打断它的所有输出。报告：`results/pps-phase-scan-20261018_203329`。
+2. **PPS 捕获余量。** 在 RF-clock-PC 上：`.venv/bin/python experiments/m1_pps_phase_scan.py --pair <地址>:<EPG1 输出>`（它步进那一路输出的延时）。通过标准：在使用的延时下，PPS 沿离 10 ns 采样沿超过约 3 ns；1.5 ns 不够（2026-11-03 链路的 theta 在两次上电之间跳了一个 tick）。否则在 `experiments/epg1.py pps` 里给那一路设延时（2026-11-03 起输出 1 和 4 都是 6.5 ns，两块板的沿都落在 tick 正中）；新延时在 EPG1 下次重启 RUN 时生效，重启会打断它的所有输出。扫描：`results/pps-phase-scan-20261018_203329`、`results/pps-phase-scan-20261103_120343`。
 3. **VCO 档位。** `$run -m rf_clock.checks.vco_bands scan --write --label <S/N>`（不需要接线）。它写 20 次时钟，取每片 LMX2594 校准最常选的档位，找出能锁定的档位，连同本板序列号写进板级配置。通过标准：建议的两个档位都锁定。否则每次写时钟芯片都可能换档，让对应的转换器移动 8–10 ps（`results/lmx-sync-loopback-20261019` 第 5 节）。
 4. **MTS 捕获窗口。** `$run -m rf_clock.checks.mts_dtc record --write`，然后 `$run -m rf_clock.checks.mts_dtc check`。它上电 6 次，取每个 tile 最常选中的 SYSREF 捕获窗口，存下它的码，以及每个 tile 通常的 MTS offset。通过标准：check 报告的最大距离不超过 6 个码，并且没有哪次上电的 offset 与记录不同。没有这些码时，两个窗口离码 64 差不多远的 tile 在上电之间可能整整移动一个采样（887329260101 的 DAC：104 ps；ABI_zh.md §7.1 第 7 步）。
 5. **定时发射（M2）。** `$run -m rf_clock.checks.m2_tx_timing 10`。通过标准：M2 PASS，每个 TX_ACTUAL 都等于目标，两个 MTS 都 OK，latency 为 DAC 1944、ADC 1296。
@@ -80,6 +80,16 @@ FS725 自己的 10 MHz 正弦经分配器后太弱（LMK04828 曾因此进入 ho
 ```
 
 它在 192.168.2.99 上启动 `rf_clock.twtt.node A`、在 192.168.2.101 上启动 `node B`（换板子时改脚本里的 `BOARDS`），把两边的日志收集到 `results/m4-twtt-pair-<时间>/`，并汇总 theta 和单程延时（ABI_zh.md §11.12）。通过标准：每一秒都配对成功且有效，theta 的标准差几 ps，两块板重新上电后 theta 不变。共用一台 FS725 时真实的时钟差为零，所以这个 theta 就是零基线常数：非互易项 Delta/2 加上两块板 PPS 路径的差别（某一路 EPG1 延时把 PPS 沿推进下一个 tick 时，会多出 10 ns）。Delta 存在哪里还没定（plan/RF_clock_modules_zh.md 第 8 节）。
+
+### 5.1 rf-clock 2：链路，以及两台钟（M5）
+
+rf-clock 2 把测量放在突发里传递。用一个参考时（同上），在 RF-clock-PC 上：`.venv/bin/python experiments/m4c_v2_link.py --seconds 60`（`--scenario` 选协议测试；`experiments/m4c_check.py scenario results/<运行>` 评判一次运行）。做 M5 时每块板接自己那台 FS725 的 10 MHz 和 1PPS，B 的 FS725 的 RS-232 接到 B 的 USB host 上的 USB 转 RS-232 适配器（B 的内核带 FTDI 驱动；端口用 `/dev/serial/by-id/` 下的名字，即脚本里的 `FS725_B`）。然后：
+
+1. B 的 PPS 边沿在 tick 内的位置：在 B 上运行 `rf_clock.checks.pps_pp_scan --fs725 PORT`（ABI_zh.md §13），它以 1 ns 步进 PP，最后把边沿放到 tick 中间。通过标准：边沿离两侧采样沿都超过约 3 ns。A 的边沿没法这样移动；上电之间 theta 跳 10 ns 说明它临界。
+2. `.venv/bin/python experiments/m4c_v2_link.py --scenario sf-step --scope --seconds 420`：B 捕获 A 的 PPS，按整 tick 移动自己的 PPS，再把 SF 阶跃 100。通过标准：theta 的变化率改变 100 ps/s，示波器上两路 10 MHz（C1、C2）的读数相同。
+3. `--scenario steer --scope --seconds N`：B 修正自己的 FS725，使 theta 趋于共用参考时的 theta（脚本里的 `TARGET_NS`，在这套射频接线上测得）。
+
+结果写入 `results/m4c-v2-<场景>-<时间>/`；`results/m5-v2-20261103/` 是第一个这样的夜晚。
 
 ## 6. 什么改动后要重做什么
 

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    # Tests to run: p0 p1 p3 p4 top est burst slots tracker search packet top2, or ALL
+    # Tests to run: p0 p1 p3 p4 top est burst slots tracker search relock packet ppsout top2, or ALL
     # (every test but top2, the two-node run, which takes about half an hour).
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]] $Test = @('ALL')
@@ -28,7 +28,9 @@ $testMap = [ordered]@{
     slots   = 'tb_p7_slot_engine'
     tracker = 'tb_p8_tracker'
     search  = 'tb_p8_search'
+    relock  = 'tb_p8_relock'
     packet  = 'tb_p9_packet'
+    ppsout  = 'tb_p10_pps_out'
     top2    = 'tb_p_top2'
 }
 $slowTests = @('top2')

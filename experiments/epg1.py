@@ -2,16 +2,16 @@
 
 On the bench it distributes the FS725 1PPS to both boards: the FS725 1PPS
 drives TRIG IN, output 1 goes to the PPS input (J7, 50 ohm) of board S/N
-887329260101 (.101), output 2 to S/N 887329260072A (.99), and output 4, set
-the same way, is the scope's PPS reference.  Output 3 belongs to another
-experiment: this script never configures it.  This is the M0 bench set-up
+8873292600AB (.100) and output 4 to S/N 887329260072A (.99), since 2026-11-03
+(before: output 1 to 887329260101, output 2 to 887329260072A, output 4 the
+scope's PPS reference).  This is the M0 bench set-up
 (plan section 9) the experiments here rely on, not an experiment itself.
 Run on the machine the EPG1 is plugged into (RF-clock-PC), with the
 project's ``instruments`` dependency group (``uv sync --only-group instruments
 --no-install-project`` there)::
 
     .venv/bin/python experiments/epg1.py status    # read every setting
-    .venv/bin/python experiments/epg1.py pps       # external trigger -> outputs 1, 2 and 4
+    .venv/bin/python experiments/epg1.py pps       # external trigger -> outputs 1 and 4
 
 The driver is ``tanglab_instruments.EPG1``; this module keeps the bench's
 settings.  In the synchronous channel mode (SYS:CHMODE 0, the default) an
@@ -31,13 +31,14 @@ BACKEND = "@py"  # pyvisa-py; pyserial asserts DTR, without which the EPG1 does 
 
 PPS_WIDTH = 10e-6  # same as the FS725 1PPS
 PPS_AMPLITUDE = 2.5  # V into 50 ohm, the level the boards saw from the FS725
-# Output -> delay.  1, 2: the boards; 4: scope reference (3 is someone else's).
-# Output 2 is delayed so that 887329260072A's PPS edge sits mid-tick: at delay 0
-# it lay on a 100 MHz sampling edge (m1_pps_phase_scan.py, 2026-10-18); 6.6 ns
-# puts it 6.25 ns into the next tick, with the ~7 % of edges that the EPG1
-# delivers about 2.5 ns early 3.75 ns in.  Output 1's edge is already ~3.4 ns
-# from either sampling edge.
-PPS_DELAYS = {1: 0.0, 2: 6.6e-9, 4: 0.0}
+# Output -> delay: 1 to 8873292600AB, 4 to 887329260072A.  Each is delayed so
+# that its board's PPS edge sits mid-tick: at delay 0 both edges lay 1.5 ns
+# before a 100 MHz sampling edge (m1_pps_phase_scan.py, results/
+# pps-phase-scan-20261103_120343: half the edges one tick later at 1.46 ns on
+# 887329260072A, 1.50 ns on 8873292600AB), and from one power-up to the next the
+# link's theta jumped by a tick; 6.5 ns puts both edges 5 ns from either sampling
+# edge.  (2026-10-18, on output 2, 887329260072A needed 6.6 ns.)
+PPS_DELAYS = {1: 6.5e-9, 4: 6.5e-9}
 # The EPG1 retimes TRIG IN on a 2.5 ns clock, and the slow FS725 1PPS edge
 # crosses the threshold later the higher it is.  At 1.0 V the crossing sat on
 # an EPG1 clock edge (outputs jumping 2.5 ns, ~50 % of seconds on 2026-10-19);

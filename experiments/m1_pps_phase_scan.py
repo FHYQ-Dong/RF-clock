@@ -20,18 +20,18 @@ Run on RF-clock-PC, the EPG1's host, with the project's ``instruments``
 dependency group (``epg1.py`` next to this script drives the EPG1 through
 ``tanglab_instruments``)::
 
-    .venv/bin/python experiments/m1_pps_phase_scan.py --pair 192.168.2.99:2 --pair 192.168.2.101:1
-    .venv/bin/python experiments/m1_pps_phase_scan.py --pair 192.168.2.99:2 --delays 0.25,0.5,1
+    .venv/bin/python experiments/m1_pps_phase_scan.py --pair 192.168.2.99:4 --pair 192.168.2.100:1
+    .venv/bin/python experiments/m1_pps_phase_scan.py --pair 192.168.2.99:4 --delays 0.25,0.5,1
 
-(EPG1 output 1 feeds 887329260101 at .101, output 2 feeds 887329260072A at
-.99; checked 2026-10-18.)
+(EPG1 output 1 feeds 8873292600AB at .100, output 4 feeds 887329260072A at .99,
+since 2026-11-03; before, output 1 fed 887329260101 at .101 and output 2
+887329260072A.)
 
 It copies itself to the boards and runs the logger part there (`--log-pps`:
 PL.open without MTS, one line per PPS edge); the boards must be idle.  In the
 EPG1's synchronous channel mode a delay change takes effect only at a RUN
-restart, which interrupts every output for about a second, including output 3
-(another experiment): agree with its owner first.  The delays are set back to
-what they were at the start (``epg1.py`` gives output 2 6.6 ns).
+restart, which interrupts every output for about a second.  The delays are set
+back to what they were at the start.
 Results go to results/pps-phase-scan-<time>/.
 """
 
@@ -49,7 +49,8 @@ from pathlib import Path
 PERIOD = 100_000_000  # ticks per PPS
 REMOTE = "/tmp/m1_pps_phase_scan.py"
 LOG = "/tmp/m1_pps_phase_scan.log"
-LOGGER = f"^[.]venv/bin/python {REMOTE} --log-pps"  # anchored: never matches the ssh shell
+PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"  # rf-clock lives in PYNQ's environment (docs/ABI.md 9.1)
+LOGGER = f"^{PYNQ_PYTHON} {REMOTE} --log-pps"  # anchored: never matches the ssh shell
 
 
 def log_pps(seconds: float) -> None:
@@ -89,7 +90,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--pair", action="append", metavar="IP:OUTPUT",
                         help="a board and the EPG1 output feeding its PPS; repeat to scan several boards "
-                             "at once (default: 192.168.2.99:2)")
+                             "at once (default: 192.168.2.99:4)")
     parser.add_argument("--edges", type=int, default=15, help="PPS edges logged per delay")
     parser.add_argument("--delays", default="1,2,3,4,5,6,7,8,9,10",
                         help="comma-separated delays in ns after the baseline at 0 (default: 1 ns steps)")
@@ -101,7 +102,7 @@ def main() -> None:
 
     import epg1  # only on the EPG1's host
 
-    pairs = [(p.split(":")[0], int(p.split(":")[1])) for p in (args.pair or ["192.168.2.99:2"])]
+    pairs = [(p.split(":")[0], int(p.split(":")[1])) for p in (args.pair or ["192.168.2.99:4"])]
     root = Path(__file__).resolve().parent.parent
     out = root / "results" / f"pps-phase-scan-{datetime.now():%Y%m%d_%H%M%S}"
     out.mkdir(parents=True)
@@ -110,7 +111,7 @@ def main() -> None:
             sys.exit(f"board {ip} is running a PL program; stop it first")
     for ip, _ in pairs:
         subprocess.run(["scp", "-q", __file__, f"xilinx@{ip}:{REMOTE}"], check=True)
-        ssh(ip, f"cd ~/RF-clock && (nohup setsid sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr .venv/bin/python "
+        ssh(ip, f"cd /tmp && (nohup setsid sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr {PYNQ_PYTHON} "
                 f"{REMOTE} --log-pps 7200 > {LOG} 2>&1 < /dev/null &)")
     for ip, _ in pairs:
         for _ in range(90):

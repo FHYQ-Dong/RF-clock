@@ -8,7 +8,8 @@
 // blocks start at 0x000 (identity/control), 0x020 (time), 0x040 (TX),
 // 0x060 (RX), 0x080 (counters/config), and since 2.0 0x100 (P7 slot engine),
 // 0x180 (P3 bursts from chips), 0x200 (P8 correlator), 0x240 (P8 search
-// report), 0x300 (P9 packet) and 0x380 (measurement queue).
+// report), 0x300 (P9 packet) and 0x380 (measurement queue); since 2.1 0x140
+// (P10 output PPS; PPS_OUT_IDLE since 2.2).
 
 // ---- identity, control, status ----
 localparam [11:0] REG_ID              = 12'h000;  // RO
@@ -68,6 +69,19 @@ localparam [11:0] REG_SLOT_TICKS        = 12'h118;  // RO, ticks per slot
 localparam [11:0] REG_SLOTS_PER_SECOND  = 12'h11C;  // RO
 localparam [11:0] REG_RX_WINDOW_BEATS   = 12'h120;  // RO, the correlator's window
 localparam [11:0] REG_RX_SPAN_BEATS     = 12'h124;  // RO, the window and the packet behind it
+
+// ---- P10 output PPS (since 2.1): a step on DAC tile 0 once a second ----
+localparam [11:0] REG_PPS_OUT_CONTROL      = 12'h140;  // RW; ENABLE taken at the next second
+localparam [11:0] REG_PPS_OUT_OFFSET       = 12'h144;  // RW, ticks from the second's start
+localparam [11:0] REG_PPS_OUT_SAMPLE       = 12'h148;  // RW, 0..7: the step's first sample in its beat
+localparam [11:0] REG_PPS_OUT_WIDTH        = 12'h14C;  // RW, beats, 1..65535
+localparam [11:0] REG_PPS_OUT_AMPLITUDE    = 12'h150;  // RW, i16 in [15:0]
+localparam [11:0] REG_PPS_OUT_STATUS       = 12'h154;  // RO
+localparam [11:0] REG_PPS_OUT_CNT          = 12'h158;  // RO, pulses sent
+localparam [11:0] REG_PPS_OUT_FLYWHEEL_CNT = 12'h15C;  // RO, of them in seconds no locked edge started
+localparam [11:0] REG_PPS_OUT_TICK_LO      = 12'h160;  // RO, the last pulse; read latches PPS_OUT_TICK_HI
+localparam [11:0] REG_PPS_OUT_TICK_HI      = 12'h164;  // RO
+localparam [11:0] REG_PPS_OUT_IDLE         = 12'h168;  // RW, i16 in [15:0]: the I samples between pulses (2.2)
 
 // ---- P3 bursts from chips (since 2.0) ----
 localparam [11:0] REG_BURST_PRN_CHIPS   = 12'h180;  // RW, PRN or acquisition code length
@@ -177,6 +191,19 @@ localparam integer SLOTCTL_PACKETS = 2;  // a measurement packet behind every bu
 localparam integer SLOTST_RUNNING  = 0;   // the engine runs (from the PPS edge after ENABLE)
 localparam integer SLOTST_SLOT_LSB = 16;  // [24:16] the current slot
 
+// ---- PPS_OUT_CONTROL bits (reset 0) ----
+localparam integer PPSOUTCTL_ENABLE = 0;  // a pulse every second, from the next second on
+localparam integer PPSOUTCTL_SYNCED = 1;  // the ARM vouches for the time scale (validity line, at once)
+
+// ---- PPS_OUT_STATUS bits ----
+localparam integer PPSOUTST_HAVE_REF = 0;  // a locked PPS edge has set the phase
+localparam integer PPSOUTST_RUNNING  = 1;  // enabled for the current second
+localparam integer PPSOUTST_FLYWHEEL = 2;  // the last pulse came from the flywheel
+localparam integer PPSOUTST_INVALID  = 3;  // the validity line (1: not valid)
+
+// ---- PPS_OUT_OFFSET: PPSOUT_MIN_OFFSET .. PPS period - 1 (reset PPSOUT_MIN_OFFSET) ----
+localparam [31:0] PPSOUT_MIN_OFFSET = 32'd8;
+
 // ---- P8_CONTROL bits (write 1 to pulse) ----
 localparam integer P8CTL_SEARCH           = 0;  // search the next window
 localparam integer P8CTL_ACCEPT_STRONGEST = 1;  // lock on the reported strongest peak
@@ -203,4 +230,4 @@ localparam integer RX_RESULT_FLAGS_LSB   = 8;   // RX_RESULT [11:8]
 localparam integer FAULT_INFO_COUNT_LSB  = 16;  // FAULT_INFO [31:16]
 
 localparam [31:0] P_DESIGN_ID = 32'h5243_4C4B;  // "RCLK"
-localparam [31:0] P_VERSION   = 32'h0002_0000;  // major.minor = 2.0
+localparam [31:0] P_VERSION   = 32'h0002_0002;  // major.minor = 2.2

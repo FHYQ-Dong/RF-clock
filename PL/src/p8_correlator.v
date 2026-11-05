@@ -17,7 +17,10 @@
 // window is searched.  An OWN entry goes to the queue for every window.  A
 // search's report is latched with its window's second, slot, tick and flags;
 // not locked, the PL re-locks by itself only on a strongest peak within one
-// lag of the last lock, otherwise it waits for ACCEPT_* from the ARM.
+// lag of the last lock that is as strong as a tracked peak must be (its
+// magnitude * 2^16 >= LOCK_MIN * the last lock's magnitude), otherwise it waits
+// for ACCEPT_* from the ARM: without the magnitude test a noise peak that falls
+// near the last lock by chance took the lock (2026-11-03, the peer silent 3 s).
 module p8_correlator #(
     parameter integer N     = 1024,  // search lanes
     parameter integer AW    = 11,
@@ -317,6 +320,7 @@ module p8_correlator #(
     wire [62:0] lock_lhs = {t_mag, 16'd0};
     wire [62:0] lock_rhs = {31'd0, lock_min} * {16'd0, lock_mag};
     wire        relock_near = (sr_s_lag <= lock_lag + 16'd1) && (sr_s_lag + 16'd1 >= lock_lag);
+    wire        relock_strong = {sr_s_magnitude, 16'd0} >= lock_rhs;   // the tracker's test, on the search's peak
 
     always @(posedge clk) begin
         t_start <= 1'b0;
@@ -333,12 +337,12 @@ module p8_correlator #(
             sr_slot        <= ss_slot;
             sr_tick        <= ss_tick;
             sr_flags       <= ss_flags;
-            sr_s_lag       <= {{(16-KW){1'b0}}, s_lag};
+            sr_s_lag       <= s_lag;   // zero-extended to 16 bits
             sr_s_fraction  <= s_frac;
             sr_s_phase     <= s_phase;
             sr_s_magnitude <= s_mag;
             sr_s_corr      <= s_corr;
-            sr_e_lag       <= {{(16-KW){1'b0}}, e_lag};
+            sr_e_lag       <= e_lag;
             sr_e_fraction  <= e_frac;
             sr_e_phase     <= e_phase;
             sr_e_magnitude <= e_mag;
@@ -438,7 +442,7 @@ module p8_correlator #(
                     end else if (sdec_pending) begin
                         sdec_pending <= 1'b0;
                         if (!locked) begin
-                            if (had_lock && relock_near) begin
+                            if (had_lock && relock_near && relock_strong) begin
                                 locked       <= 1'b1;
                                 waiting      <= 1'b0;
                                 lock_lag     <= sr_s_lag;

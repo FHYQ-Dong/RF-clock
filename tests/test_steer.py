@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import ClockFilter, Steering, SteeringError, check_unit, filter_for, follow
+from rf_clock.twtt.steer import ClockFilter, Steering, SteeringError, check_unit, filter_for, fit_sf_response, follow
 
 
 def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float = 2e-11, theta_sd: float = 3.0,
@@ -20,6 +20,39 @@ def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float =
         xs.append(x)
         assert record["count"] == count
     return np.array(xs)
+
+
+def run_delayed(steering: Steering, seconds: int, *, x0: float, y0: float, delay: float, seed: int = 1) -> tuple:
+    """As ``run``, with quiet clocks, but each change of SF moves the frequency only
+    ``delay`` seconds after the second that asked for it (B's FS725 on the bench: 1.9 s).
+    Returns the true theta of every second and the filter's events."""
+    rng = np.random.default_rng(seed)
+    x, sf, changes, xs, events = x0, steering.sf0, [], [], []
+    for count in range(seconds):
+        record = steering.step(count, x + rng.normal(0, 0.5))
+        if "event" in record:
+            events.append(record["event"])
+        if steering.sf != sf:
+            changes.append((count + delay, steering.sf - sf))
+            sf = steering.sf
+        # this second's increment: the free frequency and each change for the part of the second it acts
+        x += y0 + sum(u * min(1.0, max(0.0, count + 1 - when)) for when, u in changes) + rng.normal(0, 1.0)
+        xs.append(x)
+    return np.array(xs), events
+
+
+@pytest.mark.parametrize("model_delay, model_sd, restarts", [(0.0, 0.0, True), (1.9, 0.5, False)])
+def test_a_delayed_response_is_modelled(model_delay, model_sd, restarts):
+    # A fast loop (a correction every 2 s, tau 5 s) starting 10 ns off, with the FS725 answering 1.9 s late:
+    # counted from the second that asked (the 1.x model), the first large steps look like outliers and the
+    # filter starts again, as on the bench; counted from when they act, the loop settles.
+    steering = Steering(target_ps=0.0, sf0=0, filter=filter_for(1.4e-11, 3.0), tau_s=5, interval_s=2, settle_s=30,
+                        response_delay_s=model_delay, response_sd_s=model_sd)
+    xs, events = run_delayed(steering, 600, x0=-10_000.0, y0=-70.0, delay=1.9)
+    assert any("restarts" in e for e in events) == restarts
+    if not restarts:
+        assert np.sqrt(np.mean(xs[200:] ** 2)) < 30
+        assert np.abs(xs[100:]).max() < 2000  # no run past the target
 
 
 def test_the_filter_finds_a_constant_frequency():
@@ -107,3 +140,24 @@ def test_a_correction_needs_the_unit_as_the_steering_left_it():
         check_unit(Unit(sf=40, pll=True), 40)  # restarted: the PLL default came back
     with pytest.raises(SteeringError, match="SF is 37, not the 40"):
         check_unit(Unit(sf=37, pll=False), 40)  # restarted (the pot's value) or changed by someone else
+
+
+@pytest.mark.parametrize("delay", [0.4, 1.3, 2.2])
+def test_the_response_to_an_sf_step_is_fitted(delay):
+    # theta sampled finely, a rate change of +100 ps/s acting `delay` s after a command at second 30.3,
+    # wander and noise added, then averaged over each second as the node does
+    rng = np.random.default_rng(3)
+    t = np.arange(0, 60, 0.004)
+    tc = 30.3 + delay
+    wander = np.cumsum(rng.normal(0, 0.3, t.size))
+    theta = -70 * t + 100 * np.clip(t - tc, 0, None) + wander + rng.normal(0, 1.0, t.size)
+    counts = np.arange(60)
+    means = [theta[(t >= k) & (t < k + 1)].mean() for k in counts]
+    fit = fit_sf_response(counts, means, 30.3)
+    assert fit is not None
+    assert fit["delay_s"] == pytest.approx(delay, abs=0.15)
+    assert fit["rate_ps_per_s"] == pytest.approx(100, rel=0.1)
+
+
+def test_a_fit_needs_seconds_on_both_sides():
+    assert fit_sf_response(range(40), [0.0] * 40, 35.0) is None

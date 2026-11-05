@@ -20,8 +20,10 @@ On the host each run becomes one line of runs.jsonl in results/<prefix>-<time>/,
 with M3's record (MTS result and capture codes, delays), the carrier phase of
 every window and the readback; runNNN.log keeps the board output and
 summary.json the series.  Each run is timed by the envelope delay (about 1 ps per
-run at amplitude 16000) and by three times the carrier phase of the correlation
-peak (0.1 ps; results/lmx-sync-loopback-20261019 section 1.2).
+run at amplitude 16000) and by the carrier phase of the correlation peak (0.1 ps;
+results/lmx-sync-loopback-20261019 section 1.2): three times the phase by default,
+which takes out 120-degree NCO steps, or the phase itself (``--carrier-multiple 1``)
+when the NCOs start in one phase, as PL.open makes them since rf-clock 1.3.0.5.
 """
 
 from __future__ import annotations
@@ -63,7 +65,7 @@ SPI_IOC_MESSAGE_1 = 0x40206B00  # _IOW('k', 0, struct spi_ioc_transfer), 32 byte
 READBACK_LINE = re.compile(r"^LMX_READBACK (\{.*\})$", re.M)
 CAPTURE_LINE = re.compile(r"^\s*(\d+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+([\d.]+)\s*$")
 CARRIER_HZ = 5.8e9
-K3 = 3 * 2 * math.pi * CARRIER_HZ * 1e-12  # rad of three times the correlation phase per ps of delay
+K1 = 2 * math.pi * CARRIER_HZ * 1e-12  # rad of the correlation phase per ps of delay: a turn is 172.4 ps
 SIGNAL_TILE = 2  # DAC and ADC tile 2, block 0 carry the signal
 
 
@@ -292,37 +294,45 @@ def results_dir(prefix: str) -> Path:
     return out
 
 
-def phase_shifts(records: list[dict]) -> list[float]:
-    """Each run's time shift from the first run, from three times the carrier phase, its
-    57.5 ps cycles counted with the envelope delay.  A later delay gives a negative phase."""
-    runs = [r for r in records if r.get("phase3") is not None and r.get("delay_mean_ps") is not None]
+def phase_shifts(records: list[dict], multiple: int = 3) -> list[float]:
+    """Each run's time shift from the first run, from the carrier phase (``multiple`` 1: a
+    turn of 172.4 ps) or three times it (3: a turn of 57.5 ps), its turns counted with the
+    envelope delay.  Three times the phase takes out the NCOs' 120-degree steps, which runs
+    before rf-clock 1.3.0.5 or with the NCOs restarted on a tile event have; with the NCOs
+    restarted at a SYSREF edge (PL.open since 1.3.0.5) the phase is used as it is, and the
+    envelope then only has to be right to +-86 ps instead of +-28.7 ps.  A later delay gives
+    a negative phase."""
+    key = {1: "phase1", 3: "phase3"}[multiple]
+    k = multiple * K1
+    runs = [r for r in records if r.get(key) is not None and r.get("delay_mean_ps") is not None]
     if not runs:
         return []
-    d0, p0 = runs[0]["delay_mean_ps"], runs[0]["phase3"]
+    d0, p0 = runs[0]["delay_mean_ps"], runs[0][key]
     shifts = []
     for r in runs:
-        x = (r["phase3"] - p0 + math.pi) % (2 * math.pi) - math.pi
-        m = round(((r["delay_mean_ps"] - d0) * K3 + x) / (2 * math.pi))
-        shifts.append((2 * math.pi * m - x) / K3)
+        x = (r[key] - p0 + math.pi) % (2 * math.pi) - math.pi
+        m = round(((r["delay_mean_ps"] - d0) * k + x) / (2 * math.pi))
+        shifts.append((2 * math.pi * m - x) / k)
     return shifts
 
 
 def nco_steps(records: list[dict]) -> list[int]:
     """Each run's carrier phase step from the first run in units of 120 degrees (0, 1, 2),
-    after taking out the phase of its time shift."""
+    after taking out the phase of its time shift (from three times the phase, which the
+    steps do not move)."""
     runs = [r for r in records if r.get("phase1") is not None and r.get("delay_mean_ps") is not None]
-    shifts = phase_shifts(runs)
+    shifts = phase_shifts(runs, 3)
     if not runs:
         return []
-    return [round(((r["phase1"] - runs[0]["phase1"] + K3 / 3 * s) % (2 * math.pi)) / (2 * math.pi / 3)) % 3
+    return [round(((r["phase1"] - runs[0]["phase1"] + K1 * s) % (2 * math.pi)) / (2 * math.pi / 3)) % 3
             for r, s in zip(runs, shifts)]
 
 
-def summarize(records: list[dict]) -> dict:
+def summarize(records: list[dict], multiple: int = 3) -> dict:
     means = [r["delay_mean_ps"] for r in records if r.get("delay_mean_ps") is not None]
     if not means:
         return {"runs": 0}
-    shifts = phase_shifts(records)
+    shifts = phase_shifts(records, multiple)
     return {"runs": len(means), "mean_ps": statistics.fmean(means),
             "sdev_ps": statistics.stdev(means) if len(means) > 1 else 0.0,
             "pp_ps": max(means) - min(means), "sorted_ps": sorted(means),
@@ -336,6 +346,10 @@ def add_series_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--captures", type=int, default=30, help="M3 windows per run")
     parser.add_argument("--board", default=BOARD)
     parser.add_argument("--m3-args", default="", help="extra rf_clock.checks.m3_loopback options")
+    parser.add_argument("--carrier-multiple", type=int, choices=(1, 3), default=3,
+                        help="time the runs by the carrier phase (1, a turn of 172.4 ps; for runs whose NCOs "
+                             "start in one phase, as PL.open does since rf-clock 1.3.0.5) or three times it "
+                             "(3, 57.5 ps; takes out 120-degree NCO steps)")
 
 
 def run_series(prefix: str, args: argparse.Namespace, *, clocks: str = "", m3: str = "",
@@ -387,9 +401,9 @@ def run_series(prefix: str, args: argparse.Namespace, *, clocks: str = "", m3: s
             records.append(rec)
             with open(out / "runs.jsonl", "a", newline="\n") as f:
                 f.write(json.dumps(rec) + "\n")
-            print(f"{tag} {rec['start']}: {run_line(rec, records)}", flush=True)
+            print(f"{tag} {rec['start']}: {run_line(rec, records, args.carrier_multiple)}", flush=True)
     finally:
-        summary = summarize(records)
+        summary = summarize(records, args.carrier_multiple)
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", newline="\n")
     if summary["runs"]:
         shifts = sorted(summary["phase_shift_ps"])
@@ -399,13 +413,13 @@ def run_series(prefix: str, args: argparse.Namespace, *, clocks: str = "", m3: s
               + "; 120-degree steps k=0/1/2: " + "/".join(str(summary["nco_steps"].count(k)) for k in range(3)))
 
 
-def run_line(rec: dict, records: list[dict]) -> str:
+def run_line(rec: dict, records: list[dict], multiple: int = 3) -> str:
     """One line per run: delay, the time shift from run 1 and the 120-degree step, the readback."""
     mean = rec.get("delay_mean_ps")
     if mean is None:
         line = f"no delay ({rec.get('error', 'see log')})"
     else:
-        shift, steps = phase_shifts(records), nco_steps(records)
+        shift, steps = phase_shifts(records, multiple), nco_steps(records)
         line = (f"delay {mean:.1f} ps, sd {rec['delay_std_ps']:.1f} ps, PSL >= {rec['m3']['min_psl_db']:.1f} dB, "
                 f"pass {rec['m3']['pass']}, phase shift from run 1 {shift[-1]:+.2f} ps, 120-degree step k {steps[-1]}")
     rb = rec.get("lmx_readback", {})

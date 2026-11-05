@@ -2,7 +2,8 @@
 
 ``PL.open()`` runs the power-up sequence of docs/ABI.md 7.1 with this board's
 fixed choices (the overlay packaged with rf-clock, the project's LMK04828/LMX2594 files,
-pl_resetn0, RFDC tile start-up and MTS, PPS lock).  The returned object only
+pl_resetn0, RFDC tile start-up and MTS, DAC tile 0 at baseband for the output PPS,
+PPS lock).  The returned object only
 holds the blocks, one per address space of docs/ABI.md 1.1; work is done
 through each block's own methods:
 
@@ -16,6 +17,7 @@ through each block's own methods:
 ``burst``      ``BurstMemory``: the PRN, the packet code and the taps (2.0)
 ``correlator`` ``Correlator``: P8's lock and search report (2.0)
 ``queue``      ``MeasurementQueue``: measurements and the peer's packets (2.0)
+``pps_out``    ``PPSOut``: the output PPS on DAC_B, P10 (2.1)
 ``clock_gpio`` clock-status GPIO (``pl_clk0``), bit 0 = fabric MMCM locked
 ``overlay``    the PYNQ ``Overlay``
 ``bringup``    ``BringupResult`` (faults found and cleared at power-up)
@@ -40,10 +42,11 @@ from .bringup import (Bringup, BringupError, BringupResult, mmio_from_overlay, p
                       pynq_register_factories, wait_for_boot)
 from .client import PLClient
 from .overlay import DEFAULT_BITSTREAM, check_overlay, package_version
-from .rfdc import RFDCError, RFDCSetupResult, rfdc_driver, setup_rfdc_and_mts
+from .rfdc import PPS_OUT_TILE, RFDCError, RFDCSetupResult, baseband_dac, rfdc_driver, setup_rfdc_and_mts
 from .burst import BurstMemory
 from .measurements import MeasurementQueue
 from .mmio import MemoryMMIO, RegisterIO
+from .pps_out import PPSOut
 from .rxdma import RXDMA, pynq_rx_dma
 from .slots import Slots
 from .tracking import Correlator
@@ -336,6 +339,7 @@ class PL:
         self.burst = BurstMemory(burst_memory if burst_memory is not None else MemoryMMIO(), ctrl)
         self.correlator = Correlator(ctrl)
         self.queue = MeasurementQueue(queue_memory if queue_memory is not None else MemoryMMIO(), ctrl)
+        self.pps_out = PPSOut(ctrl)
 
     @property
     def clock_gpio(self) -> Any:
@@ -446,6 +450,8 @@ class PL:
                                 for k, clocks in config.mts_dtc.items() if k in LMX_CHIP_SELECT} if config else None)
                 for warning in mts_dtc_warnings(result, config):
                     warnings.warn(warning, stacklevel=4)
+                baseband_dac(rfdc_driver(overlay), PPS_OUT_TILE)
+                say(f"DAC tile {PPS_OUT_TILE} at baseband, mixer bypassed (output PPS)")
             except RFDCError as exc:
                 result = getattr(exc, "result", None)
                 raise

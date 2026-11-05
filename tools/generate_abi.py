@@ -73,7 +73,8 @@ def render(values: dict[str, int]) -> str:
     rx_flags = [name for name in values if name.startswith("RXF_")]
     faults = [name for name in values if name.startswith("FB_")]
     # 2.0: the slot engine, the correlator, the burst memory, the queue, the packet
-    groups_2 = ["SLOTCTL_", "SLOTST_", "P8CTL_", "P8CFG_", "P8ST_", "BMEM_", "QE_", "QEF_", "PKST_"]
+    groups_2 = ["SLOTCTL_", "SLOTST_", "P8CTL_", "P8CFG_", "P8ST_", "BMEM_", "QE_", "QEF_", "PKST_",
+                "PPSOUTCTL_", "PPSOUTST_"]  # 2.1: the output PPS
 
     def indented(names: list[str], prefix: str = "") -> str:
         return "\n".join(
@@ -108,6 +109,7 @@ class ABI:
 {chr(10).join(f"    class {prefix[:-1]}:{chr(10)}" + indented([n for n in values if n.startswith(prefix)], prefix) + chr(10)
               for prefix in groups_2)}
     TX_REPEAT_MAX = 0x{values["TX_REPEAT_MAX"]:X}
+    PPSOUT_MIN_OFFSET = 0x{values["PPSOUT_MIN_OFFSET"]:X}
     QUEUE_ENTRY_WORDS = 0x{values["QUEUE_ENTRY_WORDS"]:X}
     PACKET_FORMAT_VERSION = 0x{values["PACKET_FORMAT_VERSION"]:X}
     RX_RESULT_FLAGS_LSB = 0x{values["RX_RESULT_FLAGS_LSB"]:X}

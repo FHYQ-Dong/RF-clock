@@ -49,49 +49,25 @@ SCALE_NAMES = {0: "auto", 1: "1.0", 2: "0.7"}  # xrfdc.MIXER_SCALE_*
 
 
 def low_band_dac(pl, nco_mhz: float):
-    """Move the DAC tile 2 output to ``nco_mhz`` for a low-bandwidth scope.
-
-    In operation the datapath is IMR high-pass (fs/4..fs/2) in mix-mode
-    (Nyquist zone 2) with the NCO at -1000 MHz: 3.8 GHz and its 5.8 GHz
-    image.  Here it is IMR low-pass (0..fs/4) in Nyquist zone 1 with the NCO
-    at ``nco_mhz`` (0: coarse mixer bypassed, the DAC outputs the I samples
-    and no NCO phase is involved), and the fine-mixer scale is 1.0 instead of the 0.7 that
-    "auto" means for C2R (+3 dB; safe because these waveforms have Q = 0).
-    The DAC output current cannot be raised instead: VOP needs DAC_AVTT =
-    3.0 V (PG269) and the RFSoC 4x2 has 2.5 V.  Whether the latency stays the
-    same is not verified, so a delay measured this way is not the RF delay.
-    Returns a function that restores the operating settings.
+    """Move the DAC tile 2 output to ``nco_mhz`` for a low-bandwidth scope
+    (``rf_clock.pl.rfdc.baseband_dac``).  Whether the latency stays the same is
+    not verified, so a delay measured this way is not the RF delay.  Returns a
+    function that restores the operating settings.
     """
-    import xrfdc  # board-only  # pyright: ignore[reportMissingImports]
+    from rf_clock.pl.rfdc import baseband_dac
 
+    restore = baseband_dac(pl.rfdc.driver, 2, nco_mhz)
     block = pl.rfdc.driver.dac_tiles[2].blocks[0]
-    mixer = dict(block.MixerSettings)
-    saved = (block.DataPathMode, block.IMRPassMode, block.NyquistZone)
-
-    def apply(path_mode: int, imr_mode: int, zone: int, settings: dict) -> None:
-        block.DataPathMode = path_mode
-        block.IMRPassMode = imr_mode
-        block.NyquistZone = zone
-        block.MixerSettings = settings
-        block.UpdateEvent(xrfdc.EVENT_MIXER)
-
-    # DataPathMode 2 = XRFDC_DATAPATH_MODE_DUC_0_FSDIVFOUR; IMRPassMode 0 = low pass.
     if nco_mhz == 0:
-        apply(2, 0, 1, {**mixer, "MixerType": xrfdc.MIXER_TYPE_COARSE,
-                        "CoarseMixFreq": xrfdc.COARSE_MIX_BYPASS, "Freq": 0.0})
         print(f"DAC tile 2 for a scope: DataPathMode {block.DataPathMode}, IMRPassMode "
               f"{block.IMRPassMode}, NyquistZone {block.NyquistZone}, mixer bypassed "
               f"(MixerType {block.MixerSettings['MixerType']}, CoarseMixFreq "
               f"{block.MixerSettings['CoarseMixFreq']})")
     else:
-        apply(2, 0, 1, {**mixer, "Freq": float(nco_mhz), "FineMixerScale": xrfdc.MIXER_SCALE_1P0})
         print(f"DAC tile 2 for a scope: DataPathMode {block.DataPathMode}, IMRPassMode "
               f"{block.IMRPassMode}, NyquistZone {block.NyquistZone}, NCO {block.MixerSettings['Freq']:.1f} MHz, "
               f"fine-mixer scale {SCALE_NAMES.get(block.MixerSettings['FineMixerScale'], '?')}")
-    # "Auto" leaves the scale register as it is, so restore 0.7 explicitly.
-    restored = {**mixer, "FineMixerScale": xrfdc.MIXER_SCALE_0P7
-                if mixer["FineMixerScale"] == xrfdc.MIXER_SCALE_AUTO else mixer["FineMixerScale"]}
-    return lambda: apply(*saved, restored)
+    return restore
 
 
 def main() -> int:

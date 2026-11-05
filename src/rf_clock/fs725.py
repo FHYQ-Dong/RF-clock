@@ -20,8 +20,9 @@ Steering uses SF, the frequency offset in parts in 1e12 (-2000 to +2000, 1e-12 =
 
 SF sets the magnetic field of the resonance cell through a 12-bit DAC, and the
 frequency goes as the square of the field, linearized by the firmware; near the
-nominal operating point one DAC step is about 4 SF units (inferred from the PRS10
-manual's MR equation; ``magnetic_dac()`` reads the DAC to check).
+nominal operating point one DAC step is about 4 SF units by the PRS10 manual's MR
+equation, and 3.4 measured on B's unit (2026-11-03: SF 3 -> 103 moved the DAC,
+``magnetic_dac()``, from 2612 to 2641, and theta's rate by 101.5 ps/s).
 
 The 1 pps input is also time-tagged against the 1 pps output with 1 ns resolution
 (``time_tag()``), and ``place_pulse()`` moves the 1 pps output earlier by 1 ns to

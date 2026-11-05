@@ -44,6 +44,7 @@ Key premise: **on each board, the DAC/ADC sample clocks, the PL fabric clock and
 | Acquisition on long windows in DDR | yes | captures the windows |
 | TWTT, Kalman filter, FS725 steering | yes | no |
 | raw tick counting, PPS capture | no | yes |
+| Output PPS from the tick, its validity line | says when the time scale is synchronized | yes (P10, since 2.1) |
 | Actual start tick recording, fault detection | no | yes |
 | RFDC configuration and MTS | via driver | IP and clocks |
 
@@ -165,9 +166,9 @@ pair j = slots 2j and 2j + 1: one θ
 
 - Until acquisition is done, bursts use the acquisition code, a fixed public code (today's PRN). Keyed codes (later) start only after both nodes decode each other's packets; a node that loses the peer falls back to the acquisition code.
 - B listens with a long window to DDR (up to about 21 ms). A transmits every 4 ms, so one window holds several of A's bursts. The ARM correlates it, decodes A's packet, and from A's T_tx and `PPS_COUNT` finds the offset of its PPS from A's, to within the unknown propagation delay.
-- B moves its 1 pps output by that offset with the FS725's PP command (`place_pulse()` in `rf_clock.fs725`, 1 ns steps) and starts its slots. A's whole-window search then finds B's bursts if they arrive within its lag range, that is, if the delay is known to within a quarter of it (about ±3.4 µs, 1 km, for today's 13.8 µs); otherwise A searches a long window as B did.
-- With both directions measured, B removes the rest of its PPS offset with PP and then steers the FS725's frequency (§7.1).
-- After losing the peer, the PL searches the window (P8); it re-locks by itself only if the peak did not move (within ±1 sample), otherwise the ARM decides after checking the one-way delay; a peak outside the lag range goes back to long-window acquisition.
+- B moves its 1 pps output by that offset less the steering target (the target holds the calibrated constant of the PPS paths, a few tens of ns on the bench), rounded to whole ticks, with the FS725's PP command (`place_pulse()` in `rf_clock.fs725`, 1 ns steps; `rf_clock.pl.acquire.place_pulse_ns`) and starts its slots. Whole ticks, because the PL latches the PPS on its tick: a move by whole ticks moves PPS_TICK by exactly that many and keeps the edge's place within its tick (its capture margin and the sub-tick phase of §8) to within the PP's own error, while a fraction of a tick would move that place by nanoseconds unseen. The FS725's PP misses its move by up to 0.23 ns (151 ps rms, and 0.5 ns over one sequence; measured against the unit's own 10 MHz on 2026-11-04, `results/m5-v2-20261103/REPORT.md` section 9.6), so a calibration of the PPS constant holds only until the next PP; the remainder, at most half a tick, stays in θ for the steering (§7.1). Tested on the bench (2026-11-03, `results/m5-v2-20261103/REPORT.md` section 2): an 11 ms window held three of A's bursts, all three packets decoded, and the offset agreed with the two-way θ that followed to 0.13 ns once the one-way delay was known; acquisition takes about 25 s on the ARM. A's whole-window search then finds B's bursts if they arrive within its lag range, that is, if the delay is known to within a quarter of it (about ±3.4 µs, 1 km, for today's 13.8 µs); otherwise A searches a long window as B did.
+- With both directions measured, B steers the FS725's frequency (§7.1): the same loop takes out the rest of the offset, under half a tick plus the drift, and then holds θ. Not with PP: θ counts each node's time from the tick that latched its PPS (T = P + d, the edge P and its lead d on that tick), so steering to the target makes T_B = T_A and leaves the PPS edges d_A − d_B apart. Frequency moves P_B and T_B together and cannot change d_B; a PP of a fraction of a tick changes it unseen. Kept by whole-tick moves, d_A − d_B is a constant, calibrated once (§8, PPS sub-tick phase) and included in the target.
+- After losing the peer, the PL searches the window (P8); it re-locks by itself only if the peak did not move (within ±1 sample) and is as strong as the tracker requires of a held lock, otherwise the ARM decides after checking the one-way delay; a peak outside the lag range goes back to long-window acquisition.
 
 ### 5.3 Timing of one pair of slots (P7)
 
@@ -213,6 +214,7 @@ All timing-relevant logic is in one clock domain: the RFDC DAC AXIS, ADC AXIS, r
 - 64-bit `raw_tick`, incremented every fabric clock, never reset at frame boundaries, saturating rather than wrapping;
 - synchronize the FS725 1PPS input, capture `pps_tick`, and check that every period is exactly 100,000,000 ticks; report deviations and missing pulses;
 - **Note:** 10 MHz and PPS are coherent, so after each power-up the PPS edge has a fixed but unknown phase relative to the fabric clock. If that edge sits next to the sampling edge, the capture can toggle between adjacent ticks. Detect this from the PPS period statistics and move it away with IDELAY if needed. The sub-tick phase is a per-power-up calibration constant (§8).
+- **Proposal (2026-11-03, not built):** report where the PPS edge falls within its tick, every second, from an oversampled copy of the PPS input (an ISERDES at the 800 MHz sample clock or faster: 1.25 ns or finer), so that each node sees its own capture margin and sub-tick phase. Today only a node that controls its FS725 can find them, by stepping PP until PPS_TICK moves (`rf_clock.checks.pps_pp_scan`; B's edge was 5.33 ns before its sampling edge, `results/m5-v2-20261103/REPORT.md` section 3), and a marginal edge on the other node shows only as a 10 ns step of θ.
 
 ### P2 control_regs: AXI-Lite control and status
 
@@ -278,7 +280,7 @@ ADC AXIS ─> window gate + timestamp ─┬─> P8 window buffer, P9 despreader
 - whole-window search: parallel time-domain correlators, a systolic array in which the reference is broadcast to every lane and the window shifts through them, one lag per lane, passes repeated until every lag is done; integer multiply-accumulate (16 × 16 bits, 47-bit sums in the DSP48E2's 48-bit accumulator), so its correlation equals the ARM's float64 exactly; 11008 lags × 32841 samples ≈ 7.2e8 multiplications: 2.4 ms with 1024 DSP at 300 MHz, 1.2 ms with 2048 (the device has 4272, the tracker uses about 150);
 - a search starts when the tracker has no lock (lost, or not yet found after start-up; then again on fresh windows until it locks) or the ARM asks; the ARM asks from time to time while locked, so that a lock on a wrong peak (a delayed copy, multipath) is found; one search at a time (busy), requests while busy are refused and counted;
 - a search reports, with the window's `PPS_COUNT`, slot and start tick: the strongest peak, the earliest peak within a set threshold of it (the direct path arrives first), the peak-to-sidelobe ratio and the window status;
-- re-lock: by the PL itself only if the new peak lies within ±1 sample of the old one; otherwise the ARM decides after checking the one-way delay; slots without lock carry invalid measurements, while a search the ARM requests during lock leaves the tracker's measurements valid; a peak outside the lag range goes to the ARM's long-window acquisition;
+- re-lock: by the PL itself only if the new peak lies within ±1 sample of the old one and passes the tracker's magnitude test against the last lock (a noise peak near the old lag took the lock on the bench, 2026-11-03); otherwise the ARM decides after checking the one-way delay; slots without lock carry invalid measurements, while a search the ARM requests during lock leaves the tracker's measurements valid; a peak outside the lag range goes to the ARM's long-window acquisition;
 - clock: the first RTL version (rf-clock 2.0) runs the search on the 100 MHz fabric clock, with 1024 lanes (2048 DSP) and about 3.9 ms per search, so that it needs no clock-domain crossing; a 300 MHz clock derived from the FS725 would do the same with half the DSP, if timing allows;
 - the estimator must equal the ARM's (`rf_clock.correlator.estimate_delay`) so that calibrated constants carry over; acceptance against the ARM's float64 on the same window: envelope within 0.01 ps, phase within 0.001 ps;
 - results (window tick, peak, sub-sample position, phase, quality) go to P9 and to the measurement queue;
@@ -289,6 +291,24 @@ ADC AXIS ─> window gate + timestamp ─┬─> P8 window buffer, P9 despreader
 - Assembles the packet of §5.1 from P8's latest result, the slot's T_tx and the status, adds the CRC, and gives its bits to P3, which spreads them with the packet code behind the PRN;
 - despreads the peer's packet in each window coherently (§5.1), checks the CRC, and queues the decoded fields;
 - the queue holds at least a second of both nodes' measurements, so the ARM reads it in batches.
+
+### P10 pps_out: the output PPS (since 2.1)
+
+The node's PPS for other equipment, made from its time scale rather than taken from the FS725's 1PPS (design and reasons: `plan/pps_output.md`):
+
+```text
+FS725 1PPS ──> P1: PPS_TICK(k) ──> P10: phase counter (anchored by locked edges, flywheel between)
+                                     │ at PPS_TICK(k) + OFFSET: a step in DAC tile 0's stream
+                                     v
+                     DAC tile 0 (baseband, mixer bypassed) ──> 100 nF ──> balun ──> 100 nF ──> J20 (DAC_B)
+                     validity line ──> NVT2008BQ ──> Pmod J1 pin 1 (high = not valid); LED W_LED_0
+```
+
+- Counts the ticks of each second from the PPS_TICK of the locked edge that started it, and on by itself when an edge is missing (flywheel, counted);
+- in each second, the beat presented at PPS_TICK + OFFSET carries a step from sample SAMPLE on (1.25 ns steps), WIDTH beats long, from an idle level IDLE (since 2.2; −AMPLITUDE doubles the step); the edge on J20 lies at the second's start + OFFSET × 10 ns + SAMPLE × 1.25 ns + D_board (§8); its rise, 0.95 ns, is set by tile 0's 800 MS/s stream, which cannot be raised without losing tile 2's MTS (the IP keeps a DAC tile's MTS only with equal interpolation; `results/pps-out-20261104/REPORT.md` section 9);
+- the output follows the time scale that θ aligns, so neither a PP's error nor the FS725 1PPS jitter enters it, and it is timed by the DAC's sample clock;
+- the validity line is high unless the PPS input and the clocks are locked, the second was started by a locked edge, the DAC takes the stream, and the ARM has said the time scale is synchronized; high also without a bitstream (the translator's pull-up);
+- registers `docs/ABI.md` §4.13; simulation `PL/sim/tb_p10_pps_out.v`.
 
 ### 6.1 Not needed in the first version
 
@@ -317,16 +337,19 @@ The ARM reads the PL's measurement queue in batches; estimation and steering hap
 
 - Only B is steered; A free-runs;
 - the first version adjusts only B's frequency offset over RS-232. Frequency error is corrected directly; PPS phase error is removed by temporarily adding a frequency offset so that the phase slews into place;
-- the steering command is SF (PRS10 manual): the frequency offset in parts in 1e12, −2000 to +2000, relative to the EEPROM calibration. The first SF disables the calibration pot and SF is ignored while the unit phase-locks to a 1 pps input, so steering starts from the value SF? reads, with that PLL off (`rf_clock.fs725`);
-- the loop time constant is tens to hundreds of seconds, matched to the stability of the rubidium standard. With white frequency noise the residual of θ goes as σ_y(1 s)·√(τ/2), so the shortest τ the FS725's response allows is best; `rf_clock.twtt.steer` defaults to 50 s (`experiments/m5_steer_sim.py`).
+- the steering command is SF (PRS10 manual): the frequency offset in parts in 1e12, −2000 to +2000, relative to the EEPROM calibration. The first SF disables the calibration pot and SF is ignored while the unit phase-locks to a 1 pps input, so steering starts from the value SF? reads, with that PLL off (`rf_clock.fs725`). Measured on B's unit (2026-11-03, `results/m5-v2-20261103/REPORT.md` section 5): SF +100 raised θ's rate by 101.5 ps/s within one to two seconds, and one step of the magnetic-field DAC behind SF is 3.4 SF units, so finer SF is realized only on average;
+- the loop time constant is tens to hundreds of seconds, matched to the stability of the rubidium standard. With white frequency noise the residual of θ goes as σ_y(1 s)·√(τ/2), so the shortest τ the FS725's response allows is best; `rf_clock.twtt.steer` defaults to 50 s (`experiments/m5_steer_sim.py`). The two FS725s on the bench, measured through θ and on a scope (2026-11-03, report section 4): Allan deviation 1.4 × 10⁻¹¹ at 1 s, falling about as τ^−0.8 to 4.3 × 10⁻¹³ at 256 s, and an oscillation of the pair's frequency of about 5.3 s period; θ wanders by some 70 ps rms about its line, mostly over tens of seconds. Replaying that record through the loop gives 55 ps rms for τ = 50 s with a correction every 10 s, 33 ps for τ = 5 s every 2 s and 25 ps for τ = 2 s every second; on the bench the first held θ to 66 ps rms and the second to 39 ps (report section 6). With the FS725's 1.9 s response in the replay, 5 s every 2 s gives 42 ps and nothing faster does better (2 s every second: 63 ps): about 40 ps is the floor for this pair (of the 1.9 s, the FS725's 1.1-1.6 s cost about 15 ps: theta from the last 0.2 s of each second instead of the whole second would give 38.5 ps, an FS725 answering at once 25 ps; report section 6.5);
+- in rf-clock 2 the node steers its own FS725: `rf_clock.checks.m4c_link --steer-target-ns` feeds each second's θ, from B's own measurement queue, to `rf_clock.twtt.steer` and sets SF over B's USB-RS232 adapter;
+- the FS725's frequency follows an SF command about 1.1-1.6 s later, so the filter counts a change of SF from 1.9 s after the second whose θ asked for it, and widens its outlier gate while the change is new; without that, a large first step of a fast loop (τ = 5 s) made the filter reject ten θ in a row and start again on the bench (2026-11-03). A large error at the start runs SF at the edge of its allowed range rather than stopping the steering; only a control law that asks beyond it for two minutes stops it.
 
 ## 8. Calibration
 
 | Quantity | Method | Redo when |
 | --- | --- | --- |
 | Non-reciprocity Δ | Zero baseline: both nodes share one FS725's 10 MHz and PPS (PPS distribution cable lengths known), so the true θ is known; solve Δ from (m_AB − m_BA)/2 = θ + Δ/2 | after changing cables, amplifiers, filters, antennas or the RFDC configuration |
-| PPS sub-tick phase vs fabric clock | oscilloscope / time-interval counter, or feed PPS into a spare ADC channel and time it at GS/s resolution | every power-up (unless the board PLL phase is shown to be deterministic) |
+| PPS sub-tick phase vs fabric clock | oscilloscope / time-interval counter, or feed PPS into a spare ADC channel and time it at GS/s resolution; on a node that controls its FS725, PP in 1 ns steps until PPS_TICK moves (`rf_clock.checks.pps_pp_scan`: where the edge lies before its sampling edge, to 1 ns; 2026-11-03) | every power-up (unless the board PLL phase is shown to be deterministic) |
 | RFDC path latency | on-board DAC → attenuator → ADC cable loopback, compared across many reboots | after RFDC configuration changes; also proves MTS works |
+| Output PPS delay D_board (P10) | J20's edge on the scope against the node's FS725 1PPS, less OFFSET × 10 ns + SAMPLE × 1.25 ns and the PPS capture margin (row 2); compared across power-ups | after RFDC configuration changes or changes to the DAC_B path |
 
 Calibration values live in software with a version number. Never subtract a guessed constant in code.
 
@@ -340,7 +363,7 @@ Calibration values live in software with a version number. Never subtract a gues
 | M3 | P4, on-board DAC → ADC cable loopback, correlation on the ARM | standard deviation of the loopback delay and its consistency across reboots; S2MM sustains its write rate without overflow while the ARM also accesses DDR |
 | M4 | two boards, cabled with attenuators, sharing one FS725 | Δ from the zero baseline; noise level of θ̂ |
 | M4b | P7–P9 and P3's FIR, on the M3 loopback, then the cabled pair | P8 equals the ARM's float64 on the same windows (envelope within 0.01 ps, phase within 0.001 ps); packets decoded with their CRC over hours; θ and the loopback delay unchanged with and without packets; pairing by `PPS_COUNT` without NTP; searches triggered by loss of lock and by the ARM, with the re-lock rules of P8 |
-| M5 | each board on its own FS725, cabled, acquisition (§5.2), Kalman + FS725 steering loop closed | PPS_A − PPS_B on a time-interval counter converges over the long term |
+| M5 | each board on its own FS725, cabled, acquisition (§5.2), Kalman + FS725 steering loop closed | PPS_A − PPS_B on a time-interval counter converges over the long term; since 2.1 the nodes' PPS is the output PPS (P10), whose difference must also hold over re-acquisitions and power-ups |
 | M6 | replace cables with the 5.8 GHz BPF, amplifier and antenna air link | same metrics as M5; record multipath and SNR effects |
 
 Every piece of evidence must say whether it comes from simulation, synthesis or board measurement. The final metric is PPS_A − PPS_B measured by an external time-interval counter, not the θ̂ reported by the system itself.
@@ -351,8 +374,8 @@ Item-by-item progress and evidence are tracked in `plan/checklist.md`.
 
 1. **Board model and external reference input:** can the board clock chain take a 10 MHz external reference, and can both RFDC and fabric clocks be derived from it?
 2. **Antennas:** separate TX/RX antennas, or one antenna with a T/R switch? If shared, the PL must drive the switch at target ticks and protect the LNA.
-3. **Measurement packet:** measurements ride in the bursts (§5.1). Open: the spreading factor L, measured as §5.1 describes (L = 64 until then), and the packet's fields and registers (registers only added keep `VERSION`'s major; changing existing ones bumps it, `docs/ABI.md` §14).
-4. **FS725 coarse PPS alignment:** the PRS10 moves its 1 pps output by PP in 1 ns steps; §5.2 uses that with the offset found by RF acquisition (`place_pulse()`), not yet tested. Time-tagging the peer's PPS on the rear 1 pps input (TT?, 1 ns, `rf_clock.fs725 align`) remains a bench alternative.
+3. **Measurement packet:** measurements ride in the bursts (§5.1). Open: the spreading factor L, measured as §5.1 describes (L = 64 until then; on the cabled pair, 2026-11-03, the tracker's quality was 45.25 dB at TX amplitude 16000, Es/N0 ≈ 9.2 dB, so L = 64 gives Eb/N0 ≈ 27 dB, and with the amplitude cut to 4000 every packet still decoded: by §5.1's rule L = 8 would do there, but the attenuators set that SNR, so L stays 64 until the air link, M6), and the packet's fields and registers (registers only added keep `VERSION`'s major; changing existing ones bumps it, `docs/ABI.md` §14).
+4. **FS725 coarse PPS alignment:** the PRS10 moves its 1 pps output by PP in 1 ns steps; §5.2 uses that with the offset found by RF acquisition (`place_pulse()`), in whole ticks; tested on the bench on 2026-11-03 (10 PP steps make one tick, 9.90 ns measured). A PP misses its move by up to 0.23 ns, and the 1PPS itself jitters by 22-34 ps against the unit's 10 MHz (2026-11-04). **Since 2.1** the node's output PPS is made by the PL from its tick (P10, `plan/pps_output.md`): a pulse on DAC_B (J20) at a programmable delay after PPS_TICK. It follows the time scale that θ aligns, with no PP and no FS725 PPS jitter between them, and the FS725's 1PPS serves only as the PPS input; the delay from the tick to J20 is a board constant to calibrate once (§8). On board B (2026-11-04, `results/pps-out-20261104/REPORT.md`) it held against B's 10 MHz to the scope's 7 ps per second, moved by exactly whole ticks through ten PP moves (3.1 ps rms) while the 1PPS missed them by 40-260 ps, and stayed within 8.7 ps over six PL.opens. With both boards' output PPS on the scope while B was steered, their difference held to 0.9 ps over a re-acquisition with PP and a PL.open of both boards (report section 8), where the FS725 1PPS lost 145 ps; power cycles are open. Time-tagging the peer's PPS on the rear 1 pps input (TT?, 1 ns, `rf_clock.fs725 align`) remains a bench alternative.
 5. **Target accuracy:** ns level is reachable with code correlation; 100 ps or better needs carrier-phase measurement and tighter handling of the PPS sub-tick phase.
 6. **Regulations:** 5.8 GHz transmit power and occupied-bandwidth limits.
 7. **Security:** monitoring the one-way delay; an innovation gate in the Kalman filter; the threshold for the earliest peak (P8); a message authentication code on the packet; keyed codes (§5.2) and their keys.

@@ -113,6 +113,7 @@ The build writes the version into the bitstream (`BUILD_VERSION`), and `PL.open(
 | [plan/checklist.md](plan/checklist.md) ([中文](plan/checklist_zh.md)) | Open items, with evidence for each closed one |
 | [docs/ABI.md](docs/ABI.md) ([中文](docs/ABI_zh.md)) | ARM ↔ PL programming manual: registers, timing, power-up, the Python library, board setup, releases |
 | [docs/board_setup.md](docs/board_setup.md) ([中文](docs/board_setup_zh.md)) | From a new board to one in service: system, installation, wiring, the checks and per-board calibrations in order, what to redo after a change |
+| [docs/debug_overview.md](docs/debug_overview.md) ([中文](docs/debug_overview_zh.md)) | Every problem found on the bench, along the 10 MHz distribution: a diagram of each module marking where the problems sat; what was seen, the cause, the change and the version, with links to the reports |
 | [src/rf_clock/clocks/files/README.md](src/rf_clock/clocks/files/README.md) | Clock plan and the LMK/LMX register files |
 
 ## Layout

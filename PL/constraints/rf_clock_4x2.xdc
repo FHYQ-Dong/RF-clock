@@ -8,6 +8,9 @@
 #   pps_in             RealDigitalOrg RFSoC4x2-BSP hw/constraints/4x2_1PPS.xdc
 #                      (IRIG_COMP_OUT, output of the on-board 1PPS comparator)
 #   pps_trig_in        same file (IRIG_TRIG_OUT, the Schmitt-trigger copy)
+#   pps_out_invalid    same repository, 4x2_PMOD.xdc: PMOD0_0 (J1 pin 1, through
+#                      the NVT2008BQ translator with 1.15k pull-ups to 3.3 V)
+#   pps_out_led        same repository, 4x2_LED_PB__SW.xdc: W_LED_0
 # RFDC clock, SYSREF and analog pins are dedicated and placed by the IP.
 
 # ---------------------------------------------------------------------------
@@ -29,6 +32,11 @@ set_property IOSTANDARD LVCMOS18 [get_ports {pps_in pps_trig_in}]
 # 1.15k pull-ups only on its 3.3 V side (schematic sheet 10, "1PPS"); its 1.8 V
 # side needs a pull-up for the high level, so use the FPGA pull-up.
 set_property PULLTYPE PULLUP [get_ports {pps_in pps_trig_in}]
+# The output PPS's validity line (high = not valid; the translator's pull-up
+# also reads high without a bitstream) and its LED (lit = valid), 2.1.
+set_property PACKAGE_PIN AF16 [get_ports pps_out_invalid]
+set_property PACKAGE_PIN AR11 [get_ports pps_out_led]
+set_property IOSTANDARD LVCMOS18 [get_ports {pps_out_invalid pps_out_led}]
 
 # ---------------------------------------------------------------------------
 # Clocks
@@ -47,6 +55,8 @@ set_input_delay -clock [get_clocks PL_CLK] -max 2.031 [get_ports PL_SYSREF_P]
 # Asynchronous inputs (synchronized in RTL)
 # ---------------------------------------------------------------------------
 set_false_path -from [get_ports {pps_in pps_trig_in}]
+# Levels that change rarely; no timing to them.
+set_false_path -to [get_ports {pps_out_invalid pps_out_led}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *u_p0/lock_sync_reg[0]}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *p_top_0/inst/overrange_sync_reg[0]}]
 

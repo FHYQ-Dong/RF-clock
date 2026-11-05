@@ -13,6 +13,9 @@
 // correlator (P8), measurements and decoded packets into the queue.  The
 // first version's P3 player and P4 window serve development tests with the
 // engine off; P4 also copies a window to DDR on SLOT_COPY.
+// Since 2.1 P10 sends the output PPS on DAC tile 0's stream (DAC_B) and drives
+// its validity line (a Pmod pin, high = not valid) and an LED (lit = valid).
+// Since 2.2 the pulse can start from an idle level (PPS_OUT_IDLE).
 // The X_INTERFACE_* attributes let the block design (module reference) see
 // the clock/reset associations and the BRAM port as interfaces.
 module p_top #(
@@ -42,7 +45,7 @@ module p_top #(
     parameter integer LAG_KW         = 16        // lag bits
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:s_axis_adc:BURST_PORT:QUEUE_PORT, ASSOCIATED_RESET arst_n" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:m_axis_dac0:s_axis_adc:BURST_PORT:QUEUE_PORT, ASSOCIATED_RESET arst_n" *)
     input  wire                      clk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 arst_n RST" *)
     (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
@@ -122,6 +125,11 @@ module p_top #(
     output wire                      m_axis_dac_tvalid,
     input  wire                      m_axis_dac_tready,
 
+    // RFDC DAC tile 0 AXI4-Stream (2.1): the output PPS.
+    output wire [DATA_W-1:0]         m_axis_dac0_tdata,
+    output wire                      m_axis_dac0_tvalid,
+    input  wire                      m_axis_dac0_tready,
+
     // RFDC ADC AXI4-Stream (I/Q streams combined to DATA_W in the BD).
     input  wire [DATA_W-1:0]         s_axis_adc_tdata,
     input  wire                      s_axis_adc_tvalid,
@@ -132,7 +140,11 @@ module p_top #(
     output wire [DATA_W/8-1:0]       m_axis_s2mm_tkeep,
     output wire                      m_axis_s2mm_tvalid,
     input  wire                      m_axis_s2mm_tready,
-    output wire                      m_axis_s2mm_tlast
+    output wire                      m_axis_s2mm_tlast,
+
+    // The output PPS's validity line (Pmod, high = not valid) and LED (2.1).
+    output wire                      pps_out_invalid,
+    output wire                      pps_out_led
 );
     `include "src/p_defs.vh"
     `include "src/p_regs.vh"
@@ -260,6 +272,15 @@ module p_top #(
     // the engine owns the DAC, the windows and the burst memory
     wire        engine_lock = slot_control[SLOTCTL_ENABLE] || slots_running;
 
+    // ---------------- 2.1 signals: P10 ----------------
+    wire [1:0]  pps_out_control;
+    wire [31:0] pps_out_offset;
+    wire [2:0]  pps_out_sample;
+    wire [15:0] pps_out_width, pps_out_amplitude, pps_out_idle;
+    wire        pps_out_have_ref, pps_out_running, pps_out_flywheel;
+    wire [31:0] pps_out_count, pps_out_flywheel_count;
+    wire [63:0] pps_out_tick;
+
     // ---------------- P2 ----------------
     wire        tx_doorbell, tx_cancel, rx_doorbell, rx_cancel, clear_fault;
     wire [63:0] tx_target, rx_target;
@@ -299,7 +320,8 @@ module p_top #(
         .CHIP_CHIPS     (32'd1 << (CHIP_AW + 5)),
         .TRACK_HALF     (32'd4),
         .SEARCH_LANES   (SEARCH_LANES),
-        .QUEUE_ENTRIES  (QUEUE_ENTRIES)
+        .QUEUE_ENTRIES  (QUEUE_ENTRIES),
+        .PPS_PERIOD     (PPS_PERIOD)
     ) u_p2 (
         .clk                (clk),
         .rst                (rst),
@@ -411,7 +433,17 @@ module p_top #(
         .packet_crc_count   (packet_crc_count),
         .queue_tail         (queue_tail),
         .queue_head         (queue_head),
-        .queue_dropped_count(queue_dropped_count)
+        .queue_dropped_count(queue_dropped_count),
+        .pps_out_control    (pps_out_control),
+        .pps_out_offset     (pps_out_offset),
+        .pps_out_sample     (pps_out_sample),
+        .pps_out_width      (pps_out_width),
+        .pps_out_amplitude  (pps_out_amplitude),
+        .pps_out_idle       (pps_out_idle),
+        .pps_out_status     ({pps_out_invalid, pps_out_flywheel, pps_out_running, pps_out_have_ref}),
+        .pps_out_count      (pps_out_count),
+        .pps_out_flywheel_count(pps_out_flywheel_count),
+        .pps_out_tick       (pps_out_tick)
     );
 
     // ---------------- P3 ----------------
@@ -631,6 +663,39 @@ module p_top #(
         .tail (queue_tail), .head (queue_head), .dropped_count (queue_dropped_count),
         .bram_en (queue_en), .bram_addr (queue_addr), .bram_rddata (queue_rddata)
     );
+
+    // ---------------- P10 output PPS (2.1) ----------------
+    p10_pps_out #(
+        .DATA_W     (DATA_W),
+        .PPS_PERIOD (PPS_PERIOD),
+        .MIN_OFFSET (PPSOUT_MIN_OFFSET)
+    ) u_p10 (
+        .clk             (clk),
+        .rst             (rst),
+        .raw_tick        (raw_tick),
+        .pps_event       (pps_event),
+        .pps_tick        (pps_tick),
+        .pps_locked      (pps_locked),
+        .clocks_locked   (clocks_locked),
+        .cfg_enable      (pps_out_control[PPSOUTCTL_ENABLE]),
+        .cfg_synced      (pps_out_control[PPSOUTCTL_SYNCED]),
+        .cfg_offset      (pps_out_offset),
+        .cfg_sample      (pps_out_sample),
+        .cfg_width       (pps_out_width),
+        .cfg_amplitude   (pps_out_amplitude),
+        .cfg_idle        (pps_out_idle),
+        .m_axis_tdata    (m_axis_dac0_tdata),
+        .m_axis_tvalid   (m_axis_dac0_tvalid),
+        .m_axis_tready   (m_axis_dac0_tready),
+        .have_ref        (pps_out_have_ref),
+        .running         (pps_out_running),
+        .last_flywheel   (pps_out_flywheel),
+        .pulse_count     (pps_out_count),
+        .flywheel_count  (pps_out_flywheel_count),
+        .last_tick       (pps_out_tick),
+        .pps_out_invalid (pps_out_invalid)
+    );
+    assign pps_out_led = !pps_out_invalid;
 
     // ---------------- P6 ----------------
     wire [3:0] fault_in;

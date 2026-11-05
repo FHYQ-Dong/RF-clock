@@ -73,7 +73,10 @@ set build_version [expr {($v_a << 24) | ($v_b << 16) | ($v_c << 8) | $v_d}]
 set part       xczu48dr-ffvg1517-2-e
 set board_part realdigital.org:rfsoc4x2:part0:1.0
 set bd_name    rf_clock
-set jobs       8
+# Parallel runs: 8 and then 4 ran RF-clock-PC (31 GiB) out of memory on
+# 2026-11-04 (the kernel killed p_top's synthesis, 3.9 GB, among the
+# out-of-context IP runs of 2.4-3.4 GB each and their parallel-synthesis helpers).
+set jobs       2
 
 file mkdir $out_dir
 file copy [info script] [file join $out_dir create_rf_clock_bd.tcl]
@@ -171,6 +174,9 @@ set failed [catch {
     create_bd_port -dir I PL_SYSREF_N
     create_bd_port -dir I pps_in
     create_bd_port -dir I pps_trig_in
+    # 2.1: the output PPS's validity line (Pmod J1 pin 1) and its LED.
+    create_bd_port -dir O pps_out_invalid
+    create_bd_port -dir O pps_out_led
 
     foreach name {pl_clk_ibufds pl_sysref_ibufds} {
         set c [create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 $name]
@@ -316,14 +322,14 @@ set failed [catch {
         external_intf rfdc/$a $a
     }
 
-    # Unused RFDC event/clear/shutdown inputs and the DAC tile 0 stream
-    # (MTS-only) are tied inactive.  ADC tile 0 streams stay unconnected
-    # (TREADY defaults high).
+    # Unused RFDC event/clear/shutdown inputs are tied inactive.  ADC tile 0
+    # streams stay unconnected (TREADY defaults high).  The DAC tile 0 stream
+    # carries the output PPS from p_top since 2.1.
     set unused {}
     foreach p [get_bd_pins rfdc/*] {
         set n [get_property NAME $p]
         if {[get_property DIR $p] eq "I" &&
-            [regexp {(_pl_event|_clear_ov|_clear_or|_fast_shutdown)$|^s00_axis_t(data|valid)$} $n]} {
+            [regexp {(_pl_event|_clear_ov|_clear_or|_fast_shutdown)$} $n]} {
             lappend unused $p
         }
     }
@@ -340,7 +346,8 @@ set failed [catch {
     connect_bd_intf_net [intf rfdc/m20_axis] [intf adc_iq_combiner/S00_AXIS]
     connect_bd_intf_net [intf rfdc/m21_axis] [intf adc_iq_combiner/S01_AXIS]
     # ---------------------------------------------------------------
-    # p_top (P0-P4, P6; since 2.0 P7-P9 and the measurement queue).
+    # p_top (P0-P4, P6; since 2.0 P7-P9 and the measurement queue; since 2.1
+    # P10, the output PPS on DAC tile 0).
     # ---------------------------------------------------------------
     set top [create_bd_cell -type module -reference p_top p_top_0]
     set_property CONFIG.BUILD_VERSION $build_version $top
@@ -352,6 +359,9 @@ set failed [catch {
     connect_bd_net [get_bd_ports pps_in] [pin p_top_0/pps_in]
     connect_bd_net [get_bd_ports pps_trig_in] [pin p_top_0/pps_trig_in]
     connect_bd_intf_net [intf p_top_0/m_axis_dac] [intf rfdc/s20_axis]
+    connect_bd_intf_net [intf p_top_0/m_axis_dac0] [intf rfdc/s00_axis]
+    connect_bd_net [pin p_top_0/pps_out_invalid] [get_bd_ports pps_out_invalid]
+    connect_bd_net [pin p_top_0/pps_out_led] [get_bd_ports pps_out_led]
     connect_bd_intf_net [intf adc_iq_combiner/M_AXIS] [intf p_top_0/s_axis_adc]
     set ovr [get_bd_pins rfdc/adc2_01_over_range -quiet]
     if {[llength $ovr] != 1} { error "RFDC over-range pin not found; see rfdc_pins.txt" }

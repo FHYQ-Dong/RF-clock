@@ -22,6 +22,7 @@
 | RX 样本   | P4 → 异步 FIFO → AXI DMA S2MM → DDR | 每个采集窗口的样本           | DMA buffer + DMA 寄存器（§4.6.9） |
 | 突发存储器（2.0） | P3/P8/P9 的码片存储器和 FIR 系数，经 AXI BRAM Controller | 码片序列和 RRC 系数 | 时隙引擎关闭时按内存写入（§4.9） |
 | 测量队列（2.0） | P8/P9 的条目，存在 BRAM 环形缓冲区里，经 AXI BRAM Controller | 本节点的测量值和解出的对端测量包 | 按内存读，配合 `QUEUE_HEAD`/`QUEUE_TAIL`（§4.12） |
+| 输出 PPS（2.1） | P10 → RFDC DAC tile 0 → DAC_B（J20）；有效状态线在 Pmod J1 第 1 针 | 由节点时间尺度产生的每秒一个脉冲 | 寄存器（§4.13） |
 | 时钟状态  | AXI GPIO（`pl_clk0` 域）             | fabric MMCM 是否锁定         | 32 位 MMIO 读（§4.7）             |
 
 ### 1.2 地址
@@ -106,13 +107,13 @@ R32 0x00  → 0x52434C4B
 
 | 地址 | 访问 | 格式                        | 复位值            |
 | ---- | ---- | --------------------------- | ----------------- |
-| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00020000（2.0） |
+| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00020002（2.2） |
 
 ```text
-R32 0x04  → 0x00020000
+R32 0x04  → 0x00020002
 ```
 
-major 不等于软件支持的值就拒绝运行。1.x 里 `PPS_INPUTS`、`PPS_CONFIG` 随 minor 1 加入，`BUILD_VERSION` 随 2，`TX_REPEAT` 随 3；2.0 全部保留，并新增时隙引擎、由码片生成的突发、相关器、测量包和测量队列（§4.8–§4.12，§14）。Python：`PLClient.validate()`、`DeviceInfo.version`。
+major 不等于软件支持的值就拒绝运行。1.x 里 `PPS_INPUTS`、`PPS_CONFIG` 随 minor 1 加入，`BUILD_VERSION` 随 2，`TX_REPEAT` 随 3；2.0 全部保留，并新增时隙引擎、由码片生成的突发、相关器、测量包和测量队列（§4.8–§4.12，§14）；2.1 新增输出 PPS（§4.13），2.2 新增它的空闲电平 `PPS_OUT_IDLE`。Python：`PLClient.validate()`、`DeviceInfo.version`。
 
 #### 4.1.3 `CONTROL` — 命令脉冲
 
@@ -608,7 +609,7 @@ Python：`pl.burst.load(prn, taps, packet_code=None)`（§11.14）。
 - **跟踪器**，每个窗口都跑：延迟点 L₀ − H … L₀ + H，H = `P8_TRACK_HALF`（4），L₀ = `P8_LOCK_LAG`，窗口以外的样本按零算。只要最大功率不在两端，并且其幅度 × 2^16 ≥ `P8_CONFIG.LOCK_MIN` × 上次锁定的幅度，就保持锁定；这时 L₀ 跟随峰的整数延迟点，测量值进入队列（`QEF_LOCKED`，§4.12）。否则失锁（`P8_LOST_CNT`），对这个窗口做整窗搜索。
 - **整窗搜索**：跟踪器没有锁定时（失锁，或开机后还没锁上；之后每来一个新窗口再搜一次，直到锁定），或收到 `P8_CONTROL.SEARCH` 时，对最新的窗口做。同一时刻只做一次：`SEARCH_BUSY` 期间的请求，以及 PRN 长到窗口里不足 3 个延迟点（此时 `P8_SEARCH_LAGS` 读出 0）时的请求，都被拒绝（`P8_REFUSED_CNT`）。被搜索的窗口所在的缓冲区冻结到搜索结束，之后的窗口进另一块缓冲区。生成参考用 `BURST_PRN_CHIPS` + 18 个 tick，各通道用 ⌈K / `P8_SEARCH_LANES`⌉ × (R + `P8_SEARCH_LANES`) 个 tick，扫描它们的结果用 K 个 tick，估计约 300 个 tick：11008 个延迟点、1024 条通道时约 3.9 ms，在两个窗口相隔的 4 ms 之内。
 - **报告**（`SR_*`）：最强峰（功率最大，并列时取最早的延迟点）；最早峰，即第一个满足功率 × 2^32 ≥ `THRESHOLD`² × 最强峰功率的功率局部极大值；旁瓣，即离最强峰超过 16 个延迟点的最大功率开方取整；以及窗口的 `PPS_COUNT`、时隙、起始 tick 和 RX 标志。`SR_SEQ` 在其他字段之后才更新：先读一次、最后再读一次，变了就重读。
-- **重新锁定**：未锁定时，只有搜索到的最强峰离 `P8_LOCK_LAG` 不超过 ±1 个延迟点、并且以前锁定过（从引擎启动或上一次 `UNLOCK` 起），PL 才自己锁上（`P8_RELOCK_CNT`）。否则置 `P8ST_WAITING`，等 ARM 核对单程延时后写 `ACCEPT_STRONGEST` 或 `ACCEPT_EARLIEST`（锁在那个峰的延迟点、幅度和相关值上；第一次报告之前写入无效），或再写 `SEARCH`。`UNLOCK` 解除锁定。锁定期间 ARM 请求的搜索不会让跟踪器的测量值失效。引擎停下时（`SLOT_STATUS.RUNNING` 为 0），锁定和尚未处理的请求都被丢掉。
+- **重新锁定**：未锁定时，只有搜索到的最强峰离 `P8_LOCK_LAG` 不超过 ±1 个延迟点、强度达到跟踪器的要求（幅度 × 2^16 ≥ `P8_CONFIG.LOCK_MIN` × 上次锁定的幅度；rf-clock 2.0.1.0 起），并且以前锁定过（从引擎启动或上一次 `UNLOCK` 起），PL 才自己锁上（`P8_RELOCK_CNT`）。没有幅度这一条时，对端停发期间，碰巧落在 ±1 以内的噪声峰会被锁上（约每 3700 次搜索一次）。否则置 `P8ST_WAITING`，等 ARM 核对单程延时后写 `ACCEPT_STRONGEST` 或 `ACCEPT_EARLIEST`（锁在那个峰的延迟点、幅度和相关值上；第一次报告之前写入无效），或再写 `SEARCH`。`UNLOCK` 解除锁定。锁定期间 ARM 请求的搜索不会让跟踪器的测量值失效。引擎停下时（`SLOT_STATUS.RUNNING` 为 0），锁定和尚未处理的请求都被丢掉。
 - **质量值**：⌊(Λ(P) − Λ(S) + `QUALITY_OFFSET`) × 771 / 1024⌋，限制在 0 … 255，单位 0.25 dB。P 是峰处的 I² + Q²，S 是整个窗口的 Σ(I² + Q²)，Λ(v) = 16 × ⌊log2 v⌋ 加上 v 最高位 1 之后的 4 位。ARM 由参考算出 `QUALITY_OFFSET` = 16 × log2(窗口样本数 / Σ ref²) 写入后，它近似 4 × 10 lg(峰值功率 / (参考能量 × 平均样本功率))，误差约 0.3 dB 以内。
 
 | 地址 | 名称 | 访问 | 复位值 | 含义 |
@@ -694,6 +695,42 @@ Python：`pl.correlator`（§11.14）。
 | 0x384 | `QUEUE_TAIL` | RW | 0 | ARM 下一个要读的条目；0 … `QUEUE_ENTRIES` − 1（其他值：SLVERR） |
 | 0x388 | `QUEUE_ENTRIES` | RO | 1024 | |
 | 0x38C | `QUEUE_DROPPED_CNT` | RO | 0 | 因环满丢掉的条目 |
+
+### 4.13 输出 PPS，P10（2.1 起）
+
+P10 每秒在 DAC tile 0 的数据流上发一个脉冲，tile 0 的输出是 DAC_B（J20）；设计见 `plan/pps_output_zh.md`。它从开始这一秒的那个锁定 PPS 边沿的 `PPS_TICK` 起数这一秒的 tick，两个边沿之间自己按 100 000 000 tick 一秒往下数，所以某个边沿缺失或 PPS 没有锁定时，它从最后一个锁定的边沿接着数下去（飞轮）。
+
+```text
+第 k 秒的脉冲：raw_tick = PPS_TICK(k) + PPS_OUT_OFFSET 时 DAC tile 0 数据流上的那一拍：
+               I 采样 PPS_OUT_SAMPLE … 7 = PPS_OUT_AMPLITUDE（之前的为 PPS_OUT_IDLE），Q = 0；
+               然后 PPS_OUT_WIDTH − 1 拍，八个 I 采样都是 PPS_OUT_AMPLITUDE；然后为 PPS_OUT_IDLE
+J20 上的边沿 = 第 k 秒的起点 + PPS_OUT_OFFSET × 10 ns + PPS_OUT_SAMPLE × 1.25 ns + D_board
+```
+
+D_board 是数据流到 J20 的延时：DAC 的延时（MTS 在每次上电时把它固定下来）加上模拟通路。它是一个板级常数，还没有测。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x140 | `PPS_OUT_CONTROL` | RW | 0 | bit 0 `ENABLE`（下一秒起生效），bit 1 `SYNCED`（ARM 担保时间尺度；立即生效） |
+| 0x144 | `PPS_OUT_OFFSET` | RW | 8 | 从秒的起点到脉冲的 tick 数，`PPSOUT_MIN_OFFSET`（8）… 99 999 999（其他值：SLVERR）。下一秒起生效 |
+| 0x148 | `PPS_OUT_SAMPLE` | RW | 0 | 阶跃在它那一拍里的第一个 I 采样，0 … 7，每个 1.25 ns（其他值：SLVERR）。下一秒起生效 |
+| 0x14C | `PPS_OUT_WIDTH` | RW | 4 | 脉冲的拍数，1 … 65535（其他值：SLVERR）。下一秒起生效 |
+| 0x150 | `PPS_OUT_AMPLITUDE` | RW | 0 | [15:0] 有符号：脉冲的 DAC 码；[31:16] 忽略，读为 0。下一秒起生效 |
+| 0x154 | `PPS_OUT_STATUS` | RO | 0x8 | bit 0 `HAVE_REF`（已有锁定的边沿设过计数），bit 1 `RUNNING`（当前这一秒已使能），bit 2 `FLYWHEEL`（上一个脉冲来自飞轮），bit 3 `INVALID`（有效状态线，见下） |
+| 0x158 | `PPS_OUT_CNT` | RO | 0 | 已发出的脉冲数 |
+| 0x15C | `PPS_OUT_FLYWHEEL_CNT` | RO | 0 | 其中不是由锁定边沿开始的那些秒里发出的脉冲数 |
+| 0x160 | `PPS_OUT_TICK_LO` | RO | 0 | 上一个脉冲第一拍的 tick；读它时锁存 HI |
+| 0x164 | `PPS_OUT_TICK_HI` | RO | 0 | 锁存的高 32 位 |
+| 0x168 | `PPS_OUT_IDLE` | RW | 0 | [15:0] 有符号：脉冲之间的 I 采样值（2.2）；[31:16] 忽略，读为 0。下一秒起生效 |
+
+- 数据流的 TVALID 从复位起一直为高，所以脉冲之间 DAC 读到的是 `PPS_OUT_IDLE`。到 J20 的通路是交流耦合的，所以 `PPS_OUT_IDLE` 不决定 J20 上的电平；`PPS_OUT_IDLE` = −`PPS_OUT_AMPLITUDE` 时阶跃加倍（2.2）。新的 `PPS_OUT_IDLE` 会在它生效那一秒的起点让输出跳变一次。
+- `PL.open()` 把 DAC tile 0 block 0 设为基带并旁路混频器（§7.1 第 7 步），DAC 于是输出数据流的 I 采样。到 J20 的通路是交流耦合的（100 nF、巴伦、100 nF；RFSoC 4x2 原理图第 28 页 "RF DAC"）：脉冲开始处给出一个边沿，结束处给出一个符号相反的边沿。DAC_A 的输出相对 I 是反相的（§13）；`PPS_OUT_AMPLITUDE` 取负值可以把脉冲反过来。
+- 与上一个脉冲相隔不到半秒时不发脉冲。锁定的边沿把计数设得比飞轮算的晚时（PPS 推后了，例如做了 PP 之后），这一秒已经发出的脉冲不再重发；PPS 提前时，这一秒的脉冲跟着新的边沿走。
+- `PPSOUT_MIN_OFFSET`：开始一秒的那个边沿在锁存它的 tick 之后三个 tick 才到达 P10（P1 的两级同步器和它的寄存器），所以每个脉冲都由它自己这一秒的边沿安排。
+- 有效状态线在 Pmod J1 第 1 针（PMOD0_0，FPGA 引脚 AF16；它经过 NVT2008BQ 电平转换器，排针一侧有 1.15 kΩ 上拉到 3.3 V），输出 PPS 无效时为高，即只要下面任何一条不成立：当前这一秒 `ENABLE` 已生效，当前这一秒由锁定的边沿开始（从秒的起点后 `PPSOUT_MIN_OFFSET` 个 tick 起算，这时那个边沿已经到达），`pps_locked`，`clocks_locked`，DAC tile 0 的 TREADY，`SYNCED`。高电平表示无效，是因为没有 bitstream 或板子断电时上拉也读出高电平。用户 LED W_LED_0（FPGA 引脚 AR11）在这条线为低时点亮。
+- PL 里没有任何东西会置位或清除 `SYNCED`：链路锁定、修正收敛之后由 ARM 置位。
+
+Python：`pl.pps_out`（§11.16）；板上检查 `rf_clock.checks.pps_out`（§13）。
 
 ## 5. 状态与错误报告
 
@@ -834,7 +871,8 @@ RFDC
     （DTC）中离板级配置所记码最近的窗口里采 SYSREF（rf-clock 1.3.0.8 起；没有记录时取离码 64
     最近的窗口，两个窗口离 64 差不多远时，上电之间可能整整差一个采样）。然后在同一个 SYSREF 沿上
     让四个 tile 的 NCO 重新起相（PG269 "Use Case 1"），使每次上电后载波相位都相同（rf-clock
-    1.3.0.5 起；此前它会落在相差 120° 的三个值之一）
+    1.3.0.5 起；此前它会落在相差 120° 的三个值之一）。然后把 DAC tile 0 block 0 设为基带、
+    旁路混频器（rfdc.baseband_dac，rf-clock 2.1.0.0 起）：它的数据流是输出 PPS（§4.13）
 PL
  8. 读 ID == 0x52434C4B，VERSION 的 major == 1；BUILD_VERSION 的 A.B.C 与
     安装的 rf-clock 相同（§14.1）
@@ -883,7 +921,7 @@ PL
 | 偏移 | 名称                | 访问 | 复位值     | 含义                                                | 详见    |
 | ---- | ------------------- | ---- | ---------- | --------------------------------------------------- | ------- |
 | 0x00 | `ID`              | RO   | 0x52434C4B | 设计标识 "RCLK"                                     | §4.1.1 |
-| 0x04 | `VERSION`         | RO   | 0x00020000 | [31:16] major，[15:0] minor                         | §4.1.2 |
+| 0x04 | `VERSION`         | RO   | 0x00020002 | [31:16] major，[15:0] minor                         | §4.1.2 |
 | 0x08 | `CONTROL`         | WO   | —         | 命令脉冲                                            | §4.1.3 |
 | 0x0C | `STATUS`          | RO   | —         | 状态字                                              | §4.2.1 |
 | 0x10 | `TIME_EPOCH`      | RO   | 0          | 时钟重新锁定次数                                    | §4.1.4 |
@@ -920,6 +958,7 @@ PL
 | 0x90 | `PPS_CONFIG`      | RW   | 0          | PPS 来源和极性（1.1）                               | §4.4.5 |
 | 0x94 | `BUILD_VERSION`   | RO   | 构建时定   | 构建时的 rf-clock 版本 0xAABBCCDD（1.2）            | §4.1.6 |
 | 0x100 … 0x124 | `SLOT_*`、`RX_WINDOW_BEATS`、`RX_SPAN_BEATS` | | | 时隙引擎（2.0） | §4.8 |
+| 0x140 … 0x168 | `PPS_OUT_*` | | | 输出 PPS（2.1；`PPS_OUT_IDLE` 2.2） | §4.13 |
 | 0x180 … 0x19C | `BURST_*`、`PACKET_SPREAD`、`PACKET_BITS`、`CHIP_MEM_CHIPS` | | | 由码片生成的突发（2.0） | §4.9 |
 | 0x200 … 0x234 | `P8_*`、`QUALITY_OFFSET` | | | 相关器（2.0） | §4.10 |
 | 0x240 … 0x284 | `SR_*` | RO | 0 | 搜索报告（2.0） | §4.10 |
@@ -1034,6 +1073,7 @@ client.validate()
 | `clock_gpio` | MMIO                    | 时钟状态 GPIO（`pl_clk0`），bit0 = fabric MMCM 已锁定                                                                            |
 | `overlay`    | PYNQ`Overlay`         |                                                                                                                                    |
 | `bringup`    | `BringupResult`       | 上电时发现并清除的故障（`initial_fault_bits`、`initial_fault_info`）                                                           |
+| `pps_out`    | `PPSOut`（§11.16）    | P10：DAC_B 上的输出 PPS 和它的有效状态线（2.1） |
 | `board`      | `BoardSetup`          | `serial`：本板 AT24MAC402 的序列号；`config`：板级配置，没有时为 `None`；`lmx_vco`：按 `"adc"`/`"dac"` 给出回读的 LMX2594 VCO（`band`、`forced`、`locked`、`capctrl`、`vco_sel`、`daciset`、`ld_vtune`），`write_clocks=False` 时为空 |
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, board_config=None, progress=None)`
@@ -1182,6 +1222,7 @@ PYNQ 3.1.1 的 `xrfdc` 没有封装 MTS，本模块按 embeddedsw `xilinx-v2020.
 | 其他函数                                                                | 说明                                                                          |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `run_mts(rfdc, kind, tiles=(0, 2), *, ref_tile=0, target_latency=-1)` | `kind` 为 `"DAC"` 或 `"ADC"`，返回 `MTSResult`                        |
+| `baseband_dac(rfdc, tile, nco_mhz=0.0)` | 把 DAC `tile` block 0 设为第 1 奈奎斯特区的 IMR 低通，NCO 在 `nco_mhz`（0：旁路粗混频器，DAC 输出 I 采样；有 NCO 时细混频器比例为 1.0）；返回一个恢复原设置的函数。`PL.open()` 在 MTS 之后对 `PPS_OUT_TILE` = 0 调用它（2.1.0.0 起）；`m2_tx_timing --scope-nco` 对 tile 2 调用它 |
 | `sync_nco_phase(rfdc, tiles=(0, 2))` | PG269 "Use Case 1"：在 SYSREF 接收关闭时，把每个 block 0 混频器的事件源设为 SYSREF 并挂起 ResetNCOPhase；打开接收器等一个 SYSREF 沿（200 ns，整数个 NCO 周期）再关闭；最后恢复原来的事件源，使之后的 `UpdateEvent` 照常可用。`XRFdc_MTS_Sysref_Config` 失败时抛 `RFDCError` |
 | `start_tiles(rfdc, tiles=(0, 2), *, settle=1.0, timeout=5.0)`         | 等 TileState 0xF；`settle` 秒后仍未启动就调 StartUp。返回是否调用过 StartUp |
 | `tile_states(rfdc)`                                                   | `{"ADC": [4 个 TileState], "DAC": [...]}`                                   |
@@ -1317,7 +1358,7 @@ $run -m rf_clock.twtt.node AB --seconds 60    # 一块板经自己的回环线
 $run -m rf_clock.twtt.steer --target-ns T --log twtt_B.jsonl --port /dev/ttyUSB0
 ```
 
-每个配对成功的秒的 θ 更新一个卡尔曼滤波器，状态是 θ 和两台时钟的相对频率（`--clock-adev`：这对时钟在 1 s 处的 Allan 偏差，默认 2e-11，即 FS725 的指标；`--theta-sd`：θ 的离散，默认 3 ps；偏离预测超过 5 个标准差的 θ 被剔除）。滤波 `--settle` 秒（默认 60）之后，每隔 `--interval` 秒（默认 10）设一次 SF，让 θ 的误差按时间常数 `--tau`（默认 50 s）衰减。`--target-ns` 是这套接线下 θ 的零基线值（计划第 8 节），没有默认值。SF 是整数：每次修正把取整的余数留给下一次。每次最多改 `--max-step`（默认 100），并且离起始值不超过 `--max-offset`（默认 500），否则抛 `SteeringError`，SF 保持不变。这个限制并不能说明环路是闭合的：两块板共用一台 FS725 时（M4），θ 不随 SF 变，滤波器会把缺失的响应当成时钟噪声；所以先确认 SF 的一个阶跃让 θ 的变化率变了同样多。1 pps 锁相开着时，命令会把它关掉（否则 SF 不起作用）。每次修正前，它检查锁相仍然关着、SF 仍是它上次设的值（`check_unit`）：设备重启会恢复电位器设定的频率和锁相（后面板输入上有 PPS 时，设备随即锁到它上面），别的程序也可能改了 SF；出现这两种情况，或者 FS725 不再应答（`FS725Error`），驾驭就停止。`--dry-run` 只计算、不写入，`--replay` 不接 FS725、回放一份记录好的日志。修正日志（`steer_B.jsonl`，或 `--steer-log`）每秒一行，每次修正一行；停止后 SF 保持最后的值。FS725 经 EPG1 是共用的：日志的 `stop` 一行和最后打印的一行给出开始时的 SF，实验结束后用 `rf_clock.fs725 sf` 把它设回去。`experiments/m5_steer_sim.py` 仿真这个环路：θ 的残差约为 σ_y(1 s)·√(τ/2)，几乎与 θ 的测量噪声无关；按 FS725 的指标在 τ = 50 s 时约 100 ps rms，一对 5e-12 的时钟约 26 ps。
+每个配对成功的秒的 θ 更新一个卡尔曼滤波器，状态是 θ 和两台时钟的相对频率（`--clock-adev`：这对时钟在 1 s 处的 Allan 偏差，默认 2e-11，即 FS725 的指标；`--theta-sd`：θ 的离散，默认 3 ps；偏离预测超过 5 个标准差的 θ 被剔除）。滤波 `--settle` 秒（默认 60）之后，每隔 `--interval` 秒（默认 10）设一次 SF，让 θ 的误差按时间常数 `--tau`（默认 50 s）衰减。`--target-ns` 是这套接线下 θ 的零基线值（计划第 8 节），没有默认值。SF 是整数：每次修正把取整的余数留给下一次。每次最多改 `--max-step`（默认 100），并且限制在离起始值 `--max-offset`（默认 500）以内；控制律连续 `max_saturated_s`（120 s）要求超出这个范围时，抛 `SteeringError`，SF 保持不变（2.0.1.2 起；之前第一次超出就抛）。SF 的改变在滤波器里从发起它的那一秒之后 `response_delay_s` 起才算数（`Steering` 默认 0，即 1.x 的模型；`m4c_link --steer-response-delay` 默认 1.9 s，2026-11-03 在 B 的 FS725 上测得），改变刚发生的一段时间里，剔除门限按改变量乘 `response_sd_s`（0.5 s）放宽。`fit_sf_response(counts, theta_ps, at_count)` 从一次 SF 阶跃测出设备的响应：用命令前后每秒的 θ（每个是一秒内的均值），求出 θ 变化率的改变量，以及它在命令之后多久开始起作用（模型是代表钟自身游走的二次曲线加一个延迟的斜坡，延迟以 0.02 s 步长搜索）；`m4c_link --sf-step` 对每次阶跃做拟合并写出 `sf_response` 行（2026-11-03 B 的 FS725：命令后 1.34 s 和 1.42 s，每个 SF 单位 1.10 和 0.99 ps/s）。这个限制并不能说明环路是闭合的：两块板共用一台 FS725 时（M4），θ 不随 SF 变，滤波器会把缺失的响应当成时钟噪声；所以先确认 SF 的一个阶跃让 θ 的变化率变了同样多。1 pps 锁相开着时，命令会把它关掉（否则 SF 不起作用）。每次修正前，它检查锁相仍然关着、SF 仍是它上次设的值（`check_unit`）：设备重启会恢复电位器设定的频率和锁相（后面板输入上有 PPS 时，设备随即锁到它上面），别的程序也可能改了 SF；出现这两种情况，或者 FS725 不再应答（`FS725Error`），驾驭就停止。`--dry-run` 只计算、不写入，`--replay` 不接 FS725、回放一份记录好的日志。修正日志（`steer_B.jsonl`，或 `--steer-log`）每秒一行，每次修正一行；停止后 SF 保持最后的值。FS725 经 EPG1 是共用的：日志的 `stop` 一行和最后打印的一行给出开始时的 SF，实验结束后用 `rf_clock.fs725 sf` 把它设回去。`experiments/m5_steer_sim.py` 仿真这个环路：θ 的残差约为 σ_y(1 s)·√(τ/2)，几乎与 θ 的测量噪声无关；按 FS725 的指标在 τ = 50 s 时约 100 ps rms，一对 5e-12 的时钟约 26 ps。
 
 ### 11.13 `rf_clock.fs725`（FS725 铷钟）
 
@@ -1336,7 +1377,7 @@ FS725 把后面板 DB9（DCE，用直通线；9600 波特，8N1，XON/XOFF，不
 | `magnetic_dac()` | `MR?` | 磁场的 12 位 DAC，SF 就是通过它起作用的 |
 | `case_temperature()` | `AD10?` | 机壳温度，°C |
 
-第一次发 SF 之后，校准电位器失效，直到重启，所以 SF 0 不是"不变"：修正要从 `frequency()` 读到的值开始。1 pps 锁相锁住输入时，SF 被忽略。SF 通过磁场起作用，频率随 DAC 设定值按平方关系变化：在标称工作点附近，一个 DAC 步长约相当于 4 个 SF 单位（由 PRS10 手册推断；可以用 `magnetic_dac()` 核对）。本模块不写 EEPROM（`!`），不改任何校准（MO、SP、SS、TS、PS、TO、FC、GA、LO、PH、MS、SD），也不重启设备（RS、RC）。
+第一次发 SF 之后，校准电位器失效，直到重启，所以 SF 0 不是"不变"：修正要从 `frequency()` 读到的值开始。1 pps 锁相锁住输入时，SF 被忽略。SF 通过磁场起作用，频率随 DAC 设定值按平方关系变化：在标称工作点附近，一个 DAC 步长按 PRS10 手册约相当于 4 个 SF 单位，B 那台实测 3.4（2026-11-03，`magnetic_dac()`）。本模块不写 EEPROM（`!`），不改任何校准（MO、SP、SS、TS、PS、TO、FC、GA、LO、PH、MS、SD），也不重启设备（RS、RC）。
 
 ```bash
 run="sudo /usr/local/share/pynq-venv/bin/python"
@@ -1410,6 +1451,41 @@ pl.correlator.accept()
 for entry in pl.queue.read(): ...
 ```
 
+
+### 11.15 `rf_clock.pl.acquire`（初始捕获，2.0.1.1 起）
+
+计划 §5.2：节点关掉时隙引擎，从 DDR 里的长窗口找出对端 PPS 在自己时间轴上的位置。
+
+| 函数 | 做什么 | 返回 |
+| ---- | ------ | ---- |
+| `acquire(pl, prn, taps, *, beats=1_100_000, arrival_ticks=29.0)` | `capture`、`correlation_power`、`find_peaks`，对每个峰 `decode_burst`，然后 `locate` | `Acquisition` |
+| `capture(pl, beats, lead_ticks=2_000_000)` | 从现在起 `lead_ticks` 后开一个 `beats` 拍的 P2 RX 窗口，经 P4 和 S2MM | `(起始 tick, I, Q)` |
+| `correlation_power(rx_i, rx_q, ref, chunk=1 << 20)` | 每个延迟的 \|sum rx[k + n] ref[n]\|²，float32 分块 FFT | 数组 |
+| `find_peaks(power, ref_size, *, floor_db=10.0, limit=8)` | 最强的几个峰，彼此至少相隔一个参考长度，最低到比最强峰低 `floor_db` | 排好序的延迟 |
+| `decode_burst(rx_i, rx_q, lag, ref, cref, prn_chips)` | 在 `lag` 两侧各两个延迟内按 P8 的方法估计（精确整数相关），再用这个峰的相位按 P9 解扩 | `Burst(lag, fraction, magnitude, c_i, c_q, packet)`；CRC 失败或窗口先结束时 `packet` 为 None |
+| `locate(window_tick, own_pps_tick, own_pps_count, bursts, arrival_ticks)` | 对每个解出的突发取 到达时刻 − T_tx − `arrival_ticks`，折算到本节点 PPS 的 ±0.5 s 以内 | `Acquisition(window_tick, own_pps_tick, own_pps_count, bursts, peer_pps_tick, offset_ticks, peer_pps_count, spread_ticks)`，`offset_ns` |
+| `place_pulse_ns(offset_ns)` | 把本节点 PPS 移动 `offset_ns`（正：推后）所需的 FS725 PP 参数，取整到整 tick（2.0.1.2 起） | int；不到半个 tick 时为 None |
+
+偏移的误差就是 `arrival_ticks`（假设的单程延时）的误差。取整 tick 是因为 PL 在 tick 上锁存 PPS：按整 tick 移动时 PPS_TICK 正好移动这么多，边沿在 tick 内的位置不变；剩下的留在 θ 里。板上 ARM 做一次 11 ms 的捕获约 25 s。
+
+### 11.16 `rf_clock.pl.pps_out`（输出 PPS，2.1.0.0 起）
+
+`pl.pps_out` 是建在 §4.13 寄存器上的 `PPSOut`。
+
+| 方法 | 做什么 |
+| ---- | ------ |
+| `configure(*, amplitude, offset=MIN_OFFSET, sample=0, width=4, idle=0, enable=True)` | 写入脉冲参数和 `ENABLE`，下一秒起生效（`idle`：`PPS_OUT_IDLE`，2.2）。P2 会拒绝的值抛 `ValueError`：`amplitude` 或 `idle` 超出 int16，`sample` 不在 0 … 7，`width` 不在 1 … 65535，`offset` 不在 `MIN_OFFSET`（8）… 99 999 999 |
+| `enable()`、`disable()` | `ENABLE`，下一秒起生效 |
+| `set_synced(synced)` | `SYNCED`，立即生效：有效状态线可以变低 |
+| `status()` | `PPSOutStatus(have_ref, running, flywheel, invalid, pulses, flywheel_pulses, last_tick)` |
+| `amplitude`、`offset`、`sample`、`width` | 回读的寄存器值（`amplitude` 有符号） |
+
+```python
+pl.pps_out.configure(amplitude=24000, offset=100)  # 每秒起点后 1 us 一个脉冲
+pl.pps_out.set_synced(True)                         # 链路锁定、修正收敛之后
+st = pl.pps_out.status()                            # st.last_tick - PPS_TICK == 100
+```
+
 ## 12. 异常与返回码
 
 | 异常                                     | 基类              | 来源                                                                                       |
@@ -1429,7 +1505,7 @@ for entry in pl.queue.read(): ...
 | `RFDCError`                            | `RuntimeError`  | tile 未启动或 MTS 状态非 OK                                                                |
 | `VersionMismatch`                      | `RuntimeError`  | overlay 或`BUILD_VERSION` 与安装的 rf-clock A.B.C 不同，或文件与 manifest 不符（§14.1） |
 | `FS725Error` | `RuntimeError` | `rf_clock.fs725`：没有回复、回复格式不对，或设置没有生效（§11.13） |
-| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`：一次修正会让 SF 超出允许的偏移，或者 FS725 已不是驾驭设下的状态（§11.12） |
+| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`：修正连续 `max_saturated_s` 要求 SF 超出允许的偏移，或者 FS725 已不是修正设下的状态（§11.12） |
 
 | 返回码（§5.2）  | Python 表现                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------- |
@@ -1449,6 +1525,9 @@ for entry in pl.queue.read(): ...
 | `m3_loopback`  | M3：环回、RX、相关 | `[次数]` 测环回延时；`--lane-check` 定位单 lane 冲激、核对 beat 布局；`--stress [--stress-beats N]` 在 DDR 压力下测长窗口；结果追加到 `m3_runs.jsonl`             |
 | `mts_dtc`      | 板级配置（§11.1）  | `record [--write] [--runs N]` 不用已记录的码上电 N 次（默认 6），按转换器、时钟和 tile 取被选中次数最多的窗口，并按 tile 取出现次数最多的 MTS offset；`--write` 把两者都存进板级配置。`check [--runs N]` 用记录的码上电，报告每个选到的码离记录多远，以及有几次上电的 offset 与记录不同。在 `vco_bands scan --write` 之后运行（它会丢掉这些码，因为码与档位有关） |
 | `vco_bands`    | 板级配置（§11.1）  | `scan [--write] [--label S/N] [--calibrations N]` 写 N 次时钟（默认 20），建议每片 LMX2594 校准最常选的档位，使芯片保持在校准自己的工作点上；再从它向两边逐档强制，直到锁不住，以显示两边的余量；`--write` 把建议的档位、各档次数、能锁定的档位和本板序列号存进板级配置。`delays [--write] [--span N] [--runs N] [--captures N]`，需接回环线 DAC_A → ADC_B：用载波相位测配置档位两边各 N 档（默认 2）以内每个档位的回环延时，每次上电在单独的进程里；`--write` 存入档位表；记录追加到 `vco_bands_runs.jsonl` |
+| `m4c_link`     | M4b、M5：rf-clock 2 链路 | `--role A\|B [--start-at T --stop-at T]`：链路的一个节点；队列条目和每秒一行的 `second`（θ、单程延时及其离散）写入 `--out`（`--no-entries`：只写每秒的行）；协议测试（`--copy-every`、`--search-every`、`--silent-at`、`--refusal-checks`、`--pause-reads-at`）；`--acquire [--fs725 PORT]` 先捕获对端的 PPS（§11.15），再把本节点的 PPS 移过去；B 上带 `--fs725` 时有 `--sf-step N`（结束时对每次阶跃做拟合：FS725 每个 SF 单位的变化率和它的延迟，`sf_response` 行）和 `--steer-target-ns T`（对每秒的行运行 `rf_clock.twtt.steer`；结束时 SF 回到起始值，除非 `--keep-sf`）；`--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` 打开输出 PPS（§4.13，2.1.0.0 起；结束时保持打开）。`experiments/m4c_v2_link.py` 同时运行两个节点 |
+| `pps_out`      | 输出 PPS（2.1） | `[seconds] [--offset N] [--sample S] [--width W] [--amplitude A] [--idle I] [--synced] [--keep]`：在 DAC_B 上发出输出 PPS（§4.13），每秒一行（脉冲相对它那一秒 PPS_TICK 的位置、脉冲数和飞轮脉冲数、有效状态线、芯片温度）；从第一个脉冲起每一秒都有一个在 PPS_TICK + offset 的脉冲、且都不来自飞轮时 PASS（带 `--synced` 时还要求有效状态线为低）；记录追加到 `pps_out_runs.jsonl`。边沿本身在示波器上测 |
+| `pps_pp_scan`  | PPS 亚 tick 相位 | `--fs725 PORT [--steps 22] [--edges 8] [--no-center]`：PP 以 1 ns 步进，直到 PPS_TICK 移动，由此得出 PPS 边沿比它的采样沿早多少；然后用 PP 把它移到 tick 中间；记录追加到 `pps_pp_scan_runs.jsonl` |
 
 M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三个模块共用 `--bitstream PATH`（默认用随包的 overlay）、`--no-version-check`（1.2 之前的 bitstream）、`--no-clocks`（开机后已写过时钟时跳过）、`--pps-trig`、`--pps-invert`。
 
@@ -1471,6 +1550,8 @@ M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三�
 | 1.2  | 新增`BUILD_VERSION`（0x94）                      |
 | 1.3  | 新增`TX_REPEAT`（0x5C）                          |
 | 2.0  | 测量值随突发传送：时隙引擎（0x100）、由码片生成的突发和突发存储器（0x180）、相关器和搜索报告（0x200、0x240）、测量包（0x300）、测量队列（0x380）；寄存器偏移扩为 12 位；时隙引擎运行时拒绝 P2 的命令。1.x 的寄存器偏移和含义不变 |
+| 2.1  | 新增输出 PPS（0x140，P10）：DAC tile 0（DAC_B）上每秒一个脉冲，tile 0 的数据流改由 PL 提供，以及 Pmod 排针上的有效状态线 |
+| 2.2  | 新增 `PPS_OUT_IDLE`（0x168），即输出 PPS 在脉冲之间的电平 |
 
 ### 14.1 软件包与 overlay
 

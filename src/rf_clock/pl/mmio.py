@@ -91,10 +91,23 @@ class PynqMMIO:
     def write_block(self, offset: int, words) -> None:
         """Copy consecutive 32-bit words with one aligned array store.
 
-        For memory regions (the TX buffer) only: registers need one access at
-        a time.  About 0.5 ms for 128 KiB on the board versus 0.3 s word by word.
+        For memory regions (the TX buffer, the burst memory) only: registers need
+        one access at a time.  About 0.5 ms for 128 KiB on the board versus 0.3 s
+        word by word.  Only the 16-byte aligned middle is copied as a block, the
+        words before and after it one by one: the copy ends a length that is not a
+        multiple of 16 bytes with an unaligned 16-byte store, which the PL window
+        (device memory) answers with a bus error (81 taps, 2026-11-03).
         """
         if int(offset) % 4:
             raise ValueError("block writes must start on a 32-bit boundary")
         start = int(offset) // 4
-        self._mmio.array[start: start + len(words)] = words
+        end = start + len(words)
+        first = min(end, -(-start // 4) * 4)  # the first word on a 16-byte boundary
+        last = max(first, end // 4 * 4)  # the end of the aligned middle
+        array = self._mmio.array
+        for index in range(start, first):
+            array[index] = words[index - start]
+        if last > first:
+            array[first:last] = words[first - start:last - start]
+        for index in range(last, end):
+            array[index] = words[index - start]

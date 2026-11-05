@@ -22,7 +22,7 @@ run="sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/pyth
 
 1. Write the PYNQ 3.1.1 image for the RFSoC 4x2 to the micro-SD card and boot the board from it.
 2. Open its serial console from RF-clock-PC: `/dev/serial/by-id/usb-Xilinx_JTAG+Serial_<JTAG serial>-if01-port0`, 115200 baud, login `xilinx`/`xilinx`. Use `if01`; `if00` is the JTAG channel, never write to it.
-3. Change the address before the board joins the shared network: every PYNQ image starts at the static 192.168.2.99, which is taken. Edit `/etc/network/interfaces.d/eth0` and reboot. In use: 192.168.2.99 = 887329260072A, 192.168.2.101 = 887329260101, 192.168.2.100 = another group's board.
+3. Change the address before the board joins the shared network: every PYNQ image starts at the static 192.168.2.99, which is taken. Edit `/etc/network/interfaces.d/eth0` and reboot. In use: 192.168.2.99 = 887329260072A, 192.168.2.101 = 887329260101, 192.168.2.100 = 8873292600AB.
 4. From RF-clock-PC: `ssh-copy-id xilinx@<address>`, which adds RF-clock-PC's SSH public key to the board's `~/.ssh/authorized_keys` (it asks for the board's password once). From then on ssh needs no password, which the scripts in `experiments/` rely on.
 5. NTP from RF-clock-PC, needed to pair the two boards' seconds (ABI.md §9.1):
 
@@ -62,7 +62,7 @@ The FS725's own 10 MHz sine through the splitter is too weak (the LMK04828 fell 
 In this order: each step needs the ones before it. The board config, `/etc/rf-clock/board.json`, collects everything that belongs to this board (ABI.md §11.1); `PL.open()` refuses a config written for another board, so an SD card moved to another board is refused there until section 4 is done on that board. The config lives only on the SD card: after section 4 copy it into the repository as `boards/<S/N>/board.json` and commit it ([boards/README.md](../boards/README.md)).
 
 1. **Time base (M1).** `$run -m rf_clock.checks.m1_check 60`. Pass: every PPS period 100 000 000 ticks, jitter count 0, `pps_locked` at the end, M1 PASS. A constant other period means the board runs without its 10 MHz (99 992 670 ticks, 73 ppm slow, was a disconnected reference); no PPS edges mean nothing at J7.
-2. **PPS capture margin.** From RF-clock-PC: `.venv/bin/python experiments/m1_pps_phase_scan.py --pair <address>:<EPG1 output>` (it steps that output's delay). Pass: the PPS edge lies more than about 1 ns from a 10 ns sampling edge at the delay in use. Otherwise set a delay for that output in `experiments/epg1.py pps` (887329260072A's output 2 has 6.6 ns); it takes effect at the EPG1's next RUN restart, which interrupts all its outputs. Report: `results/pps-phase-scan-20261018_203329`.
+2. **PPS capture margin.** From RF-clock-PC: `.venv/bin/python experiments/m1_pps_phase_scan.py --pair <address>:<EPG1 output>` (it steps that output's delay). Pass: the PPS edge lies more than about 3 ns from a 10 ns sampling edge at the delay in use; 1.5 ns was not enough (on 2026-11-03 the link's theta jumped by a tick from one power-up to the next). Otherwise set a delay for that output in `experiments/epg1.py pps` (outputs 1 and 4 have 6.5 ns since 2026-11-03, which puts both boards' edges mid-tick); it takes effect at the EPG1's next RUN restart, which interrupts all its outputs. Scans: `results/pps-phase-scan-20261018_203329`, `results/pps-phase-scan-20261103_120343`.
 3. **VCO bands.** `$run -m rf_clock.checks.vco_bands scan --write --label <S/N>` (no cable needed). It writes the clocks 20 times, takes the band each LMX2594 calibrates to most often, finds the bands that lock and writes the board config with the board's serial number. Pass: both suggested bands locked. Every clock write would otherwise let a chip pick another band and move its converter by 8-10 ps (`results/lmx-sync-loopback-20261019`, section 5).
 4. **MTS capture windows.** `$run -m rf_clock.checks.mts_dtc record --write`, then `$run -m rf_clock.checks.mts_dtc check`. It powers up six times, takes the SYSREF capture window each tile picks most often and stores its codes, and each tile's usual MTS offset. Pass: check reports a largest distance of at most 6 codes and no power-up with other offsets. Without the codes a tile whose two windows lie about as far from code 64 can move by a whole sample between power-ups (887329260101's DAC: 104 ps; ABI.md §7.1 step 7).
 5. **Timed transmission (M2).** `$run -m rf_clock.checks.m2_tx_timing 10`. Pass: M2 PASS, every TX_ACTUAL equal to its target, both MTS OK with latencies DAC 1944 and ADC 1296.
@@ -80,6 +80,16 @@ With both boards through section 4, both on one FS725, and A's DAC_A → B's ADC
 ```
 
 It starts `rf_clock.twtt.node A` on 192.168.2.99 and `node B` on 192.168.2.101 (edit `BOARDS` in the script for other boards), collects both logs into `results/m4-twtt-pair-<time>/` and summarizes theta and the one-way delay (ABI.md §11.12). Pass: every second paired and valid, theta's standard deviation a few ps, and the same theta after the boards are powered up again. With one FS725 the true clock offset is zero, so this theta is the zero-baseline constant: the non-reciprocity Delta/2 plus the difference of the two boards' PPS paths (an EPG1 delay that moves a PPS edge into the next tick adds 10 ns). Where Delta is stored is not decided yet (plan/RF_clock_modules.md section 8).
+
+### 5.1 rf-clock 2: the link, and two clocks (M5)
+
+rf-clock 2 carries the measurements in the bursts. On one reference, as above, from RF-clock-PC: `.venv/bin/python experiments/m4c_v2_link.py --seconds 60` (`--scenario` for the protocol tests; `experiments/m4c_check.py scenario results/<run>` judges a run). For M5 each board takes the 10 MHz and the 1PPS of its own FS725, and B's FS725 RS-232 goes to a USB-RS232 adapter on B's USB host (B's kernel has the FTDI driver; the port is named by `/dev/serial/by-id/`, `FS725_B` in the script). Then:
+
+1. Where B's PPS edge lies within its tick: `rf_clock.checks.pps_pp_scan --fs725 PORT` on B (ABI.md §13), which steps PP by 1 ns and finishes with the edge mid-tick. Pass: the edge more than about 3 ns from either sampling edge. A's edge cannot be moved this way; a theta step of 10 ns between power-ups shows it is marginal.
+2. `.venv/bin/python experiments/m4c_v2_link.py --scenario sf-step --scope --seconds 420`: B acquires A's PPS, moves its own by whole ticks, and steps its SF by 100. Pass: theta's rate changes by 100 ps/s, with the scope's two 10 MHz (C1, C2) the same.
+3. `--scenario steer --scope --seconds N`: B steers its FS725 so that theta goes to the shared-reference theta (`TARGET_NS` in the script, measured on this RF wiring).
+
+Results go to `results/m4c-v2-<scenario>-<time>/`; `results/m5-v2-20261103/` is the first such night.
 
 ## 6. What to redo when something changes
 

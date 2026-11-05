@@ -271,6 +271,27 @@ def p9_vectors(rng: np.random.Generator, out: Path) -> None:
     write(out / "p9_spans.hex", span_lines)
 
 
+# ---------------------------------------------------------------------------
+# p8_correlator re-lock: a full window, a 40 dB weaker one at the same lag, a full one
+# ---------------------------------------------------------------------------
+def relock_vectors(rng: np.random.Generator, out: Path) -> None:
+    chips = prn(TRK_PRN, rng)
+    taps = fir.coefficients(16000)
+    ref = fir.shape(chips, taps).astype(np.int64)
+    samples = 8 * TRK_BEATS
+    windows = [channel(ref, samples, 100.3, 0.4, 300, 0.5, rng),
+               channel(ref, samples, 100.3, 0.004, 20, 0.5, rng),   # the burst gone but a weak peak left at its lag
+               channel(ref, samples, 100.3, 0.4, 300, 0.6, rng)]
+    found = [p8.search(*w, ref, 0x8000) for w in windows]
+    assert abs(found[1].strongest.lag - found[0].strongest.lag) <= 1
+    assert found[1].strongest.magnitude * 2 < found[0].strongest.magnitude
+    write(out / "rl_cfg.hex", [hexval(v, 32) for v in (TRK_PRN, TRK_BEATS, found[0].strongest.lag,
+                                                        found[1].strongest.lag, found[2].strongest.lag)])
+    write(out / "rl_prn.hex", [hexval(w, 32) for w in packed_words(chips)])
+    write(out / "rl_taps.hex", [hexval(t, 16) for t in taps])
+    write(out / "rl_windows.hex", [line for wi, wq in windows for line in window_beats_hex(wi, wq)])
+
+
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
     out.mkdir(parents=True, exist_ok=True)
@@ -282,6 +303,7 @@ def main() -> None:
     tracker_vectors(rng, out)
     search_vectors(rng, out)
     p9_vectors(rng, out)
+    relock_vectors(rng, out)
 
 
 if __name__ == "__main__":

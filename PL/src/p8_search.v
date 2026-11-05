@@ -129,10 +129,10 @@ module p8_search #(
 
     // address stage: registered with the RAM addresses, then delayed to the data
     reg [2:0] a_rsel, a_fsel;
-    reg       a_rok, a_fok, a_first, a_last, a_v;
+    reg       a_rok, a_fok, a_first, a_last;
     reg [2:0] d_rsel [0:RD_LAT-1];
     reg [2:0] d_fsel [0:RD_LAT-1];
-    reg [RD_LAT-1:0] d_rok, d_fok, d_first, d_last, d_v;
+    reg [RD_LAT-1:0] d_rok, d_fok, d_first, d_last;
     always @(posedge clk) begin
         rd_addr   <= sidx[BW+2:3];
         ref_raddr <= (state == S_PASS) ? t[KW-1:3] : ref_raddr;
@@ -142,14 +142,13 @@ module p8_search #(
         a_fok     <= p_run && (t < r_len);
         a_first   <= p_run && (t == 0);
         a_last    <= p_run && (t == r_len - 1);
-        a_v       <= p_run;
         d_rsel[0] <= a_rsel; d_fsel[0] <= a_fsel;
         d_rok[0]  <= a_rok;  d_fok[0]  <= a_fok;
-        d_first[0] <= a_first; d_last[0] <= a_last; d_v[0] <= a_v;
+        d_first[0] <= a_first; d_last[0] <= a_last;
         for (s = 1; s < RD_LAT; s = s + 1) begin
             d_rsel[s] <= d_rsel[s-1]; d_fsel[s] <= d_fsel[s-1];
             d_rok[s]  <= d_rok[s-1];  d_fok[s]  <= d_fok[s-1];
-            d_first[s] <= d_first[s-1]; d_last[s] <= d_last[s-1]; d_v[s] <= d_v[s-1];
+            d_first[s] <= d_first[s-1]; d_last[s] <= d_last[s-1];
         end
     end
     // the address stage and RD_LAT delays meet the data RD_LAT clocks after the addresses

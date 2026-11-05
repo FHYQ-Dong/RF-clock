@@ -110,7 +110,9 @@ module tb_p_top2;
                 .m_axis_dac_tdata (dac[g]), .m_axis_dac_tvalid (dac_v[g]), .m_axis_dac_tready (1'b1),
                 .s_axis_adc_tdata (adc[g]), .s_axis_adc_tvalid (1'b1), .adc_overrange (1'b0),
                 .m_axis_s2mm_tdata (s2mm_tdata), .m_axis_s2mm_tkeep (), .m_axis_s2mm_tvalid (s2mm_tvalid),
-                .m_axis_s2mm_tready (1'b1), .m_axis_s2mm_tlast (s2mm_tlast)
+                .m_axis_s2mm_tready (1'b1), .m_axis_s2mm_tlast (s2mm_tlast),
+                .m_axis_dac0_tdata (), .m_axis_dac0_tvalid (), .m_axis_dac0_tready (1'b1),
+                .pps_out_invalid (), .pps_out_led ()
             );
         end
     endgenerate

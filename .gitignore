@@ -11,6 +11,9 @@ PL/ip/*/project/
 PL/ip/*/metadata/
 .Xil/
 
+# PL simulation test vectors written to the working directory
+/*.hex
+
 # Generated H09 simulation reports and waveform data
 PL/data/*.html
 PL/data/*.csv
@@ -19,11 +22,18 @@ PL/data/*.png
 # Syncthing
 .stfolder/
 .stignore
+~syncthing~*
 
 # Local editor and tool settings (kept only on this machine)
-.codegraph/
-.cursor/
 .sigasi/
 .vscode/
 .editorconfig
 project.sigasi
+
+# AI-tools
+.playwright-mcp
+.codegraph/
+.cursor/
+
+# Results
+results/

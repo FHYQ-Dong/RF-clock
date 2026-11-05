@@ -18,15 +18,28 @@ frequency is set so that the remaining error decays with time constant ``tau``:
 
     SF_wanted = SF - (x - target)/tau - y,   at most max_step from SF
 
+SF takes effect some time after the second whose theta asked for it: the correction
+is sent once that second's theta is in, and the FS725's frequency follows its command
+about 1.1-1.6 s later (B's FS725, results/m5-v2-20261103); with theta averaged over
+each second that is ``response_delay_s`` = 1.9 s after that second.  The filter counts
+a change from then on (until then it is pending, and the control law already counts it
+in y), and while a change is new it widens its outlier gate by the change times
+``response_sd_s``, the uncertainty of that delay.  The default delay 0 is the model of
+the 1.x node: the change counted from the second that asked for it.  On the bench
+(2026-11-03) that model, with tau = 5 s, made the filter reject ten thetas in a row at
+the first large step and start again, while SF stayed and theta ran 6 ns past its target.
+
 SF is an integer.  Rounding SF_wanted alone would leave theta free to drift until
 (x - target)/tau reached half a unit, +-tau/2 ps; instead each correction carries
 the rounding remainder to the next (first-order error diffusion), so that SF
 alternates between neighbouring values whose mean is SF_wanted.
 
 Only B is steered; A free-runs.  The target is the calibrated zero-baseline value of
-theta for this wiring (plan section 8), given explicitly: nothing is guessed.  If SF
-would leave its starting value +- ``max_offset``, steering stops and SF stays where it
-is.  That bounds SF; it does not show that the loop closes: where theta does not
+theta for this wiring (plan section 8), given explicitly: nothing is guessed.  SF is held within
+its starting value +- ``max_offset``: a large error at the start (a short tau) runs the
+correction at that limit for a while; if the control law still asks for more after
+``max_saturated_s`` seconds in a row, the reference cannot be followed and steering
+stops, SF staying where it is.  That bounds SF; it does not show that the loop closes: where theta does not
 follow SF (both boards on one FS725, as in M4), the filter takes the missing response
 for clock noise and SF wanders by a few units.  Check that a step of SF moves theta's
 rate by as much before steering.
@@ -56,7 +69,9 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
+
+import numpy as np
 
 from rf_clock.fs725 import FS725Error
 
@@ -99,12 +114,13 @@ class ClockFilter:
                    p01 + dt * p11 + qr * dt * dt / 2],
                   [p10 + dt * p11 + qr * dt * dt / 2, p11 + qr * dt]]
 
-    def update(self, z: float) -> bool:
-        """Take one measurement of theta; False (and no change) if it is an outlier."""
+    def update(self, z: float, extra_var: float = 0.0) -> bool:
+        """Take one measurement of theta; False (and no change) if it is an outlier.
+        ``extra_var`` (ps^2) widens the gate only, not the measurement's weight."""
         (p00, p01), (p10, p11) = self.p
         s = p00 + self.r
         nu = z - self.x
-        if nu * nu > GATE * GATE * s:
+        if nu * nu > GATE * GATE * (s + extra_var):
             return False
         k0, k1 = p00 / s, p10 / s
         self.x += k0 * nu
@@ -146,7 +162,13 @@ class Steering:
     max_step: int = 100
     max_offset: int = 500
     apply: bool = True  # False: compute corrections without changing the plant (dry run)
+    response_delay_s: float = 0.0  # a change of SF counts this long after the second that asked for it
+    response_sd_s: float = 0.5  # uncertainty of that delay: widens the gate while a change is new
+    max_saturated_s: int = 120  # the control law asking beyond max_offset this long stops the steering
     sf: int = 0
+    saturated_since: int | None = None
+    pending: list[tuple[float, float]] = field(default_factory=list)  # (count it counts from, change)
+    recent: list[tuple[int, float]] = field(default_factory=list)  # (count it was made, change)
     remainder: float = 0.0  # of the last rounding, carried to the next correction
     rejects: int = 0
     last_count: int | None = None
@@ -171,9 +193,16 @@ class Steering:
             return record
         assert self.last_count is not None and self.first_count is not None
         f.predict(count - self.last_count)
+        for when, u in [c for c in self.pending if c[0] < count]:  # changes that count from within this step
+            f.x += u * (count - max(when, self.last_count))
+            f.y += u
+            self.pending.remove((when, u))
         self.last_count = count
+        horizon = self.response_delay_s + 3 * self.response_sd_s + 1
+        self.recent = [c for c in self.recent if count - c[0] <= horizon]
+        extra = sum((u * self.response_sd_s) ** 2 for _, u in self.recent)
         if theta_ps is not None:
-            if f.update(theta_ps):
+            if f.update(theta_ps, extra):
                 self.rejects = 0
             else:
                 self.rejects += 1
@@ -188,18 +217,59 @@ class Steering:
                and (self.last_correction is None or count - self.last_correction >= self.interval_s))
         if due:
             self.last_correction = count
-            wanted = self.sf - (f.x - self.target_ps) / self.tau_s - f.y + self.remainder
-            sf = max(self.sf - self.max_step, min(self.sf + self.max_step, round(wanted)))
+            y = f.y + sum(u for _, u in self.pending)  # the frequency once the pending changes count
+            wanted = self.sf - (f.x - self.target_ps) / self.tau_s - y + self.remainder
+            lo = max(self.sf0 - self.max_offset, -SF_LIMIT)
+            hi = min(self.sf0 + self.max_offset, SF_LIMIT)
+            sf = max(lo, min(hi, max(self.sf - self.max_step, min(self.sf + self.max_step, round(wanted)))))
             if self.apply:
                 self.remainder = max(-0.5, min(0.5, wanted - sf))  # a clipped step carries no more
-            if abs(sf - self.sf0) > self.max_offset or abs(sf) > SF_LIMIT:
-                raise SteeringError(f"SF {sf} would leave {self.sf0} +- {self.max_offset} (limit +-{SF_LIMIT})")
+            if lo <= round(wanted) <= hi:
+                self.saturated_since = None
+            else:
+                self.saturated_since = count if self.saturated_since is None else self.saturated_since
+                if count - self.saturated_since >= self.max_saturated_s:
+                    raise SteeringError(f"SF held at {sf}, the end of {self.sf0} +- {self.max_offset}, for "
+                                        f"{count - self.saturated_since} s: the reference cannot be followed")
             if sf != self.sf:
                 record["sf"] = sf
                 if self.apply:
-                    f.apply(sf - self.sf)
+                    self.pending.append((count + self.response_delay_s, sf - self.sf))
+                    self.recent.append((count, sf - self.sf))
                     self.sf = sf
         return record
+
+
+def fit_sf_response(counts: Sequence[float], theta_ps: Sequence[float], at_count: float, *,
+                    window_s: float = 20.0) -> dict | None:
+    """How theta answered one change of SF: its change of rate (ps/s) and how long after the
+    command the change began to act (``response_delay_s`` measures this from the second that
+    asked for a correction; the command leaves about 0.1 s after that second ends).
+
+    ``counts`` and ``theta_ps`` are the per-second thetas (each the mean over its second,
+    second k spanning k .. k + 1 on the node's PPS count), ``at_count`` the command's time on
+    the same axis.  Over +-``window_s`` the model is a quadratic, the clocks' own wander, plus
+    rate * (the mean over each second of max(0, t - (at_count + delay))); the delay is searched
+    from -0.5 to 4 s in steps of 0.02 s.  None with fewer than 10 seconds on either side."""
+    k = np.asarray(counts, dtype=float)
+    y = np.asarray(theta_ps, dtype=float)
+    keep = np.abs(k + 0.5 - at_count) <= window_s
+    k, y = k[keep], y[keep]
+    if (k + 1 <= at_count).sum() < 10 or (k >= at_count).sum() < 10:
+        return None
+    x = k + 0.5 - at_count
+    best = None
+    for delay in np.arange(-0.5, 4.0 + 1e-9, 0.02):
+        tc = at_count + delay
+        ramp = np.where(tc <= k, k + 0.5 - tc, np.where(tc >= k + 1, 0.0, (k + 1 - tc) ** 2 / 2))
+        m = np.column_stack([np.ones_like(x), x, x * x, ramp])
+        coef, *_ = np.linalg.lstsq(m, y, rcond=None)
+        resid = float(np.sum((y - m @ coef) ** 2))
+        if best is None or resid < best[0]:
+            best = (resid, float(delay), float(coef[3]))
+    assert best is not None
+    return {"delay_s": best[1], "rate_ps_per_s": best[2], "seconds": int(k.size),
+            "residual_ps": float(np.sqrt(best[0] / max(k.size - 4, 1)))}
 
 
 def filter_for(clock_adev: float, theta_sd_ps: float, *, rwfm_adev_day: float = 1e-13) -> ClockFilter:

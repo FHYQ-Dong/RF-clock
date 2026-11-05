@@ -1,7 +1,8 @@
 `timescale 1ns / 1ps
 // p_top integration: AXI-Lite register access, PPS capture, a TX burst
 // looped back digitally into the RX window (DAC -> D-cycle delay -> ADC),
-// and the TX fault / CLEAR_FAULT path through P6.
+// the output PPS's registers, pulse and validity line (2.1), and the TX
+// fault / CLEAR_FAULT path through P6.
 module tb_p_top;
     `include "src/p_defs.vh"
     `include "src/p_regs.vh"
@@ -37,6 +38,8 @@ module tb_p_top;
     wire [DATA_W-1:0] dac_tdata;
     wire              dac_tvalid;
     reg               dac_tready = 1'b1;
+    wire [DATA_W-1:0] dac0_tdata;
+    wire              dac0_tvalid, pps_out_invalid, pps_out_led;
 
     // Digital loopback DAC -> ADC.
     reg [DATA_W-1:0] loop [0:LOOP_D-1];
@@ -82,7 +85,9 @@ module tb_p_top;
         .s_axis_adc_tdata(adc_tdata), .s_axis_adc_tvalid(1'b1), .adc_overrange(1'b0),
         .m_axis_s2mm_tdata(s2mm_tdata), .m_axis_s2mm_tkeep(s2mm_tkeep),
         .m_axis_s2mm_tvalid(s2mm_tvalid), .m_axis_s2mm_tready(s2mm_tready),
-        .m_axis_s2mm_tlast(s2mm_tlast)
+        .m_axis_s2mm_tlast(s2mm_tlast),
+        .m_axis_dac0_tdata(dac0_tdata), .m_axis_dac0_tvalid(dac0_tvalid), .m_axis_dac0_tready(1'b1),
+        .pps_out_invalid(pps_out_invalid), .pps_out_led(pps_out_led)
     );
 
     // DMA sink.
@@ -109,6 +114,22 @@ module tb_p_top;
             pps = 1'b0;
             repeat (PPS_P - 10) @(negedge clk);
         end
+    end
+
+    // Output PPS on DAC tile 0: the tick of each pulse's first beat and that beat (a pulse's
+    // beats end in the amplitude, 16'h9234 below; between pulses the idle level).
+    reg [63:0]       pulse_tick = 0, pulse_pps = 0;
+    reg [DATA_W-1:0] pulse_beat = 0;
+    reg              dac0_prev = 1'b0;
+    integer          pulses = 0;
+    always @(negedge clk) begin
+        if (dac0_tdata[32 * 7 +: 16] == 16'h9234 && !dac0_prev) begin
+            pulse_tick = dut.raw_tick;
+            pulse_pps  = last_pps_tick;
+            pulse_beat = dac0_tdata;
+            pulses = pulses + 1;
+        end
+        dac0_prev = dac0_tdata[32 * 7 +: 16] == 16'h9234;
     end
 
     // Watchdog: a stuck handshake or wait loop fails instead of hanging.
@@ -204,7 +225,7 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0002_0000, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0002_0002, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");
@@ -288,6 +309,48 @@ module tb_p_top;
         wr(REG_PPS_CONFIG, 32'hFFFF_FFFF);
         rd(REG_PPS_CONFIG, v); check(v == 32'h3, "PPS_CONFIG keeps 2 bits");
         wr(REG_PPS_CONFIG, 32'h0);
+
+        // Output PPS: range checks, then a pulse OFFSET ticks after each PPS_TICK.
+        check(pulses == 0 && pps_out_invalid && !pps_out_led, "output PPS off at reset");
+        rd(REG_PPS_OUT_OFFSET, v); check(v == PPSOUT_MIN_OFFSET, "PPS_OUT_OFFSET reset value");
+        axi_write(REG_PPS_OUT_OFFSET, PPSOUT_MIN_OFFSET - 1, 4'hF, resp); check(resp == 2'b10, "PPS_OUT_OFFSET below the minimum");
+        axi_write(REG_PPS_OUT_OFFSET, PPS_P, 4'hF, resp); check(resp == 2'b10, "PPS_OUT_OFFSET of a whole period");
+        axi_write(REG_PPS_OUT_SAMPLE, 32'd8, 4'hF, resp); check(resp == 2'b10, "PPS_OUT_SAMPLE 8");
+        axi_write(REG_PPS_OUT_WIDTH, 32'd0, 4'hF, resp); check(resp == 2'b10, "PPS_OUT_WIDTH 0");
+        axi_write(REG_PPS_OUT_STATUS, 32'd0, 4'hF, resp); check(resp == 2'b10, "PPS_OUT_STATUS is read-only");
+        wr(REG_PPS_OUT_OFFSET, 50); wr(REG_PPS_OUT_SAMPLE, 2); wr(REG_PPS_OUT_WIDTH, 3);
+        wr(REG_PPS_OUT_AMPLITUDE, 32'h0000_9234);
+        rd(REG_PPS_OUT_IDLE, v); check(v == 0, "PPS_OUT_IDLE reset value");
+        wr(REG_PPS_OUT_IDLE, 32'hABCD_0123);
+        rd(REG_PPS_OUT_IDLE, v); check(v == 32'h0123, "PPS_OUT_IDLE keeps 16 bits");
+        rd(REG_PPS_OUT_OFFSET, v); check(v == 50, "PPS_OUT_OFFSET readback");
+        rd(REG_PPS_OUT_SAMPLE, v); check(v == 2, "PPS_OUT_SAMPLE readback");
+        rd(REG_PPS_OUT_WIDTH, v); check(v == 3, "PPS_OUT_WIDTH readback");
+        rd(REG_PPS_OUT_AMPLITUDE, v); check(v == 32'h9234, "PPS_OUT_AMPLITUDE readback");
+        wr(REG_PPS_OUT_CONTROL, (32'd1 << PPSOUTCTL_ENABLE) | (32'd1 << PPSOUTCTL_SYNCED));
+        // PPS_CONFIG was just rewritten, so P1 locks again: pulses until then are the flywheel's.
+        n = 0;
+        v = 0;
+        while (!v[STAT_PPS_LOCKED] && n < 400) begin rd(REG_STATUS, v); n = n + 1; end
+        start_n = pulses;
+        n = 0;
+        while (pulses < start_n + 2 && n < 3 * PPS_P) begin @(negedge clk); n = n + 1; end
+        check(pulses == start_n + 2, "two output pulses after the lock");
+        check(pulse_tick == pulse_pps + 50, "output pulse at PPS_TICK + OFFSET");
+        exp_beat = {DATA_W{1'b0}};
+        for (i = 0; i < 8; i = i + 1) exp_beat[32 * i +: 16] = (i >= 2) ? 16'h9234 : 16'h0123;
+        check(pulse_beat == exp_beat && dac0_tvalid, "the step's first beat: the idle level, then the amplitude from sample 2");
+        rd(REG_PPS_OUT_STATUS, v);
+        check(v == ((32'd1 << PPSOUTST_HAVE_REF) | (32'd1 << PPSOUTST_RUNNING)), "PPS_OUT_STATUS valid");
+        check(!pps_out_invalid && pps_out_led, "validity line low, LED lit");
+        rd(REG_PPS_OUT_CNT, v); check(v == pulses, "PPS_OUT_CNT");
+        rd(REG_PPS_OUT_FLYWHEEL_CNT, v); check(v <= start_n, "PPS_OUT_FLYWHEEL_CNT: pulses before the lock only");
+        rd64(REG_PPS_OUT_TICK_LO, v64); check(v64 == pulse_tick, "PPS_OUT_TICK");
+        wr(REG_PPS_OUT_CONTROL, 32'd1 << PPSOUTCTL_ENABLE);  // not synchronized: invalid at once
+        repeat (3) @(negedge clk);
+        check(pps_out_invalid && !pps_out_led, "validity line high without SYNCED");
+        rd(REG_PPS_OUT_STATUS, v); check(v[PPSOUTST_INVALID], "PPS_OUT_STATUS invalid");
+        wr(REG_PPS_OUT_CONTROL, 32'd0);
 
         // TX fault through P6, then CLEAR_FAULT.
         rd64(REG_TICK_LO, t_now);

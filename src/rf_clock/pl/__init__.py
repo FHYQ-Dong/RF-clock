@@ -7,6 +7,7 @@ from .burst import BurstMemory
 from .client import PLClient, Status
 from .measurements import MeasurementQueue, OwnMeasurement, PeerPacket
 from .overlay import VersionMismatch
+from .pps_out import PPSOut, PPSOutStatus
 from .slots import Slots
 from .tracking import Correlator, SearchReport
 from .waveform import WaveformGenerator
@@ -22,6 +23,8 @@ __all__ = [
     "OwnMeasurement",
     "PL",
     "PLClient",
+    "PPSOut",
+    "PPSOutStatus",
     "PeerPacket",
     "RFDC",
     "ResultCode",

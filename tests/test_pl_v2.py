@@ -10,6 +10,7 @@ from rf_clock.pl.burst import BurstMemory, BurstMemoryError, pack_chips, unpack_
 from rf_clock.pl.client import PLClient
 from rf_clock.pl.measurements import MeasurementQueue, OwnMeasurement, PeerPacket, decode_entry
 from rf_clock.pl.mmio import MemoryMMIO
+from rf_clock.pl.pps_out import PPSOut
 from rf_clock.pl.slots import Slots, rx_offset_for
 from rf_clock.pl.tracking import Correlator
 from rf_clock.plmodel import fir
@@ -76,6 +77,36 @@ def test_slots_configure_and_its_checks():
     regs.values[REG.SLOT_STATUS] = (37 << abi.ABI.SLOTST.SLOT_LSB) | 1
     status = slots.status()
     assert (status.running, status.slot) == (True, 37)
+
+
+def test_pps_out_configure_control_and_status():
+    ctrl, regs = client({REG.PPS_OUT_CONTROL: 1 << abi.ABI.PPSOUTCTL.SYNCED})
+    out = PPSOut(ctrl)
+    out.configure(amplitude=-12000, offset=500, sample=3, width=6, idle=12000)
+    assert [regs.values[r] for r in (REG.PPS_OUT_OFFSET, REG.PPS_OUT_SAMPLE, REG.PPS_OUT_WIDTH,
+                                     REG.PPS_OUT_AMPLITUDE, REG.PPS_OUT_IDLE)] == [500, 3, 6, (-12000) & 0xFFFF, 12000]
+    assert (out.amplitude, out.offset, out.sample, out.width, out.idle) == (-12000, 500, 3, 6, 12000)
+    ctl = abi.ABI.PPSOUTCTL
+    assert regs.values[REG.PPS_OUT_CONTROL] == (1 << ctl.ENABLE) | (1 << ctl.SYNCED)  # SYNCED kept
+    out.set_synced(False)
+    assert regs.values[REG.PPS_OUT_CONTROL] == 1 << ctl.ENABLE
+    out.disable()
+    assert regs.values[REG.PPS_OUT_CONTROL] == 0
+    low = abi.ABI.PPSOUT_MIN_OFFSET
+    for amplitude, offset, sample, width in ((0x8000, low, 0, 1), (1, low, 8, 1), (1, low, 0, 0),
+                                             (1, low - 1, 0, 1), (1, 100_000_000, 0, 1)):
+        with pytest.raises(ValueError):
+            out.configure(amplitude=amplitude, offset=offset, sample=sample, width=width)
+    with pytest.raises(ValueError):
+        out.configure(amplitude=1, idle=-0x8001)
+
+    st = abi.ABI.PPSOUTST
+    regs.values.update({REG.PPS_OUT_STATUS: (1 << st.HAVE_REF) | (1 << st.FLYWHEEL) | (1 << st.INVALID),
+                        REG.PPS_OUT_CNT: 12, REG.PPS_OUT_FLYWHEEL_CNT: 2,
+                        REG.PPS_OUT_TICK_LO: 0x2345_6789, REG.PPS_OUT_TICK_HI: 0x1})
+    status = out.status()
+    assert (status.have_ref, status.running, status.flywheel, status.invalid) == (True, False, True, True)
+    assert (status.pulses, status.flywheel_pulses, status.last_tick) == (12, 2, 0x1_2345_6789)
 
 
 def test_correlator_configure_and_report():
@@ -151,3 +182,35 @@ def test_queue_reads_from_tail_to_head_across_the_end():
     assert [e.seq for e in first] == [1, 2] and regs.values[REG.QUEUE_TAIL] == 0
     assert [e.seq for e in queue.read()] == [3] and regs.values[REG.QUEUE_TAIL] == 1
     assert queue.read() == []
+
+
+class RecordingArray:
+    """A numpy-like array that records each store as (first word, word count)."""
+
+    def __init__(self, size: int) -> None:
+        self.data = np.zeros(size, dtype=np.uint32)
+        self.stores: list[tuple[int, int]] = []
+
+    def __setitem__(self, key, value) -> None:
+        if isinstance(key, slice):
+            self.stores.append((key.start, key.stop - key.start))
+        else:
+            self.stores.append((key, 1))
+        self.data[key] = value
+
+
+@pytest.mark.parametrize("offset, count", [(0, 81), (0x4000, 81), (0, 128), (4, 3), (8, 1), (12, 9), (0, 0)])
+def test_block_writes_store_only_aligned_16_byte_blocks(offset, count):
+    from rf_clock.pl.mmio import PynqMMIO
+
+    class Mmio:
+        array = RecordingArray(0x5000)
+
+    mmio = Mmio()
+    words = np.arange(1, count + 1, dtype=np.uint32)
+    PynqMMIO(0, mmio=mmio).write_block(offset, words)
+    start = offset // 4
+    assert list(mmio.array.data[start:start + count]) == list(words)
+    for first, n in mmio.array.stores:
+        assert n == 1 or (first % 4 == 0 and n % 4 == 0)  # 16-byte aligned, a multiple of 16 bytes
+    assert sum(n for _, n in mmio.array.stores) == count

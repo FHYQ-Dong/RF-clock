@@ -8,7 +8,8 @@ it exactly: later releases add a ``RefTile`` argument to
 ``XRFdc_MultiConverter_Init``.
 
 The design enables ADC and DAC tiles 0 and 2 (tile 2 carries the signal,
-tile 0 exists for MTS; ``AGENTS.md``).  Everything here needs the PYNQ
+tile 0 exists for MTS; ``AGENTS.md``); since 2.1 DAC tile 0 also sends the
+output PPS, at baseband (``baseband_dac``).  Everything here needs the PYNQ
 runtime and is imported lazily, so the module loads on a development machine.
 """
 
@@ -23,6 +24,7 @@ ADC = 0  # XRFDC_ADC_TILE
 DAC = 1  # XRFDC_DAC_TILE
 TILE_STARTED = 0xF
 DEFAULT_TILES = (0, 2)
+PPS_OUT_TILE = 0  # DAC tile 0 (DAC_B, J20): the output PPS since 2.1 (rf_clock.pl.pps_out)
 
 # XRFDC_MTS_* status bits (embeddedsw 2020.2 xrfdc_mts.h); 0 is XRFDC_MTS_OK.
 MTS_STATUS_BITS = {
@@ -309,6 +311,45 @@ def sync_nco_phase(
     sysref_receivers(0)
     for block, source in zip(blocks, sources):
         block.MixerSettings = {**block.MixerSettings, "EventSource": source}
+
+
+def baseband_dac(rfdc: Any, tile: int, nco_mhz: float = 0.0) -> Callable[[], None]:
+    """Move DAC ``tile`` block 0 from the RF band to ``nco_mhz``; return a function
+    that restores its settings.
+
+    In operation the datapath is IMR high-pass (fs/4..fs/2) in mix-mode
+    (Nyquist zone 2) with the NCO at -1000 MHz: 3.8 GHz and its 5.8 GHz image.
+    Here it is IMR low-pass (0..fs/4) in Nyquist zone 1 with the NCO at
+    ``nco_mhz`` (0: coarse mixer bypassed, the DAC outputs the I samples and no
+    NCO phase is involved; how the output PPS uses tile 0), and with an NCO the
+    fine-mixer scale is 1.0 instead of the 0.7 that "auto" means for C2R
+    (+3 dB; safe for waveforms with Q = 0).  The DAC output current cannot be
+    raised instead: VOP needs DAC_AVTT = 3.0 V (PG269) and the RFSoC 4x2 has
+    2.5 V.
+    """
+    import xrfdc  # board-only  # pyright: ignore[reportMissingImports]
+
+    block = rfdc.dac_tiles[tile].blocks[0]
+    mixer = dict(block.MixerSettings)
+    saved = (block.DataPathMode, block.IMRPassMode, block.NyquistZone)
+
+    def apply(path_mode: int, imr_mode: int, zone: int, settings: dict) -> None:
+        block.DataPathMode = path_mode
+        block.IMRPassMode = imr_mode
+        block.NyquistZone = zone
+        block.MixerSettings = settings
+        block.UpdateEvent(xrfdc.EVENT_MIXER)
+
+    # DataPathMode 2 = XRFDC_DATAPATH_MODE_DUC_0_FSDIVFOUR; IMRPassMode 0 = low pass.
+    if nco_mhz == 0:
+        apply(2, 0, 1, {**mixer, "MixerType": xrfdc.MIXER_TYPE_COARSE,
+                        "CoarseMixFreq": xrfdc.COARSE_MIX_BYPASS, "Freq": 0.0})
+    else:
+        apply(2, 0, 1, {**mixer, "Freq": float(nco_mhz), "FineMixerScale": xrfdc.MIXER_SCALE_1P0})
+    # "Auto" leaves the scale register as it is, so restore 0.7 explicitly.
+    restored = {**mixer, "FineMixerScale": xrfdc.MIXER_SCALE_0P7
+                if mixer["FineMixerScale"] == xrfdc.MIXER_SCALE_AUTO else mixer["FineMixerScale"]}
+    return lambda: apply(*saved, restored)
 
 
 def setup_rfdc_and_mts(

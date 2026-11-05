@@ -53,6 +53,17 @@ class ABI:
         SLOTS_PER_SECOND = 0x11C
         RX_WINDOW_BEATS = 0x120
         RX_SPAN_BEATS = 0x124
+        PPS_OUT_CONTROL = 0x140
+        PPS_OUT_OFFSET = 0x144
+        PPS_OUT_SAMPLE = 0x148
+        PPS_OUT_WIDTH = 0x14C
+        PPS_OUT_AMPLITUDE = 0x150
+        PPS_OUT_STATUS = 0x154
+        PPS_OUT_CNT = 0x158
+        PPS_OUT_FLYWHEEL_CNT = 0x15C
+        PPS_OUT_TICK_LO = 0x160
+        PPS_OUT_TICK_HI = 0x164
+        PPS_OUT_IDLE = 0x168
         BURST_PRN_CHIPS = 0x180
         BURST_GUARD_CHIPS = 0x184
         BURST_BEATS = 0x188
@@ -209,13 +220,24 @@ class ABI:
         PPS_LOCKED = 0x4
         CLOCKS_LOCKED = 0x5
 
+    class PPSOUTCTL:
+        ENABLE = 0x0
+        SYNCED = 0x1
+
+    class PPSOUTST:
+        HAVE_REF = 0x0
+        RUNNING = 0x1
+        FLYWHEEL = 0x2
+        INVALID = 0x3
+
     TX_REPEAT_MAX = 0xFFFF
+    PPSOUT_MIN_OFFSET = 0x8
     QUEUE_ENTRY_WORDS = 0x10
     PACKET_FORMAT_VERSION = 0x1
     RX_RESULT_FLAGS_LSB = 0x8
     FAULT_INFO_COUNT_LSB = 0x10
     DESIGN_ID = 0x52434C4B
-    VERSION = 0x00020000
+    VERSION = 0x00020002
 
 class TxState(IntEnum):
     IDLE = 0x0
