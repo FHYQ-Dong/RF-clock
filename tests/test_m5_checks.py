@@ -3,9 +3,13 @@ interpolation of rf_clock.checks.pps_pp_scan, on synthetic data."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from rf_clock.checks.m4c_link import SecondTheta, StepTheta, SyncedRule
+from rf_clock.checks.m4c_link import SecondTheta, StepTheta, SyncedRule, configure_fs725
+from rf_clock.fs725 import FS725
+from rf_clock.pl.board_config import BoardConfig
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
@@ -147,3 +151,46 @@ def test_step_theta_gives_the_late_mean_of_each_step():
     assert [r["index"] for r in steps.done] == [50, 51, 52, 53, 54]
     assert all(r["theta_late_ns"] == pytest.approx(-0.0205, abs=1e-9) for r in steps.done)
     assert steps.done[0]["pairs"] == 49 and steps.done[1]["pairs"] == 50
+
+
+class NamedPRS10:
+    """A PRS10 that answers ID? and GA? and takes GA."""
+
+    def __init__(self) -> None:
+        self.ga = 7
+        self.replies: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        command = data.decode().strip("\r")
+        if command == "ID?":
+            self.replies.append(b"PRS10_3.56_SN_107129")
+        elif command == "GA?":
+            self.replies.append(str(self.ga).encode())
+        elif command.startswith("GA"):
+            self.ga = int(command[2:])
+
+    def read_line(self, timeout: float) -> bytes | None:
+        return self.replies.pop(0) if self.replies else None
+
+    def flush_input(self) -> None:
+        self.replies.clear()
+
+    def close(self) -> None:
+        pass
+
+
+def test_the_link_checks_its_fs725_against_the_board_config(monkeypatch):
+    prs = NamedPRS10()
+    monkeypatch.setattr(FS725, "open", lambda path, **kwargs: FS725(prs, **kwargs))
+    entry = {"serial": "107129", "gain": 8, "loops": {"8": {"k_per_s": 2.2, "lag_s": 1.2, "dead_s": 0.12}}}
+    pl = SimpleNamespace(board=SimpleNamespace(config=BoardConfig(serial="0" * 32, fs725=entry)))
+    lines: list[str] = []
+    with pytest.warns(UserWarning, match="GA 7 -> 8"):
+        assert configure_fs725(pl, "PORT", lambda kind, **fields: lines.append(kind)) == (2.2, 1.2, 0.12)
+    assert prs.ga == 8 and lines == ["fs725", "fs725_config"]
+    pl.board.config = BoardConfig(serial="0" * 32, fs725=entry | {"serial": "41175"})
+    with pytest.raises(SystemExit, match="for FS725 S/N 41175, this board's is S/N 107129"):
+        configure_fs725(pl, "PORT", lambda kind, **fields: None)
+    pl.board.config = None
+    with pytest.raises(SystemExit, match="no board config"):
+        configure_fs725(pl, "PORT", lambda kind, **fields: None)

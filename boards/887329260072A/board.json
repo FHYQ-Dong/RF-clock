@@ -116,5 +116,69 @@
       },
       "rf_clock": "1.3.0.10"
     }
+  },
+  "fs725": {
+    "serial": "41175",
+    "identity": "PRS10_3.24_SN_41175",
+    "gain": 7,
+    "loops": {
+      "7": {
+        "k_per_s": 1.6,
+        "lag_s": 1.15,
+        "dead_s": 0.2,
+        "measured": {
+          "time": "2026-11-05T19:45:58+00:00",
+          "rf_clock": "2.2.0.8",
+          "sf_step": 400,
+          "hold_s": 40.0,
+          "rms_steps": 17.2,
+          "steps": [
+            {
+              "sf_change": 400,
+              "k_per_s": 1.45,
+              "lag_s": 1.05,
+              "dead_s": 0.15,
+              "rms_steps": 12.023
+            },
+            {
+              "sf_change": -400,
+              "k_per_s": 1.9,
+              "lag_s": 1.45,
+              "dead_s": 0.25,
+              "rms_steps": 12.043
+            },
+            {
+              "sf_change": 400,
+              "k_per_s": 1.6,
+              "lag_s": 0.95,
+              "dead_s": 0.3,
+              "rms_steps": 21.54
+            },
+            {
+              "sf_change": -400,
+              "k_per_s": 1.65,
+              "lag_s": 0.95,
+              "dead_s": 0.2,
+              "rms_steps": 9.763
+            },
+            {
+              "sf_change": 400,
+              "k_per_s": 1.4,
+              "lag_s": 1.15,
+              "dead_s": 0.1,
+              "rms_steps": 20.373
+            },
+            {
+              "sf_change": -400,
+              "k_per_s": 1.6,
+              "lag_s": 1.35,
+              "dead_s": 0.2,
+              "rms_steps": 11.527
+            }
+          ],
+          "note": "replaces k 1.5, lag 1.65, dead 0.125 from two steps of 200 (results/two-loops-20261105 section 5.5); steps of 100 and 200 on 2026-11-05 gave lag 1.05 and 1.1 s"
+        }
+      }
+    }
   }
 }

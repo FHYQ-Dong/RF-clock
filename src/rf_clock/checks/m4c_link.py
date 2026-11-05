@@ -42,6 +42,12 @@ Protocol tests, all while the link runs (times in seconds after the start):
                         with ``--fs725 PORT``, move this node's PPS onto it with the
                         FS725's PP, wait for the PL's PPS lock, and acquire again to check.
 
+``--fs725 PORT`` names this node's FS725.  At the start it is checked against the board
+config (``rf_clock.fs725.check_config``): it must be the unit the config names, and its
+frequency lock loop's gain GA is set to the config's, with a warning that says from what
+to what; a unit the config does not name stops the node (``rf_clock.checks.fs725_loop
+--write`` measures and records it).
+
 Every second the node also writes one ``second`` line: theta, the one-way delay and
 their scatter over that second's pairs, from its own queue alone (``SecondTheta``);
 ``--no-entries`` leaves out the queue entries themselves, for runs of hours.  With
@@ -57,8 +63,8 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         the control law, one theta per second) so that theta goes to T,
                         from the first lock on; at the end SF goes back to its starting
                         value unless ``--keep-sf``.  ``--steer-mode predictive`` uses
-                        ``PredictiveSteering`` instead, with the model of the frequency
-                        lock loop at the unit's GA (refused for a GA without one), and
+                        ``PredictiveSteering`` instead, with the unit's frequency lock
+                        loop at its GA from the board config (refused without one), and
                         ``--steer-late-slots N`` steers on theta over the last N slots
                         of each step (100: 0.2 s, results/predictive-steering-20261105),
                         and ``--steer-step 0.2`` corrects every 0.2 s instead of every
@@ -276,7 +282,7 @@ class FrequencyControl:
     """This node's FS725 for ``--sf-step`` and ``--steer-target-ns`` (role B): the unit's
     1 pps PLL off, so that SF takes effect, and SF back at its starting value at the end."""
 
-    def __init__(self, args, emit, late_s: float = 0.0) -> None:
+    def __init__(self, args, emit, late_s: float = 0.0, loop: tuple[float, float, float] | None = None) -> None:
         from rf_clock.fs725 import FS725
         from rf_clock.twtt import steer
 
@@ -304,13 +310,17 @@ class FrequencyControl:
         self.steps_taken = 0
         gain = self.unit.gain()
         if args.steer_target_ns is not None and args.steer_mode == "predictive":
+            if loop is None:
+                self.unit.close()
+                raise SystemExit(f"the board config has no frequency lock loop of this FS725 at GA {gain}: "
+                                 f"python -m rf_clock.checks.fs725_loop --port {args.fs725} --gain {gain} --write")
             overrides = {k: v for k, v in (("horizon", args.steer_horizon), ("moves", args.steer_moves),
                                            ("lam", args.steer_lambda)) if v is not None}
             if args.steer_ar is not None:
                 overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
             try:
                 self.steering = steer.predictive_for(
-                    args.steer_target_ns * 1000, self.sf0, gain, late_s=late_s, step_s=self.step_s,
+                    args.steer_target_ns * 1000, self.sf0, loop, late_s=late_s, step_s=self.step_s,
                     settle_s=args.steer_settle, max_step=args.steer_max_step, max_offset=args.steer_max_offset,
                     **overrides)
             except steer.SteeringError as exc:
@@ -399,6 +409,29 @@ def steer_fit(thetas: list[tuple[int, float]], at_count: float) -> dict | None:
     from rf_clock.twtt.steer import fit_sf_response
 
     return fit_sf_response([c for c, _ in thetas], [t for _, t in thetas], at_count)
+
+
+def configure_fs725(pl, port: str, emit) -> tuple[float, float, float] | None:
+    """Check this node's FS725 against its board config and set its gain from it
+    (``rf_clock.fs725.check_config``); return the loop measured at that gain, or None."""
+    from rf_clock.fs725 import FS725, FS725Error, check_config
+    from rf_clock.pl.board_config import config_path
+
+    config = pl.board.config
+    if config is None:
+        raise SystemExit(f"no board config at {config_path()}: --fs725 needs one that names the unit "
+                         f"(docs/board_setup.md section 4, then rf_clock.checks.fs725_loop --write)")
+    unit = FS725.open(port, log=lambda e: emit("fs725", **e))
+    try:
+        loop = check_config(unit, config.fs725, str(config_path()))
+    except FS725Error as exc:
+        raise SystemExit(str(exc)) from exc
+    finally:
+        unit.close()
+    emit("fs725_config", serial=config.fs725["serial"], gain=config.fs725["gain"], loop=loop)
+    mark(f"FS725 S/N {config.fs725['serial']} as the board config names it: GA {config.fs725['gain']}, "
+         f"loop {loop if loop else 'not measured at this gain'}")
+    return loop
 
 
 def acquire_peer(pl, prn, taps, args, emit) -> None:
@@ -504,7 +537,7 @@ def main() -> None:
                         help="... and cleared when its 10 s rms exceeds this")
     parser.add_argument("--steer-mode", choices=("kalman", "predictive"), default="kalman",
                         help="kalman: rf_clock.twtt.steer.Steering (tau, interval); predictive: PredictiveSteering, "
-                             "a correction every second from the FS725's loop model at its GA and an AR prediction")
+                             "a correction every second from the FS725's loop at its GA (board config) and an AR prediction")
     parser.add_argument("--steer-late-slots", type=int, default=0, metavar="N",
                         help="steer on theta over the last N slots of each step (with 1 s steps the second "
                              "lines get theta_late_ns)")
@@ -571,6 +604,7 @@ def main() -> None:
                                               "steer_lambda", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle", "synced_rms", "synced_mean",
                                               "synced_clear_rms", "fs725", "fc_every")})
+    loop = configure_fs725(pl, args.fs725, emit) if args.fs725 is not None else None
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
     if time.time() < start_at:
@@ -585,7 +619,7 @@ def main() -> None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
-        control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second)
+        control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second, loop)
     step_theta = None
     if args.steer_step < 1:
         step_slots = round(args.steer_step * pl.slots.slots_per_second)

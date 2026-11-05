@@ -66,8 +66,8 @@ to the value the steering started from (logged, and printed at the end) with
 
 ``PredictiveSteering`` is the other control law (``m4c_link --steer-mode predictive``,
 results/fs725-fll-20261105).  It knows the FS725's answer to SF as its frequency lock loop
-gives it (``LOOPS``, by the unit's gain GA: an integrator around the 1 s filter on the
-crystal's tuning), so it takes its own corrections out of each theta and keeps the free
+gives it (the unit's loop at its gain GA, from the board config, ``fit_loop``: an
+integrator around the 1 s filter on the crystal's tuning), so it takes its own corrections out of each theta and keeps the free
 clocks' theta.  Their frequency about its 60 s mean is predicted a few seconds ahead by
 an autoregressive model (``AR4``: the pair's wander has a narrow band at 5-9 s periods,
 which is predictable over a second or two), and each second the next few changes of SF
@@ -271,10 +271,6 @@ class Steering:
         return record
 
 
-# The frequency lock loop of B's FS725 by GA (results/fs725-fll-20261105, four SF steps):
-# the integrator's gain k (per s), the crystal's lag behind FC (s, the 1 s filter of PRS10
-# manual p. 47) and the dead time before the loop sees a step (s).
-LOOPS = {7: (0.95, 1.1, 0.15), 8: (2.2, 1.2, 0.12)}
 # AR(4) of the pair's second-to-second frequency about its 60 s mean, fitted on the free
 # record results/m4c-v2-free-20261103_205954 (both FS725s at GA 7).
 AR4 = (0.852, -0.825, 0.301, -0.171)
@@ -304,6 +300,63 @@ def loop_response(k: float, lag_s: float, dead_s: float, *, dt: float = STEP_DT,
         out += (fc - out) / lag_s * dt
         y[i] = out
     return y
+
+
+def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, at: Sequence[float], *,
+             before_s: float = 10.0, after_s: float = 20.0) -> dict:
+    """The frequency lock loop of ``loop_response`` from FC's answer to changes of SF sent at the
+    times ``at`` (results/fs725-fll-20261105 section 5.1): FC (``t`` when read, ``fc`` in low DAC
+    steps, 1000 high + low) from ``before_s`` before to ``after_s`` after each change, fitted by
+    a + b t + D u(t), u FC's answer to a unit step in that loop, over the integrator's gain k
+    0.3-3 per s, the crystal's lag 0.5-2 s and the dead time 0-0.4 s in steps of 0.05.  FC
+    alone fixes them: the loop drives FC until the crystal, lagging behind it, meets the
+    new reference.  One k, lag and dead time hold for every change (each its own a, b, D):
+    FC's own wander, 10-20 steps rms over a fit, moves the fit of a single change of 100
+    parts in 1e12 to the ends of the grid (fs725_loop on 2026-11-05).  Returns ``k_per_s``,
+    ``lag_s``, ``dead_s``, ``rms_steps`` (FC about the fit), ``fc_changes`` (each D), and
+    ``alone``: each change fitted by itself, which shows how well they agree."""
+    when = np.asarray(t, dtype=float)
+    values = np.asarray(fc, dtype=float)
+    k, lag, dead = (a.ravel() for a in np.meshgrid(np.arange(0.3, 3.0 + 1e-9, 0.05), np.arange(0.5, 2.0 + 1e-9, 0.05),
+                                                    np.arange(0.0, 0.4 + 1e-9, 0.05), indexing="ij"))
+
+    def one(time: float) -> tuple[np.ndarray, np.ndarray, int]:
+        """Each candidate's residual and D for the change at ``time``, and the reads fitted."""
+        keep = (when > time - before_s) & (when < time + after_s)
+        x, v = when[keep] - time, values[keep]
+        dt = 0.01
+        pos = np.clip(x, 0, None) / dt
+        i0 = np.floor(pos).astype(int)
+        frac = pos - i0
+        need = np.unique(np.concatenate([i0, i0 + 1]))
+        column = {int(i): c for c, i in enumerate(need)}
+        at_grid = np.zeros((k.size, need.size))
+        u = out = np.zeros(k.size)
+        for i in range(int(need[-1]) + 1):  # every candidate loop at once, as loop_response steps one
+            if i:
+                u = u + k * ((i * dt > dead) - out) * dt
+                out = out + (u - out) / lag * dt
+            if i in column:
+                at_grid[:, column[i]] = u
+        c0 = np.searchsorted(need, i0)
+        answer = at_grid[:, c0] * (1 - frac) + at_grid[:, c0 + 1] * frac
+        q, _ = np.linalg.qr(np.column_stack([np.ones_like(x), x]))  # a + b t projected out
+        v_free = v - q @ (q.T @ v)
+        a_free = answer - (answer @ q) @ q.T
+        norm = np.einsum("ij,ij->i", a_free, a_free)
+        dot = a_free @ v_free
+        return np.maximum(v_free @ v_free - dot ** 2 / norm, 0.0), dot / norm, x.size
+
+    def best(i: int) -> dict:
+        return dict(k_per_s=round(float(k[i]), 2), lag_s=round(float(lag[i]), 2), dead_s=round(float(dead[i]), 2))
+
+    fits = [one(time) for time in at]
+    alone = [{**best(int(np.argmin(r))), "fc_change": float(d[np.argmin(r)]), "rms_steps": float(np.sqrt(r.min() / n))}
+             for r, d, n in fits]
+    total = np.sum([r for r, _, _ in fits], axis=0)
+    i = int(np.argmin(total))
+    return {**best(i), "rms_steps": float(np.sqrt(total[i] / sum(n for _, _, n in fits))),
+            "fc_changes": [float(d[i]) for _, d, _ in fits], "alone": alone}
 
 
 class LoopModel:
@@ -500,20 +553,19 @@ class PredictiveSteering:
         return self.free[-1]
 
 
-def predictive_for(target_ps: float, sf0: int, ga: int, *, late_s: float = 0.0, step_s: float = 1.0,
-                   **kwargs: Any) -> PredictiveSteering:
+def predictive_for(target_ps: float, sf0: int, loop: tuple[float, float, float], *, late_s: float = 0.0,
+                   step_s: float = 1.0, **kwargs: Any) -> PredictiveSteering:
     """A ``PredictiveSteering`` on steps of ``step_s`` (1 s, or 0.2 s: ``STEP_SETTINGS``) with
-    the loop model of gain ``ga`` (``LOOPS``) and theta the mean over the last ``late_s`` of
-    each step (0: the whole step); ``kwargs`` override the step's settings."""
-    if ga not in LOOPS:
-        raise SteeringError(f"no model of the FS725's frequency lock loop at GA {ga} (known: {sorted(LOOPS)})")
+    the unit's frequency lock loop at its gain, ``loop`` = (k per s, lag s, dead time s; the
+    board config's, ``fit_loop``), and theta the mean over the last ``late_s`` of each step
+    (0: the whole step); ``kwargs`` override the step's settings."""
     if step_s not in STEP_SETTINGS:
         raise SteeringError(f"no settings for steps of {step_s} s (known: {sorted(STEP_SETTINGS)})")
     settings = dict(STEP_SETTINGS[step_s])
     command_s = settings.pop("command_s")
     settings.update(kwargs)
     window = (step_s - late_s, step_s) if late_s else (0.0, step_s)
-    model = LoopModel(*LOOPS[ga], window=window, command_s=command_s, step_s=step_s)
+    model = LoopModel(*loop, window=window, command_s=command_s, step_s=step_s)
     return PredictiveSteering(target_ps=target_ps, sf0=sf0, model=model, **settings)
 
 

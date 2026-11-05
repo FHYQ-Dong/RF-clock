@@ -29,9 +29,14 @@ The 1 pps input is also time-tagged against the 1 pps output with 1 ns resolutio
 999 999 999 ns: with the other node's PPS on the rear input this aligns the two
 PPS to a few ns before the two-way time transfer can see each other's bursts.
 
-Only the commands this module names are sent: every query, and SF, PL, PP and VB.
+The unit that clocks a board is recorded in the board's config (``fs725``, docs/ABI.md
+11.1): its serial number, the gain GA of its frequency lock loop, and the loop measured
+at that gain (``rf_clock.checks.fs725_loop``).  ``check_config()`` checks a unit against
+it and sets its GA, which the unit keeps only until it restarts.
+
+Only the commands this module names are sent: every query, and SF, PL, PP, GA and VB.
 Nothing writes the EEPROM (``!``), changes a calibration (MO, SP, SS, TS, PS, TO,
-FC, GA, LO, PH, MS, SD) or restarts the unit (RS, RC).
+FC, LO, PH, MS, SD) or restarts the unit (RS, RC).
 
     run="sudo /usr/local/share/pynq-venv/bin/python"
     $run -m rf_clock.fs725 status --port /dev/ttyUSB0
@@ -48,6 +53,7 @@ import select
 import statistics
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -196,6 +202,14 @@ class FS725:
         """Model, firmware and serial number, for example ``PRS10_3.24_SN_12345``."""
         return self.query("ID?")
 
+    def serial(self) -> str:
+        """The PRS10's serial number, from ``identify()``."""
+        identity = self.identify()
+        _, sep, serial = identity.rpartition("_SN_")
+        if not sep or not serial.isdigit():
+            raise FS725Error(f"ID? returned {identity!r}")
+        return serial
+
     def status(self) -> Status:
         """The six status bytes; reading clears the latched bits."""
         reply = self.query("ST?")
@@ -292,6 +306,28 @@ class FS725:
     def case_temperature(self) -> float:
         """The case temperature sensor, degrees C (AD10, 10 mV/degree)."""
         return float(self.query("AD10?")) * 100
+
+
+def check_config(unit: FS725, entry: dict, source: str = "board config") -> tuple[float, float, float] | None:
+    """Check that ``unit`` is the FS725 of a board config (``entry``: its ``fs725``) and set
+    what the entry fixes, the frequency lock loop's gain; return the loop measured at that
+    gain, (k per s, lag s, dead time s), or None.
+
+    FS725Error when the entry is empty or names another unit: ``rf_clock.checks.fs725_loop
+    --write`` measures this unit's loop and writes the entry.  A gain that differs is set,
+    until the unit restarts, with a warning that says from what to what."""
+    serial = unit.serial()
+    hint = "measure it first: python -m rf_clock.checks.fs725_loop --port PORT --gain GA --write"
+    if not entry:
+        raise FS725Error(f"{source} has no FS725, this board's is S/N {serial}; {hint}")
+    if entry["serial"] != serial:
+        raise FS725Error(f"{source} is for FS725 S/N {entry['serial']}, this board's is S/N {serial}; {hint}")
+    gain = unit.gain()
+    if gain != entry["gain"]:
+        unit.set_gain(entry["gain"])
+        warnings.warn(f"FS725 S/N {serial}: GA {gain} -> {entry['gain']}, as {source} sets it", stacklevel=2)
+    loop = entry.get("loops", {}).get(str(entry["gain"]))
+    return None if loop is None else (loop["k_per_s"], loop["lag_s"], loop["dead_s"])
 
 
 def pps_offset_ns(tags: list[int]) -> float:

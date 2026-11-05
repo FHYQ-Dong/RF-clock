@@ -138,8 +138,8 @@ def scan(args) -> int:
                            "locked": locked[side]} for side in LMX_SIDES},
                  "scanned": {"time": now(), "die_c": temp, "rf_clock": package_version(),
                              "writes": args.calibrations}}
-        path = save_board_config(BoardConfig(serial=serial, label=label, lmx_vco_band=bands,
-                                             band_table=table), args.config)
+        path = save_board_config(BoardConfig(serial=serial, label=label, lmx_vco_band=bands, band_table=table,
+                                             fs725=config.fs725 if config else {}), args.config)
         print(f"written to {path}; the next PL.open forces these bands.  Record the MTS capture codes for "
               "them next (rf_clock.checks.mts_dtc record --write)")
     return 0

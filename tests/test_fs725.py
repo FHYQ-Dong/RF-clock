@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rf_clock.fs725 import FS725, FS725Error, Status, align, pps_offset_ns
+from rf_clock.fs725 import FS725, FS725Error, Status, align, check_config, pps_offset_ns
 
 
 class FakePRS10:
@@ -75,6 +75,22 @@ def test_set_gain_reads_back_logs_and_never_writes_eeprom():
     for bad in (11, -1, 7.5):
         with pytest.raises(ValueError):
             unit.set_gain(bad)  # type: ignore[arg-type]
+
+
+def test_check_config_names_the_unit_and_sets_its_gain():
+    entry = {"serial": "12345", "gain": 8, "loops": {"8": {"k_per_s": 2.2, "lag_s": 1.2, "dead_s": 0.12}}}
+    prs, log = FakePRS10(), []
+    unit = FS725(prs, log=log.append)
+    assert unit.serial() == "12345"
+    with pytest.warns(UserWarning, match="GA 7 -> 8"):
+        assert check_config(unit, entry, "board.json") == (2.2, 1.2, 0.12)
+    assert prs.ga == 8 and log[-1]["command"] == "GA"
+    assert check_config(unit, entry | {"loops": {}}) is None  # no warning: the gain is right now
+    with pytest.raises(FS725Error, match="has no FS725, this board's is S/N 12345.*fs725_loop"):
+        check_config(unit, {}, "board.json")
+    with pytest.raises(FS725Error, match="for FS725 S/N 41175, this board's is S/N 12345"):
+        check_config(unit, entry | {"serial": "41175"})
+    assert prs.ga == 8
 
 
 def test_set_frequency_reads_back_and_logs():

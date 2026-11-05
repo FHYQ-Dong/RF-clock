@@ -11,9 +11,13 @@ from rf_clock.pl.board_config import BoardConfig, BoardConfigError, check_board,
 SERIAL = "16908308541004718c1ca080a0800000"
 
 
+FS725_ENTRY = {"serial": "41175", "identity": "PRS10_3.24_SN_41175", "gain": 7,
+               "loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65, "dead_s": 0.125, "measured": {"steps": 2}}}}
+
+
 def test_config_round_trips(tmp_path):
     config = BoardConfig(serial=SERIAL, label="887329260072A", lmx_vco_band={"adc": 117, "dac": 122},
-                         band_table={"adc": {"locked": [116, 117, 118]}})
+                         band_table={"adc": {"locked": [116, 117, 118]}}, fs725=FS725_ENTRY)
     path = board_config.save_board_config(config, tmp_path / "rf-clock" / "board.json")
     assert load_board_config(path) == config
 
@@ -26,6 +30,12 @@ def test_config_round_trips(tmp_path):
     {"serial": SERIAL, "lmx_vco_band": {"adc": 184}},
     {"serial": SERIAL, "lmx_vco_band": {"adc": 117.0}},
     [SERIAL],
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"serial": 41175}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"gain": 11}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"gains": 7}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65}}}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"7": {"k_per_s": 0, "lag_s": 1.65, "dead_s": 0.1}}}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"GA 7": FS725_ENTRY["loops"]["7"]}}},
 ])
 def test_bad_configs_are_refused(data):
     with pytest.raises(BoardConfigError):

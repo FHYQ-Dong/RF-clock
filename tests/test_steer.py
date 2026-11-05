@@ -5,9 +5,12 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import (AR4, AR20_STEP_02, LOOPS, ClockFilter, LoopModel, PredictiveSteering, Steering,
-                                  SteeringError, check_unit, filter_for, fit_frequency_ar, fit_sf_response, follow,
-                                  lag_phase, predictive_for)
+from rf_clock.twtt.steer import (AR4, AR20_STEP_02, ClockFilter, LoopModel, PredictiveSteering, Steering, SteeringError,
+                                  check_unit, filter_for, fit_frequency_ar, fit_loop, fit_sf_response, follow, lag_phase,
+                                  loop_response, predictive_for)
+
+# B's FS725 (S/N 107129) by GA, as its board config holds it (results/fs725-fll-20261105)
+LOOPS = {7: (0.95, 1.1, 0.15), 8: (2.2, 1.2, 0.12)}
 
 
 def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float = 2e-11, theta_sd: float = 3.0,
@@ -256,9 +259,24 @@ def test_predictive_steering_ignores_a_second_given_twice():
     assert steering.free == [5.0, 6.0]
 
 
-def test_predictive_needs_a_known_gain():
-    with pytest.raises(SteeringError, match="GA 5"):
-        predictive_for(0.0, 0, 5)
+def test_the_loop_fit_finds_the_loop_from_fc_alone():
+    # FC read about every 0.1 s around a change of SF at t = 3.0: drift, the loop's answer, noise
+    rng = np.random.default_rng(2)
+    t = np.sort(rng.uniform(-10, 25, 350)) + 3.0
+    k, lag, dead = 1.5, 1.65, 0.15
+    grid = np.arange(0, 30, 0.01)
+    u = np.zeros_like(grid)
+    fc = out = 0.0
+    for i in range(1, grid.size):  # FC in the loop of loop_response
+        fc += k * ((1.0 if grid[i] > dead else 0.0) - out) * 0.01
+        out += (fc - out) / lag * 0.01
+        u[i] = fc
+    assert out == pytest.approx(loop_response(k, lag, dead, span_s=30)[-1], abs=1e-3)
+    v = 1_675_600 + 0.3 * t + 130 * np.interp(np.clip(t - 3.0, 0, None), grid, u) + rng.normal(0, 3, t.size)
+    found = fit_loop(t, v, [3.0])
+    assert (found["k_per_s"], found["lag_s"], found["dead_s"]) == pytest.approx((k, lag, dead), abs=0.051)
+    assert found["fc_changes"][0] == pytest.approx(130, rel=0.05) and found["rms_steps"] < 4
+    assert found["alone"][0]["k_per_s"] == found["k_per_s"]
 
 
 def test_the_ar_fit_finds_the_resonance():
@@ -294,11 +312,11 @@ def test_predictive_steering_on_steps_of_a_fifth_of_a_second():
 
 
 def test_predictive_for_picks_the_steps_settings():
-    fast = predictive_for(0.0, 0, 8, late_s=0.1, step_s=0.2)
+    fast = predictive_for(0.0, 0, LOOPS[8], late_s=0.1, step_s=0.2)
     assert fast.step_s == 0.2 and tuple(fast.ar) == AR20_STEP_02 and fast.horizon == 20 and fast.lam == 0.2
-    assert predictive_for(0.0, 0, 8, step_s=0.2, lam=0.5).lam == 0.5
+    assert predictive_for(0.0, 0, LOOPS[8], step_s=0.2, lam=0.5).lam == 0.5
     with pytest.raises(SteeringError, match="0.5 s"):
-        predictive_for(0.0, 0, 8, step_s=0.5)
+        predictive_for(0.0, 0, LOOPS[8], step_s=0.5)
 
 
 def test_old_changes_fold_into_the_linear_tail():

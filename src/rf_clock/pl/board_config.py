@@ -27,6 +27,14 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   delay of each band relative to both chips at the bands of
                   ``measured.reference`` (``loopback_ps``); when (``scanned``,
                   ``measured``)
+``fs725``         the FS725 that clocks this board, written by
+                  ``rf_clock.checks.fs725_loop``: ``serial``, its PRS10's serial
+                  number (``ID?``), and ``identity``, the whole reply; ``gain``, the
+                  frequency lock loop's gain GA the link sets at its start; ``loops``,
+                  per GA the loop measured from FC's answer to SF steps (``k_per_s``,
+                  ``lag_s``, ``dead_s``, and ``measured``: when and how), which the
+                  predictive control law steers by.  ``rf_clock.fs725.check_config``
+                  checks a unit against it (docs/ABI.md 11.13)
 
 Example (887329260072A; the delays from results/lmx-sync-loopback-20261019)::
 
@@ -38,7 +46,9 @@ Example (887329260072A; the delays from results/lmx-sync-loopback-20261019)::
                             "loopback_ps": {"122": 0.0, "123": 7.7}},
                     "scanned": {"time": "...", "die_c": 43.1, "rf_clock": "1.3.0.6", "writes": 20},
                     "measured": {"time": "...", "die_c": 43.5, "rf_clock": "1.3.0.6",
-                                 "runs": 3, "reference": {"adc": 118, "dac": 122}}}}
+                                 "runs": 3, "reference": {"adc": 118, "dac": 122}}},
+     "fs725": {"serial": "41175", "identity": "PRS10_3.24_SN_41175", "gain": 7,
+               "loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65, "dead_s": 0.125, "measured": {...}}}}}
 """
 
 from __future__ import annotations
@@ -75,12 +85,13 @@ class BoardConfig:
     lmx_vco_band: dict[str, int] = field(default_factory=dict)
     band_table: dict[str, Any] = field(default_factory=dict)
     mts_dtc: dict[str, Any] = field(default_factory=dict)
+    fs725: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: Any, source: str = "board config") -> BoardConfig:
         if not isinstance(data, dict):
             raise BoardConfigError(f"{source}: not a JSON object")
-        unknown = set(data) - {"serial", "label", "lmx_vco_band", "band_table", "mts_dtc"}
+        unknown = set(data) - {"serial", "label", "lmx_vco_band", "band_table", "mts_dtc", "fs725"}
         if unknown:
             raise BoardConfigError(f"{source}: unknown keys {sorted(unknown)}")
         serial = data.get("serial")
@@ -104,12 +115,34 @@ class BoardConfig:
                 for kind, clocks in dtc.items()):
             raise BoardConfigError(f"{source}: mts_dtc must map adc/dac to t1/pll/offset lists of 4 values -1..127, "
                                    f"not {dtc!r}")
+        fs725 = data.get("fs725", {})
+        check_fs725(fs725, source)
         return cls(serial=serial, label=str(data.get("label", "")), lmx_vco_band=dict(bands),
-                   band_table=table, mts_dtc=dtc)
+                   band_table=table, mts_dtc=dtc, fs725=fs725)
 
     def to_json(self) -> dict[str, Any]:
         return {"serial": self.serial, "label": self.label, "lmx_vco_band": self.lmx_vco_band,
-                "band_table": self.band_table, "mts_dtc": self.mts_dtc}
+                "band_table": self.band_table, "mts_dtc": self.mts_dtc, "fs725": self.fs725}
+
+
+def check_fs725(entry: Any, source: str = "board config") -> None:
+    """BoardConfigError unless ``entry`` is empty or a valid ``fs725`` entry (module docstring)."""
+    if entry == {}:
+        return
+
+    def loop_ok(ga: str, loop: Any) -> bool:
+        return (ga.isdigit() and 0 <= int(ga) <= 10 and isinstance(loop, dict)
+                and set(loop) <= {"k_per_s", "lag_s", "dead_s", "measured"}
+                and all(type(loop.get(key)) in (int, float) for key in ("k_per_s", "lag_s", "dead_s"))
+                and loop["k_per_s"] > 0 and loop["lag_s"] > 0 and loop["dead_s"] >= 0)
+
+    loops = entry.get("loops", {}) if isinstance(entry, dict) else None
+    if (not isinstance(entry, dict) or not set(entry) <= {"serial", "identity", "gain", "loops"}
+            or not isinstance(entry.get("serial"), str) or not entry["serial"].isdigit()
+            or type(entry.get("gain")) is not int or not 0 <= entry["gain"] <= 10
+            or not isinstance(loops, dict) or not all(loop_ok(ga, loop) for ga, loop in loops.items())):
+        raise BoardConfigError(f"{source}: fs725 must hold serial (digits), gain (0-10) and loops (per gain "
+                               f"k_per_s, lag_s, dead_s, measured), not {entry!r}")
 
 
 def config_path() -> Path:

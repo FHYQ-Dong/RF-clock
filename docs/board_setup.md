@@ -83,11 +83,12 @@ It starts `rf_clock.twtt.node A` on 192.168.2.99 and `node B` on 192.168.2.101 (
 
 ### 5.1 rf-clock 2: the link, and two clocks (M5)
 
-rf-clock 2 carries the measurements in the bursts. On one reference, as above, from RF-clock-PC: `.venv/bin/python experiments/m4c_v2_link.py --seconds 60` (`--scenario` for the protocol tests; `experiments/m4c_check.py scenario results/<run>` judges a run). For M5 each board takes the 10 MHz and the 1PPS of its own FS725, and B's FS725 RS-232 goes to a USB-RS232 adapter on B's USB host (B's kernel has the FTDI driver; the port is named by `/dev/serial/by-id/`, `FS725_B` in the script). Then:
+rf-clock 2 carries the measurements in the bursts. On one reference, as above, from RF-clock-PC: `.venv/bin/python experiments/m4c_v2_link.py --seconds 60` (`--scenario` for the protocol tests; `experiments/m4c_check.py scenario results/<run>` judges a run). For M5 each board takes the 10 MHz and the 1PPS of its own FS725, and each FS725's RS-232 goes to a USB-RS232 adapter on its board's USB host (the kernel has the FTDI driver; the port is named by `/dev/serial/by-id/`, `FS725_B` in the script for B's). Then:
 
 1. Where B's PPS edge lies within its tick: `rf_clock.checks.pps_pp_scan --fs725 PORT` on B (ABI.md §13), which steps PP by 1 ns and finishes with the edge mid-tick. Pass: the edge more than about 3 ns from either sampling edge. A's edge cannot be moved this way; a theta step of 10 ns between power-ups shows it is marginal.
-2. `.venv/bin/python experiments/m4c_v2_link.py --scenario sf-step --scope --seconds 420`: B acquires A's PPS, moves its own by whole ticks, and steps its SF by 100. Pass: theta's rate changes by 100 ps/s, with the scope's two 10 MHz (C1, C2) the same.
-3. `--scenario steer --scope --seconds N`: B steers its FS725 so that theta goes to the shared-reference theta (`TARGET_NS` in the script, measured on this RF wiring).
+2. Each board's FS725 into its board config, on each board: `$run -m rf_clock.checks.fs725_loop --port PORT --gain GA --write`, GA 8 on B, which is steered, and 7 on A (ABI.md §13). It steps SF by 200 and back four times and fits the unit's frequency lock loop from FC alone, in about 3 minutes and without the link. Pass: the steps agree (k within about 25 %, which the predictive control law tolerates). From then on `m4c_link --fs725` refuses another unit and sets the unit's GA at every start (ABI.md §11.13); copy the config to `boards/<S/N>/board.json`.
+3. `.venv/bin/python experiments/m4c_v2_link.py --scenario sf-step --scope --seconds 420`: B acquires A's PPS, moves its own by whole ticks, and steps its SF by 100. Pass: theta's rate changes by 100 ps/s, with the scope's two 10 MHz (C1, C2) the same.
+4. `--scenario steer --scope --seconds N`: B steers its FS725 so that theta goes to the shared-reference theta (`TARGET_NS` in the script, measured on this RF wiring).
 
 Results go to `results/m4c-v2-<scenario>-<time>/`; `results/m5-v2-20261103/` is the first such night.
 
@@ -102,6 +103,7 @@ Results go to `results/m4c-v2-<scenario>-<time>/`; `results/m5-v2-20261103/` is 
 | PPS cable or EPG1 delay | sections 4.1, 4.2 and 5 |
 | RF cables, attenuators or filters | sections 4.6 and 5 (4.7 if on the loopback) |
 | A `PL.open()` warning about the bands or capture codes | the step it names |
+| Another FS725 on a board, or the FS725 moved to another board | section 5.1 step 2 (until then the link refuses the unit) |
 | SD card rewritten (a new PYNQ image) | sections 1 and 2, then put back `boards/<S/N>/board.json` ([boards/README.md](../boards/README.md)), or redo section 4 |
 
 ## 7. When something goes wrong
