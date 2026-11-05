@@ -47,3 +47,8 @@ Design advice must be checked against the constraints above. Suggestions that re
 - **Vivado environment:** source `/tools/Xilinx/Vivado/2024.1/settings64.sh` before invoking Vivado on `RF-clock-PC`.
 - **Syncthing:** except for Git metadata, Python caches, `.venv`, and similar excluded directories, the other source code and documentation are synchronized automatically with `~/Program/RF-clock` on `RF-clock-PC`.
 - Do not assume that generated build products or excluded cache directories are synchronized; verify their location on the machine where they are needed.
+
+## Version snapshots
+
+- **Snapshot every finished version, when the next one begins:** whenever a change calls for a new package version (docs/ABI.md §14.1), and not only when a commit is asked for, run `pwsh tools/snapshot_version.ps1` in the background before the first edit for that change. The working tree then holds the finished version that `pyproject.toml` still names: the script checks it in a worktree of its own in a temporary directory (pytest, pyright), builds its wheel into `dist/` (not in Git) beside `dist/rf_clock-<version>.json` and the log, and keeps its tree as `refs/snapshots/<version>`. Then bump the version and make the change. A failed snapshot is fixed in that version before the next one starts.
+- **Commits by version use the snapshots:** each version's commit is `git commit-tree -S -p <parent> -F <message> refs/snapshots/<version>`, in version order, so no intermediate state is rebuilt and no version is tested again at commit or release time; delete a snapshot ref (`git update-ref -d`) once its version is committed, and release a version from its wheel in `dist/`.
