@@ -253,8 +253,10 @@ class FS725:
 
     def frequency_control(self) -> tuple[int, int]:
         """FC: the crystal's tuning as the frequency lock loop sets it, (high, low) DAC; the
-        low step is about 1.5e-12 of frequency (PRS10 manual p. 24-25).  It changes every
-        0.2 s, at each of the loop's corrections; about 30 reads a second are possible."""
+        low step is 1.5e-12 of frequency by the manual's p. 24, about 1e-12 by its p. 47,
+        0.97e-12 measured on B's unit (results/fs725-fll-20261105).  It changed between
+        most reads 0.1 s apart, so more often than the loop's 0.2 s frame; about 30 reads
+        a second are possible."""
         reply = self.query("FC?")
         try:
             high, low = (int(v) for v in reply.split(","))

@@ -62,15 +62,21 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         ``--steer-late-slots N`` steers on theta over the last N slots
                         of each second (100: 0.2 s, results/predictive-steering-20261105).
 
-``--fc-every S``         on B with ``--fs725``: read the FS725's FC (the frequency lock
+``--fc-every S``         on either node with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S
                         seconds and write it as ``fc`` lines with the time on this
-                        node's PPS count; the loop changes it every 0.2 s.
+                        node's PPS count; it changes between most reads 0.1 s apart.
 
 ``--pps-out OFFSET`` turns on this node's output PPS (``rf_clock.pl.pps_out``, DAC_B) at
 OFFSET ticks after each PPS_TICK with ``--pps-out-amplitude`` (default -24000: DAC_B is
 inverted, so the leading edge rises) and ``--pps-out-idle`` between pulses (default 0),
-and puts its status into the status lines; it is left on at the end.  SYNCED stays clear.
+and puts its status into the status lines; it is left on at the end.  While it runs the
+node sets SYNCED (PPS_OUT_CONTROL: the validity line on the Pmod header and the LED) by
+``SyncedRule``: node A while its link is locked and B's packets come in; node B while
+its link is locked, the steering runs, and over the last 60 s the steering error's rms
+is below ``--synced-rms`` and its mean below ``--synced-mean``, cleared when the link
+or the steering stops or the last 10 s exceed ``--synced-clear-rms``.  SYNCED is
+cleared at the end.
 
 PASS (the link alone): locked when the engine is disabled, no lock lost after the
 first, no packet with a bad CRC, no queue entry dropped, no slot skipped after the
@@ -178,6 +184,57 @@ class SecondTheta:
         return record
 
 
+class SyncedRule:
+    """When this node's output PPS is declared synchronized (SYNCED: the validity line
+    and the LED).  Node A, the master: while its link is locked and a second brings at
+    least ``min_pairs`` pairs (B's packets come in).  Node B: the same, while the steering
+    runs, and over the last ``window_s`` seconds the steering error (theta, the mean over
+    each second, minus the target) has an rms below ``set_rms_ps`` and a mean below
+    ``set_mean_ps``; cleared when the link or the steering stops, or the last
+    ``clear_window_s`` seconds have an rms above ``clear_rms_ps``."""
+
+    def __init__(self, role_b: bool, *, set_rms_ps: float = 100.0, set_mean_ps: float = 30.0,
+                 clear_rms_ps: float = 200.0, min_pairs: int = 200, window_s: int = 60,
+                 clear_window_s: int = 10) -> None:
+        self.role_b = role_b
+        self.set_rms, self.set_mean, self.clear_rms = set_rms_ps, set_mean_ps, clear_rms_ps
+        self.min_pairs, self.window, self.clear_window = min_pairs, window_s, clear_window_s
+        self.errors: list[float] = []  # the steering error of consecutive good seconds
+        self.last_count: int | None = None
+        self.synced = False
+
+    def _change(self, synced: bool) -> bool | None:
+        if synced == self.synced:
+            return None
+        self.synced = synced
+        return synced
+
+    def second(self, record: dict, locked: bool, error_ps: float | None) -> bool | None:
+        """One second's record; ``error_ps`` is theta minus the target (None on node A or
+        without steering).  The new state when it changes, else None."""
+        good = locked and record["pairs"] >= self.min_pairs
+        consecutive = self.last_count is not None and record["count"] == self.last_count + 1
+        self.last_count = record["count"]
+        if not self.role_b:
+            return self._change(good)
+        if not good or error_ps is None:
+            self.errors = []
+            return self._change(False)
+        self.errors = (self.errors if consecutive else []) + [error_ps]
+        self.errors = self.errors[-self.window:]
+        e = np.array(self.errors)
+        if self.synced:
+            last = e[-self.clear_window:]
+            return self._change(not float(np.sqrt(np.mean(last * last))) > self.clear_rms)
+        full = e.size >= self.window
+        return self._change(full and float(np.sqrt(np.mean(e * e))) < self.set_rms and abs(float(e.mean())) < self.set_mean)
+
+    def lost(self) -> bool | None:
+        """The link lost its lock between seconds."""
+        self.errors = []
+        return self._change(False)
+
+
 class FrequencyControl:
     """This node's FS725 for ``--sf-step`` and ``--steer-target-ns`` (role B): the unit's
     1 pps PLL off, so that SF takes effect, and SF back at its starting value at the end."""
@@ -191,8 +248,10 @@ class FrequencyControl:
         status = self.unit.status()
         if not status.rb_locked:
             raise SystemExit("the FS725 is not locked to rubidium")
-        if self.unit.phase_lock():
+        self.pll_restore = False
+        if (args.sf_step or args.steer_target_ns is not None) and self.unit.phase_lock():
             self.unit.set_phase_lock(False)  # SF is ignored while it phase-locks to a 1 pps input
+            self.pll_restore = True  # back on at the end, as found
         self.sf0 = self.sf = self.unit.frequency()
         self.keep = args.keep_sf
         self.steer_module = steer
@@ -218,7 +277,7 @@ class FrequencyControl:
                 response_lag_s=args.steer_response_lag)
         emit("frequency_control", identity=self.unit.identify(), sf0=self.sf0, status=list(status.bytes),
              conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=gain)
-        mark(f"FS725 SF {self.sf0} at the start; 1 pps PLL off")
+        mark(f"FS725 SF {self.sf0} at the start; GA {gain}; 1 pps PLL {'on' if self.unit.phase_lock() else 'off'}")
 
     def set(self, sf: int, why: str, at_count: float | None = None) -> None:
         """Set SF (``at_count``: when, on this node's PPS count, for the step's fit)."""
@@ -249,6 +308,11 @@ class FrequencyControl:
                 self.set(self.sf0, "restore")
             except Exception as exc:
                 self.emit("restore_failed", reason=str(exc), sf=self.sf, sf0=self.sf0)
+        if self.pll_restore:
+            try:
+                self.unit.set_phase_lock(True)
+            except Exception as exc:
+                self.emit("restore_failed", reason=f"1 pps PLL: {exc}")
         mark(f"FS725 SF {self.sf} at the end (started at {self.sf0})")
         self.unit.close()
 
@@ -360,6 +424,12 @@ def main() -> None:
     parser.add_argument("--steer-theta-sd", type=float, default=3.0)
     parser.add_argument("--steer-response-delay", type=float, default=1.9,
                         help="s after the second that asked for it that a change of SF acts (B's FS725, 2026-11-03)")
+    parser.add_argument("--synced-rms", type=float, default=100.0, metavar="PS",
+                        help="node B with --pps-out: SYNCED once the steering error's 60 s rms is below this")
+    parser.add_argument("--synced-mean", type=float, default=30.0, metavar="PS",
+                        help="... and its 60 s mean below this")
+    parser.add_argument("--synced-clear-rms", type=float, default=200.0, metavar="PS",
+                        help="... and cleared when its 10 s rms exceeds this")
     parser.add_argument("--steer-mode", choices=("kalman", "predictive"), default="kalman",
                         help="kalman: rf_clock.twtt.steer.Steering (tau, interval); predictive: PredictiveSteering, "
                              "a correction every second from the FS725's loop model at its GA and an AR prediction")
@@ -374,7 +444,7 @@ def main() -> None:
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
     parser.add_argument("--fc-every", type=float, default=0.0, metavar="S",
-                        help="on B with --fs725: log the FS725's FC every S seconds (0.1 catches every update)")
+                        help="with --fs725: log the FS725's FC every S seconds (it changes between most reads 0.1 s apart)")
     parser.add_argument("--pps-out", type=int, default=None, metavar="OFFSET",
                         help="the output PPS on DAC_B, OFFSET ticks after each PPS_TICK")
     parser.add_argument("--pps-out-amplitude", type=int, default=-24000, help="its DAC code")
@@ -423,7 +493,8 @@ def main() -> None:
                                               "steer_response_delay", "steer_response_lag", "steer_mode",
                                               "steer_late_slots", "steer_ar", "steer_horizon", "steer_moves",
                                               "steer_lambda", "pps_out", "pps_out_amplitude",
-                                              "pps_out_idle")})
+                                              "pps_out_idle", "synced_rms", "synced_mean",
+                                              "synced_clear_rms", "fs725", "fc_every")})
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
     if time.time() < start_at:
@@ -434,11 +505,19 @@ def main() -> None:
         acquire_peer(pl, prn, taps, args, emit)
     control = None
     if args.sf_step or args.steer_target_ns is not None or args.fc_every:
-        if args.role != "B" or args.fs725 is None:
-            raise SystemExit("--sf-step, --steer-target-ns and --fc-every are for node B, with --fs725")
+        if args.fs725 is None:
+            raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
+        if args.steer_target_ns is not None and args.role != "B":
+            raise SystemExit("--steer-target-ns is for node B")
         control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second)
     seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset,
                           args.steer_late_slots)
+    synced = None
+    if args.pps_out is not None:
+        synced = SyncedRule(args.role == "B", set_rms_ps=args.synced_rms, set_mean_ps=args.synced_mean,
+                            clear_rms_ps=args.synced_clear_rms)
+        pl.pps_out.set_synced(False)
+    link_locked = False
     pl.queue.clear()
     pl.slots.configure(role_b=args.role == "B", rx_offset=rx_offset, tx_offset=args.tx_offset, packets=True)
     mark("slot engine enabled: it starts at the next PPS edge")
@@ -484,6 +563,14 @@ def main() -> None:
                     thetas.append((done["count"], done["theta_ns"] * 1000))
                     if control is not None and first_lock is not None:
                         control.second(done)
+                    if synced is not None:
+                        steering = control is not None and control.steering is not None
+                        error = (done["theta_ns"] - args.steer_target_ns) * 1000 if steering else None
+                        change = synced.second(done, link_locked, error)
+                        if change is not None:
+                            pl.pps_out.set_synced(change)
+                            emit("synced", synced=change, count=done["count"])
+                            mark(f"output PPS {'synchronized' if change else 'not synchronized'} at second {done['count']}")
                 if first_lock is not None:
                     key = (entry.pps_count, entry.slot)
                     if kind == "own":
@@ -493,6 +580,13 @@ def main() -> None:
                         peer_packets += 1
                         counted.discard(key)
         status = pl.correlator.status()
+        link_locked = status.locked
+        if synced is not None and not link_locked:
+            change = synced.lost()
+            if change is not None:
+                pl.pps_out.set_synced(False)
+                emit("synced", synced=False, reason="lock lost")
+                mark("output PPS not synchronized: lock lost")
         if status.locked and first_lock is None:
             first_lock = now
             lost_at_lock = status.lost
@@ -606,6 +700,10 @@ def main() -> None:
 
     locked_at_stop = pl.correlator.status().locked
     final = pl.correlator.status()
+    if synced is not None:
+        pl.pps_out.set_synced(False)  # this node stops measuring: it can no longer vouch for its PPS
+        if synced.synced:
+            emit("synced", synced=False, reason="end")
     pl.slots.disable()
     time.sleep(1.5)  # the engine stops at the next PPS edge; the last entries follow
     for entry in pl.queue.read():

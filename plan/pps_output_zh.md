@@ -43,7 +43,7 @@ FS725 10 MHz ──> LMK04828 ──> fabric 时钟：raw_tick ┴─> P10：在
 - **寄存器**（按实现，`docs/ABI_zh.md` 第 4.13 节，0x140 块）：PPS_OUT_CONTROL（ENABLE；SYNCED，即 ARM 的"已同步"位）、PPS_OUT_OFFSET（tick，8 到 99 999 999）、PPS_OUT_SAMPLE（0 到 7）、PPS_OUT_WIDTH（拍，1 到 65535）、PPS_OUT_AMPLITUDE（有符号 16 位），以及只读的 PPS_OUT_STATUS、PPS_OUT_CNT、PPS_OUT_FLYWHEEL_CNT 和 PPS_OUT_TICK（上一个脉冲的 tick）。改动在下一秒生效，SYNCED 立即生效。只新增寄存器：VERSION 2.0 → 2.1，rf-clock 2.1.0.0（docs/ABI_zh.md 第 14 节）。
 - **Block design**：tile 0 的数据流来自 P10，而不是接死为零。
 - **Python**：`pl.pps_out`（配置、使能、已同步位、状态）；tile 0 的基带设置从 `m2_tx_timing` 移到 `rf_clock.pl.rfdc`，由 `PL.open()` 完成；D_board 测出后存入板级配置（`/etc/rf-clock/board.json`），和其他标定常数一样。
-- **Pmod+ 排针上的有效状态线**（2026-11-04 决定）：使用输出 PPS 的其他设备必须知道什么时候不该信它。P10 驱动一个 Pmod 引脚（PMOD0_0，FPGA 引脚 AF16，J1 第 1 针），输出 PPS 无效时为高：PPS 输入没有锁定、输出在飞轮、时钟失锁、DAC tile 0 不接收数据流，或者 ARM 的"已同步"位（PPS_OUT_CONTROL）没有置位；链路锁定且修正收敛后由 ARM 置位。高电平表示无效，是因为 FPGA 不驱动这个引脚时（没有 bitstream、板子断电），NVT2008BQ 到 3.3 V 的上拉会把它拉高，所以一块无法担保自己 PPS 的板子读出来就是无效。对很少变化的电平来说，Pmod 慢的上升沿（第 3 节）无所谓。用户 LED W_LED_0（FPGA 引脚 AR11）在输出 PPS 有效时点亮。
+- **Pmod+ 排针上的有效状态线**（2026-11-04 决定）：使用输出 PPS 的其他设备必须知道什么时候不该信它。P10 驱动一个 Pmod 引脚（PMOD0_0，FPGA 引脚 AF16，J1 第 1 针），输出 PPS 无效时为高：PPS 输入没有锁定、输出在飞轮、时钟失锁、DAC tile 0 不接收数据流，或者 ARM 的"已同步"位（PPS_OUT_CONTROL）没有置位；链路锁定且修正收敛后由 ARM 置位。高电平表示无效，是因为 FPGA 不驱动这个引脚时（没有 bitstream、板子断电），NVT2008BQ 到 3.3 V 的上拉会把它拉高，所以一块无法担保自己 PPS 的板子读出来就是无效。对很少变化的电平来说，Pmod 慢的上升沿（第 3 节）无所谓。用户 LED W_LED_0（FPGA 引脚 AR11，丝印 PL_LED0）在输出 PPS 有效时点亮。
 - **不变**：链路（DAC_A，tile 2）、时隙引擎，以及作为 PPS 输入的 FS725 的 1PPS。
 
 ## 5. 怎样检验
@@ -64,6 +64,11 @@ RTL（P10 和它的测试平台，约 150 行），`p_regs.vh` / `p_defs.vh` / `
 - 没有 PPS 锁定时输出继续，靠飞轮，计数，并由第 4 节的有效状态线表示它无效。
 - 这个边沿的术语"输出 PPS"（output PPS）；已加入 `AGENTS.md` 的术语表。
 
+已决定（用户，2026-11-05）：
+
+- θ 补偿模式，等下次因为别的原因编译 bitstream 时一起加入：PPS_OUT_CONTROL 里一个默认清零的位，置位后 B 的输出沿还会按 ARM 写入的修正误差移动（沿的分数延迟，作为阶跃的第一个 beat 写入），这样输出 PPS 跟随 A 的时间尺度的精度取决于测量，而不是修正。普通模式仍是默认：此时输出沿相对节点自己的 10 MHz 位置固定，同时使用两者的设备可能依赖这一点。White Rabbit 主节点从 10 MHz 取细相位，PPS 只用来选周期，所以这个模式对它没有好处。
+- 由 `m4c_link` 置位 SYNCED（rf-clock 2.2.0.4，`SyncedRule`）：节点 A 在链路锁定、能收到 B 的测量包时置位；节点 B 在链路锁定、修正在运行，并且修正误差 60 s 的 rms 小于 100 ps、均值小于 30 ps 时置位，链路或修正停止、或 10 s 的 rms 超过 200 ps 时清除（选项 `--synced-rms`、`--synced-mean`、`--synced-clear-rms`）。阈值要按台架的数据再定：用预测控制律时，60 s 的 rms 不超过 38 ps，10 s 的 rms 不超过 68 ps。
+
 待定：
 
 1. 50 Ω 上几百 mV 的交流耦合脉冲能否作为系统的 PPS 输出，还是必须有逻辑电平的 PPS（J20 上加一个外部缓冲器，或者由同一个 P10 从 Pmod 输出一个纳秒级精度的标记）？
@@ -78,4 +83,4 @@ RTL（P10 和它的测试平台，约 150 行），`p_regs.vh` / `p_defs.vh` / `
 - rf-clock 2.2（2026-11-04）新增空闲电平 `PPS_OUT_IDLE`：取 −AMPLITUDE 时阶跃加倍，这是让边沿更陡的唯一剩下的办法；给 tile 0 更快的数据流会失去 tile 2 的 MTS（报告第 9 节）。
 - B 板上（2026-11-04，`results/pps-out-20261104/REPORT_zh.md`），第 5 节第 2 项：相对 B 的 10 MHz，输出边沿稳定在示波器每秒 7 ps 的分辨率以内，到两分钟的尺度上没有超过约 1 ps 的漂移；经过十次 PP 移动，它正好移动了 PPS_TICK 移动的整 tick 数（3.1 ps rms），而 1PPS 每次差 40-260 ps；六次 PL.open 后它在 8.7 ps 以内。DAC_B 相对 I 反相，所以负的 AMPLITUDE 给出上升的前沿（50 Ω 上约 0.19 V）。
 - 两块板，B 在修正（2026-11-04，报告第 8 节），第 5 节第 3 项：扣掉 θ 的修正误差后，输出 PPS_B − 输出 PPS_A 在两次运行里分别是 5.1666 和 5.1657 ns，每次之前两块板都 PL.open、B 重新捕获并做 PP：相差 0.9 ps，而 FS725 的 1PPS 丢了 145 ps。
-- 还没做：断电重启、更多次捕获、温度阶跃、D_board，以及修正收敛后由 ARM 置位 SYNCED（`rf_clock.checks.m4c_link`）。
+- 还没做：断电重启、更多次捕获、温度阶跃、D_board。rf-clock 2.2.0.4 起由 ARM 置位 SYNCED（第 7 节）；节点 A 在链路锁定后 LED（PL_LED0）点亮（2026-11-05，用户目视确认）。

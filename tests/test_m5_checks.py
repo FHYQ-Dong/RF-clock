@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from rf_clock.checks.m4c_link import SecondTheta
+from rf_clock.checks.m4c_link import SecondTheta, SyncedRule
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
@@ -94,3 +94,42 @@ def test_crossings_interpolate_a_toggling_step():
     assert len(found) == 2
     assert found[0] == pytest.approx(1 + 0.5 / 0.75)  # half the edges had moved two thirds into step 1 -> 2
     assert found[1] == pytest.approx(5.0)
+
+
+def test_synced_rule_on_a_follows_the_link():
+    rule = SyncedRule(role_b=False)
+    assert rule.second({"count": 1, "pairs": 250}, True, None) is True
+    assert rule.second({"count": 2, "pairs": 250}, True, None) is None  # no change
+    assert rule.second({"count": 3, "pairs": 120}, True, None) is False  # B's packets stopped coming
+    assert rule.second({"count": 4, "pairs": 250}, True, None) is True
+    assert rule.lost() is False
+
+
+def test_synced_rule_on_b_needs_a_settled_steering_error():
+    rule = SyncedRule(role_b=True, set_rms_ps=50, set_mean_ps=20, clear_rms_ps=100)
+    changes = []
+    for k in range(59):  # 59 good seconds are not enough
+        changes.append(rule.second({"count": k, "pairs": 250}, True, 30.0 * (-1) ** k))
+    assert not any(changes) and not rule.synced
+    assert rule.second({"count": 59, "pairs": 250}, True, 30.0) is True
+    for k in range(60, 69):  # a burst of large errors: the 10 s rms climbs past 100 ps
+        rule.second({"count": k, "pairs": 250}, True, 300.0 * (-1) ** k)
+    assert not rule.synced
+    assert rule.second({"count": 69, "pairs": 250}, True, None) is None  # steering stopped: stays clear
+    # a gap in the seconds starts the window again
+    for k in range(70, 130):
+        rule.second({"count": k, "pairs": 250}, True, 10.0)
+    assert rule.synced
+    assert rule.lost() is False and rule.errors == []
+    for k in range(200, 259):
+        rule.second({"count": k, "pairs": 250}, True, 10.0)
+    assert not rule.synced  # 59 consecutive seconds after the lock came back
+    rule.second({"count": 259, "pairs": 250}, True, 10.0)
+    assert rule.synced
+
+
+def test_synced_rule_on_b_refuses_a_biased_error():
+    rule = SyncedRule(role_b=True, set_rms_ps=100, set_mean_ps=30)
+    for k in range(120):
+        rule.second({"count": k, "pairs": 250}, True, 40.0)  # rms 40 < 100, but the mean 40 > 30
+    assert not rule.synced
