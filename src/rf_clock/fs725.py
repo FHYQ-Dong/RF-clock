@@ -251,6 +251,14 @@ class FS725:
         """MR: the 12-bit DAC setting of the magnetic field, from the calibration and SF."""
         return self._int("MR?")
 
+    def write_frequency(self, sf: int) -> None:
+        """Set SF without reading it back or logging it, for a law that changes it several
+        times a second; the caller logs it and checks SF now and then (``set_frequency``
+        reads back and logs)."""
+        if not isinstance(sf, int) or not -SF_LIMIT <= sf <= SF_LIMIT:
+            raise ValueError(f"SF takes -{SF_LIMIT} to {SF_LIMIT}: {sf!r}")
+        self._set("SF", sf)
+
     def frequency_control(self) -> tuple[int, int]:
         """FC: the crystal's tuning as the frequency lock loop sets it, (high, low) DAC; the
         low step is 1.5e-12 of frequency by the manual's p. 24, about 1e-12 by its p. 47,

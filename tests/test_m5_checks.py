@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from rf_clock.checks.m4c_link import SecondTheta, SyncedRule
+from rf_clock.checks.m4c_link import SecondTheta, StepTheta, SyncedRule
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
@@ -133,3 +133,17 @@ def test_synced_rule_on_b_refuses_a_biased_error():
     for k in range(120):
         rule.second({"count": k, "pairs": 250}, True, 40.0)  # rms 40 < 100, but the mean 40 > 30
     assert not rule.synced
+
+
+def test_step_theta_gives_the_late_mean_of_each_step():
+    steps = StepTheta(step_slots=100, late_slots=50, slots_per_second=500)
+    s = SecondTheta("B", 500, SLOT_TICKS, TX_OFFSET, pair_sink=steps.add)
+    for k in range(2, 500, 2):  # theta -21.5 ps in the first half of each step, -20.5 ps in the second
+        for e in entries_for_b(10, range(k, k + 1), -21_500 if k % 100 < 50 else -20_500, 292_005_000):
+            s.add(e)
+    for e in entries_for_b(11, range(2, 3), -21_500, 292_005_000):  # the next second's first pair ends step 4
+        s.add(e)
+    assert [r["step"] for r in steps.done] == [0, 1, 2, 3, 4]
+    assert [r["index"] for r in steps.done] == [50, 51, 52, 53, 54]
+    assert all(r["theta_late_ns"] == pytest.approx(-0.0205, abs=1e-9) for r in steps.done)
+    assert steps.done[0]["pairs"] == 49 and steps.done[1]["pairs"] == 50

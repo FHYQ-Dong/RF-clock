@@ -156,3 +156,13 @@ def test_align_puts_the_output_on_the_input(monkeypatch, input_ns):
     assert offset == pytest.approx(input_ns + 0.5, abs=0.6)
     assert prs.pll == 0
     assert abs((prs.input_ns - prs.output_ns + 500_000_000) % 1_000_000_000 - 500_000_000) <= 1
+
+
+def test_write_frequency_sends_sf_alone():
+    prs = FakePRS10(sf=3)
+    unit = FS725(prs)
+    unit.write_frequency(-17)
+    assert prs.sf == -17
+    assert prs.sent == ["SF-17"]  # no query before or after
+    with pytest.raises(ValueError):
+        unit.write_frequency(2001)

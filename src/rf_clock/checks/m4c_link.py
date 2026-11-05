@@ -60,7 +60,10 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         ``PredictiveSteering`` instead, with the model of the frequency
                         lock loop at the unit's GA (refused for a GA without one), and
                         ``--steer-late-slots N`` steers on theta over the last N slots
-                        of each second (100: 0.2 s, results/predictive-steering-20261105).
+                        of each step (100: 0.2 s, results/predictive-steering-20261105),
+                        and ``--steer-step 0.2`` corrects every 0.2 s instead of every
+                        second (results/two-loops-20261105): ``step`` lines, SF written
+                        without a read-back, the unit checked once a second.
 
 ``--fc-every S``         on either node with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S
@@ -132,8 +135,10 @@ class SecondTheta:
     the peer's T_rx of this node's burst one slot earlier (experiments/m4c_v2_link.py
     computes the same offline)."""
 
-    def __init__(self, role: str, slots_per_second: int, slot_ticks: int, tx_offset: int, late_slots: int = 0) -> None:
+    def __init__(self, role: str, slots_per_second: int, slot_ticks: int, tx_offset: int, late_slots: int = 0,
+                 pair_sink=None) -> None:
         self.role_a = role == "A"
+        self.pair_sink = pair_sink  # also gets (count, slot, theta_ns) of every pair
         self.slots, self.slot_ticks, self.tx_offset = slots_per_second, slot_ticks, tx_offset
         self.late_slots = late_slots  # also theta over the last this many slots of each second
         self.own: dict[tuple[int, int], int] = {}
@@ -159,6 +164,8 @@ class SecondTheta:
         m_out = (entry.t_rx_fs - own_tx) / 1e6  # ns, this node -> peer
         m_ab, m_ba = (m_out, m_in) if self.role_a else (m_in, m_out)
         self.theta.append((m_ab - m_ba) / 2)
+        if self.pair_sink is not None:
+            self.pair_sink(entry.pps_count, entry.slot, (m_ab - m_ba) / 2)
         if self.late_slots and entry.slot >= self.slots - self.late_slots:
             self.late.append((m_ab - m_ba) / 2)
         self.delay.append((m_ab + m_ba) / 2)
@@ -182,6 +189,36 @@ class SecondTheta:
         assert self.count is not None
         self.own = {k: v for k, v in self.own.items() if k[0] >= self.count}
         return record
+
+
+class StepTheta:
+    """theta over the last ``late_slots`` slots of each step of ``step_slots`` slots, for a
+    law that corrects more often than once a second: fed every pair by ``SecondTheta``, it
+    finishes a step's record when the first pair of a later step comes in (``done``)."""
+
+    def __init__(self, step_slots: int, late_slots: int, slots_per_second: int) -> None:
+        self.step_slots, self.late_slots = step_slots, late_slots
+        self.steps_per_second = slots_per_second // step_slots
+        self.key: tuple[int, int] | None = None
+        self.pairs = 0
+        self.late: list[float] = []
+        self.done: list[dict] = []
+
+    def add(self, count: int, slot: int, theta_ns: float) -> None:
+        key = (count, slot // self.step_slots)
+        if self.key is not None and key != self.key:
+            self.flush()
+        self.key = key
+        self.pairs += 1
+        if slot % self.step_slots >= self.step_slots - self.late_slots:
+            self.late.append(theta_ns)
+
+    def flush(self) -> None:
+        if self.key is not None and self.pairs:
+            count, step = self.key
+            self.done.append(dict(count=count, step=step, index=count * self.steps_per_second + step, pairs=self.pairs,
+                                  theta_late_ns=statistics.fmean(self.late) if self.late else None))
+        self.pairs, self.late = 0, []
 
 
 class SyncedRule:
@@ -239,7 +276,7 @@ class FrequencyControl:
     """This node's FS725 for ``--sf-step`` and ``--steer-target-ns`` (role B): the unit's
     1 pps PLL off, so that SF takes effect, and SF back at its starting value at the end."""
 
-    def __init__(self, args, emit, late_fraction: float = 0.0) -> None:
+    def __init__(self, args, emit, late_s: float = 0.0) -> None:
         from rf_clock.fs725 import FS725
         from rf_clock.twtt import steer
 
@@ -262,15 +299,20 @@ class FrequencyControl:
         self.keep = args.keep_sf
         self.steer_module = steer
         self.steering = None
-        self.late = late_fraction > 0  # steer on theta over the end of each second
+        self.late = late_s > 0  # steer on theta over the end of each second
+        self.step_s = args.steer_step
+        self.steps_taken = 0
         gain = self.unit.gain()
         if args.steer_target_ns is not None and args.steer_mode == "predictive":
+            overrides = {k: v for k, v in (("horizon", args.steer_horizon), ("moves", args.steer_moves),
+                                           ("lam", args.steer_lambda)) if v is not None}
+            if args.steer_ar is not None:
+                overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
             try:
                 self.steering = steer.predictive_for(
-                    args.steer_target_ns * 1000, self.sf0, gain, late_fraction=late_fraction,
-                    ar=tuple(float(a) for a in args.steer_ar.split(",")), horizon=args.steer_horizon,
-                    moves=args.steer_moves, lam=args.steer_lambda, settle_s=args.steer_settle,
-                    max_step=args.steer_max_step, max_offset=args.steer_max_offset)
+                    args.steer_target_ns * 1000, self.sf0, gain, late_s=late_s, step_s=self.step_s,
+                    settle_s=args.steer_settle, max_step=args.steer_max_step, max_offset=args.steer_max_offset,
+                    **overrides)
             except steer.SteeringError as exc:
                 self.unit.close()
                 raise SystemExit(str(exc)) from exc
@@ -293,9 +335,33 @@ class FrequencyControl:
         self.sf = sf
         self.emit("sf", sf=sf, why=why, magnetic_dac=self.unit.magnetic_dac(), at_count=at_count, change=sf - before)
 
+    def step(self, record: dict, at_count: float) -> None:
+        """One step's theta (``StepTheta``) into a law faster than a second; SF written at
+        once without a read-back (``at_count``: now on this node's PPS count, logged), the
+        unit checked once a second."""
+        if self.steering is None:
+            return
+        try:
+            theta = record["theta_late_ns"]
+            out = self.steering.step(record["index"], None if theta is None else theta * 1000)
+            out["index"] = out.pop("count")
+            self.emit("steer", count=record["count"], step=record["step"], **out)
+            if out["sf"] is not None:
+                before = self.sf
+                self.unit.write_frequency(out["sf"])
+                self.sf = out["sf"]
+                self.emit("sf", sf=self.sf, why="steer", at_count=at_count, change=self.sf - before)
+            self.steps_taken += 1
+            if self.steps_taken % round(1 / self.step_s) == 0:
+                self.steer_module.check_unit(self.unit, self.sf)
+        except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
+            self.emit("steer_stopped", reason=str(exc), sf=self.sf)
+            mark(f"steering stopped: {exc}")
+            self.steering = None
+
     def second(self, record: dict) -> None:
         """One second's theta into the steering; a correction when it is due."""
-        if self.steering is None:
+        if self.steering is None or self.step_s < 1:
             return
         try:
             theta = record.get("theta_late_ns") if self.late else record["theta_ns"]
@@ -440,12 +506,16 @@ def main() -> None:
                         help="kalman: rf_clock.twtt.steer.Steering (tau, interval); predictive: PredictiveSteering, "
                              "a correction every second from the FS725's loop model at its GA and an AR prediction")
     parser.add_argument("--steer-late-slots", type=int, default=0, metavar="N",
-                        help="steer on theta over the last N slots of each second (second lines get theta_late_ns)")
-    parser.add_argument("--steer-ar", default=",".join(str(a) for a in steer_defaults.AR4),
-                        help="predictive: AR coefficients of the frequency about its 60 s mean")
-    parser.add_argument("--steer-horizon", type=int, default=4, help="predictive: s held on the target")
-    parser.add_argument("--steer-moves", type=int, default=2, help="predictive: changes planned each second")
-    parser.add_argument("--steer-lambda", type=float, default=0.05, help="predictive: cost of a change, ps^2 per unit^2")
+                        help="steer on theta over the last N slots of each step (with 1 s steps the second "
+                             "lines get theta_late_ns)")
+    parser.add_argument("--steer-step", type=float, default=1.0, metavar="S",
+                        help=f"predictive: correct every S seconds ({sorted(steer_defaults.STEP_SETTINGS)})")
+    parser.add_argument("--steer-ar", default=None,
+                        help="predictive: AR coefficients of the frequency about its 60 s mean (default: the step's)")
+    parser.add_argument("--steer-horizon", type=int, default=None, help="predictive: steps held on the target")
+    parser.add_argument("--steer-moves", type=int, default=None, help="predictive: changes planned each step")
+    parser.add_argument("--steer-lambda", type=float, default=None,
+                        help="predictive: cost of a change, ps^2 per unit^2 (default: the step's)")
     parser.add_argument("--steer-response-lag", type=float, default=0.0,
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
@@ -497,7 +567,7 @@ def main() -> None:
                                               "steer_interval", "steer_settle", "steer_max_step",
                                               "steer_max_offset", "steer_clock_adev", "steer_theta_sd",
                                               "steer_response_delay", "steer_response_lag", "steer_mode",
-                                              "steer_late_slots", "steer_ar", "steer_horizon", "steer_moves",
+                                              "steer_late_slots", "steer_step", "steer_ar", "steer_horizon", "steer_moves",
                                               "steer_lambda", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle", "synced_rms", "synced_mean",
                                               "synced_clear_rms", "fs725", "fc_every")})
@@ -516,8 +586,17 @@ def main() -> None:
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
         control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second)
+    step_theta = None
+    if args.steer_step < 1:
+        step_slots = round(args.steer_step * pl.slots.slots_per_second)
+        if (args.steer_mode != "predictive" or args.steer_target_ns is None
+                or abs(step_slots - args.steer_step * pl.slots.slots_per_second) > 1e-9
+                or pl.slots.slots_per_second % step_slots):
+            raise SystemExit("--steer-step below 1 s is for the predictive control law, in whole slots dividing a second")
+        step_theta = StepTheta(step_slots, args.steer_late_slots, pl.slots.slots_per_second)
     seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset,
-                          args.steer_late_slots)
+                          args.steer_late_slots if args.steer_step >= 1 else 0,
+                          pair_sink=step_theta.add if step_theta is not None else None)
     synced = None
     if args.pps_out is not None:
         synced = SyncedRule(args.role == "B", set_rms_ps=args.synced_rms, set_mean_ps=args.synced_mean,
@@ -564,6 +643,11 @@ def main() -> None:
                 if not args.no_entries:
                     emit(kind, **asdict(entry))
                 done = seconds.add(entry)
+                if step_theta is not None and step_theta.done:
+                    for rec in step_theta.done:
+                        if control is not None and first_lock is not None:
+                            control.step(rec, pps_now(pl))
+                    step_theta.done = []
                 if done is not None:
                     emit("second", **done)
                     thetas.append((done["count"], done["theta_ns"] * 1000))

@@ -5,9 +5,9 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import (AR4, LOOPS, ClockFilter, LoopModel, PredictiveSteering, Steering, SteeringError,
-                                  check_unit, filter_for, fit_frequency_ar, fit_sf_response, follow, lag_phase,
-                                  predictive_for)
+from rf_clock.twtt.steer import (AR4, AR20_STEP_02, LOOPS, ClockFilter, LoopModel, PredictiveSteering, Steering,
+                                  SteeringError, check_unit, filter_for, fit_frequency_ar, fit_sf_response, follow,
+                                  lag_phase, predictive_for)
 
 
 def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float = 2e-11, theta_sd: float = 3.0,
@@ -199,7 +199,7 @@ def run_predictive(steering: PredictiveSteering, free: np.ndarray, *, skip: tupl
     model = steering.model
     asked, changes, theta = [], [], []
     for k, f in enumerate(free):
-        own = float(np.dot(changes, model.second(k - np.asarray(asked)))) if asked else 0.0
+        own = float(np.dot(changes, model.answer(k - np.asarray(asked)))) if asked else 0.0
         theta.append(f + own)
         record = steering.step(k, None if k in skip else theta[-1])
         if record["sf"] is not None:
@@ -222,11 +222,11 @@ def wandering_pair(seconds: int, seed: int = 3) -> np.ndarray:
 
 def test_the_loop_model_answers_as_the_loop():
     model = LoopModel(*LOOPS[8])
-    assert float(model.second(0)) == 0.0  # the second that asks is not touched
-    assert float(model.second(1)) < 0.2  # the next only by its last 0.85 s through the loop
-    late = float(model.second(80)) - float(model.second(79))
+    assert float(model.answer(0)) == 0.0  # the second that asks is not touched
+    assert float(model.answer(1)) < 0.2  # the next only by its last 0.85 s through the loop
+    late = float(model.answer(80)) - float(model.answer(79))
     assert late == pytest.approx(1.0, abs=1e-3)  # then a ramp of 1 ps/s per unit
-    assert float(model.second(300)) - float(model.second(299)) == pytest.approx(1.0, abs=1e-3)  # beyond the table
+    assert float(model.answer(300)) - float(model.answer(299)) == pytest.approx(1.0, abs=1e-3)  # beyond the table
 
 
 def test_predictive_steering_holds_a_wandering_pair():
@@ -265,3 +265,37 @@ def test_the_ar_fit_finds_the_resonance():
     a = fit_frequency_ar(wandering_pair(3000, seed=5), order=2, mean_window=60)
     assert a == pytest.approx(RESONANCE, abs=0.05)
     assert len(AR4) == 4
+
+
+def test_the_loop_model_on_short_steps():
+    model = LoopModel(*LOOPS[8], window=(0.1, 0.2), command_s=0.03, step_s=0.2)
+    assert float(model.answer(0)) == 0.0
+    late = float(model.answer(400)) - float(model.answer(399))
+    assert late == pytest.approx(0.2, abs=1e-3)  # 1 ps/s per unit, 0.2 s a step
+    assert float(model.answer(1000)) - float(model.answer(999)) == pytest.approx(0.2, abs=1e-3)  # beyond the table
+
+
+def test_predictive_steering_on_steps_of_a_fifth_of_a_second():
+    # the pair of wandering_pair on a 0.2 s grid: the same 6 s resonance, AR(2) per step
+    rng = np.random.default_rng(4)
+    r, w = 0.98, 2 * np.pi * 0.2 / 6
+    ar = (2 * r * np.cos(w), -r * r)
+    f = np.zeros(4000)
+    for i in range(2, f.size):
+        f[i] = ar[0] * f[i - 1] + ar[1] * f[i - 2] + rng.normal(0, 1.5)
+    free = np.cumsum((-66.0 + f) * 0.2) + 2000.0
+    steering = PredictiveSteering(target_ps=0.0, sf0=0, ar=ar, horizon=20, lam=0.2,
+                                  model=LoopModel(*LOOPS[8], window=(0.1, 0.2), command_s=0.03, step_s=0.2))
+    theta, changes = run_predictive(steering, free)
+    assert max(abs(c) for c in changes) <= steering.max_step
+    after = theta[1500:]
+    assert abs(after.mean()) < 3
+    assert np.sqrt(np.mean(after ** 2)) < 0.5 * np.std(np.diff(free[::5]))  # half the pair's second-to-second wander
+
+
+def test_predictive_for_picks_the_steps_settings():
+    fast = predictive_for(0.0, 0, 8, late_s=0.1, step_s=0.2)
+    assert fast.step_s == 0.2 and tuple(fast.ar) == AR20_STEP_02 and fast.horizon == 20 and fast.lam == 0.2
+    assert predictive_for(0.0, 0, 8, step_s=0.2, lam=0.5).lam == 0.5
+    with pytest.raises(SteeringError, match="0.5 s"):
+        predictive_for(0.0, 0, 8, step_s=0.5)

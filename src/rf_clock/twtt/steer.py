@@ -277,6 +277,16 @@ LOOPS = {7: (0.95, 1.1, 0.15), 8: (2.2, 1.2, 0.12)}
 # AR(4) of the pair's second-to-second frequency about its 60 s mean, fitted on the free
 # record results/m4c-v2-free-20261103_205954 (both FS725s at GA 7).
 AR4 = (0.852, -0.825, 0.301, -0.171)
+# AR(20) of the pair's frequency from step to step at steps of 0.2 s, theta the mean over the
+# last 0.1 s of each step, about its 60 s mean; fitted on the per-pair theta of the free record
+# results/m4c-v2-acquire-20261105_105242 (A at GA 7, B at GA 7; results/two-loops-20261105).
+AR20_STEP_02 = (0.9459, 0.1592, -0.1282, -0.0948, -0.0379, 0.0127, -0.0142, -0.0179, -0.0192, 0.0026,
+                0.0160, -0.0307, -0.0069, -0.0244, 0.0333, 0.0052, -0.0306, 0.0323, -0.0129, -0.0199)
+# The law's settings by step (s): the AR model, the horizon and the changes planned (steps), the
+# cost of a change, when a change leaves after its step ends (s), theta's window (s at the end).
+# At 0.2 s lam 0.05 oscillates when the plant answers harder than the model; 0.2 does not.
+STEP_SETTINGS = {1.0: dict(ar=AR4, horizon=4, moves=2, lam=0.05, command_s=0.15),
+                 0.2: dict(ar=AR20_STEP_02, horizon=20, moves=2, lam=0.2, command_s=0.03)}
 STEP_DT = 0.02  # s, the grid of the loop's step response
 
 
@@ -296,37 +306,47 @@ def loop_response(k: float, lag_s: float, dead_s: float, *, dt: float = STEP_DT,
 
 
 class LoopModel:
-    """theta's answer to one change of SF, as seen in the windows theta is averaged over.
+    """theta's answer to one change of SF, as seen in the windows theta is averaged over, on
+    steps of ``step_s`` (a second, or less for a faster law).
 
-    ``window``: the part of each second theta is the mean over, (0, 1) for the whole second;
-    ``command_s``: when the change leaves, after the end of the second that asked for it.
-    ``second(j)`` is the mean, over that window of second k, of the phase a unit change
-    asked for in second k - j gives (ps per SF unit)."""
+    ``window``: the part of each step theta is the mean over, in s from the step's start,
+    (0, step_s) for the whole step; ``command_s``: when the change leaves, after the end of the
+    step that asked for it.  ``answer(j)`` is the mean, over that window of step k, of the phase
+    a unit change asked for in step k - j gives (ps per SF unit)."""
 
     def __init__(self, k: float, lag_s: float, dead_s: float, *, window: tuple[float, float] = (0.0, 1.0),
-                 command_s: float = 0.15, table_s: int = 120) -> None:
+                 command_s: float = 0.15, table_s: int = 120, step_s: float = 1.0) -> None:
         y = loop_response(k, lag_s, dead_s)
         self._phase = np.concatenate([[0.0], np.cumsum(y[:-1]) * STEP_DT])
+        self._t = np.arange(self._phase.size) * STEP_DT
         self._final = float(y[-1])
-        grid = np.arange(window[0], window[1], STEP_DT)
-        self._table = np.array([float(np.mean(self.phase(j - 1 - command_s + grid))) for j in range(table_s + 1)])
+        self.step_s = step_s
+        # the window's mean from 5 ms midpoints, the phase interpolated: rounding to the 20 ms
+        # grid put times exactly half-way between grid points (0.03 s, 0.15 s after a step's
+        # end), where round-half-to-even made the table jagged from one step to the next, and
+        # the law on 0.2 s steps followed the jags (63 ps instead of 16 in the replay)
+        grid = np.arange(window[0] + 0.0025, window[1], 0.005)
+        n = int(round(table_s / step_s))
+        self._table = np.array([float(np.mean(self.phase(j * step_s - step_s - command_s + grid)))
+                                for j in range(n + 1)])
 
     def phase(self, s: np.ndarray | float) -> np.ndarray:
-        """The phase (ps) of a unit change, s seconds after it leaves."""
+        """The phase (ps) of a unit change, s seconds after it leaves (interpolated)."""
         s = np.asarray(s, dtype=float)
-        n = self._phase.size
-        i = np.clip((s / STEP_DT).round().astype(int), 0, n - 1)
-        return np.where(s <= 0, 0.0, self._phase[i] + np.clip(s - n * STEP_DT, 0, None) * self._final)
+        span = self._t[-1]
+        inside = np.interp(s, self._t, self._phase)
+        return np.where(s <= 0, 0.0, np.where(s <= span, inside, self._phase[-1] + (s - span) * self._final))
 
-    def second(self, j: np.ndarray | int) -> np.ndarray:
+    def answer(self, j: np.ndarray | int) -> np.ndarray:
         j = np.asarray(j)
         last = self._table.size - 1
-        return np.where(j <= last, self._table[np.clip(j, 0, last)], self._table[last] + (j - last) * self._final)
+        return np.where(j <= last, self._table[np.clip(j, 0, last)],
+                        self._table[last] + (j - last) * self.step_s * self._final)
 
 
 def fit_frequency_ar(theta_ps: Sequence[float] | np.ndarray, order: int = 4, mean_window: int = 60) -> tuple[float, ...]:
-    """AR(``order``) coefficients of a free record's second-to-second frequency (the
-    differences of consecutive per-second thetas) about its running ``mean_window`` mean."""
+    """AR(``order``) coefficients of a free record's frequency from step to step (the
+    differences of consecutive per-step thetas) about its running ``mean_window`` mean (steps)."""
     f = np.diff(np.asarray(theta_ps, dtype=float))
     n = f - np.array([f[max(0, i - mean_window + 1):i + 1].mean() for i in range(f.size)])
     x = np.column_stack([n[order - j - 1:n.size - j - 1] for j in range(order)])
@@ -336,45 +356,49 @@ def fit_frequency_ar(theta_ps: Sequence[float] | np.ndarray, order: int = 4, mea
 
 @dataclass
 class PredictiveSteering:
-    """The predictive control law (module docstring): ``step`` takes each second's theta
-    and returns a new SF when it changes."""
+    """The predictive control law (module docstring): ``step`` takes each step's theta (a
+    second's, or the model's shorter step's) and returns a new SF when it changes."""
 
     target_ps: float
     sf0: int
     model: LoopModel
     ar: Sequence[float] = AR4
-    horizon: int = 4  # seconds over which the predicted theta is held on the target
-    moves: int = 2  # changes of SF planned each second (the first is sent)
+    horizon: int = 4  # steps over which the predicted theta is held on the target
+    moves: int = 2  # changes of SF planned each step (the first is sent)
     lam: float = 0.05  # ps^2 per SF unit^2: the cost of a change
-    mean_window: int = 60  # s, the frequency's mean that the AR model predicts about
-    settle_s: int = 30
-    max_step: int = 100
+    mean_window: float = 60  # s, the frequency's mean that the AR model predicts about
+    settle_s: float = 30
+    max_step: int = 100  # per change
     max_offset: int = 500
-    max_saturated_s: int = 120
+    max_saturated_s: float = 120
     apply: bool = True
     sf: int = 0
     first_count: int | None = None
-    free: list[float] = field(default_factory=list)  # the free clocks' theta, one per second from first_count
-    asked: list[int] = field(default_factory=list)  # second that asked for each change
+    free: list[float] = field(default_factory=list)  # the free clocks' theta, one per step from first_count
+    asked: list[int] = field(default_factory=list)  # step that asked for each change
     changes: list[int] = field(default_factory=list)
     remainder: float = 0.0
     saturated_since: int | None = None
 
     def __post_init__(self) -> None:
         self.sf = self.sf0
+        self.step_s = self.model.step_s
         h, m = self.horizon, self.moves
-        self._g = np.array([[float(self.model.second(i - j)) for j in range(m)] for i in range(1, h + 1)])
+        self._g = np.array([[float(self.model.answer(i - j)) for j in range(m)] for i in range(1, h + 1)])
+
+    def _steps(self, seconds: float) -> int:
+        return max(1, int(round(seconds / self.step_s)))
 
     def own(self, count: int) -> float:
-        """The phase the corrections so far give theta in second ``count``."""
+        """The phase the corrections so far give theta in step ``count``."""
         if not self.asked:
             return 0.0
-        return float(np.dot(self.changes, self.model.second(count - np.asarray(self.asked))))
+        return float(np.dot(self.changes, self.model.answer(count - np.asarray(self.asked))))
 
     def _predict(self, steps: int) -> list[float]:
-        """The free frequency of the next ``steps`` seconds."""
-        f = np.diff(self.free)
-        mean = float(f[-self.mean_window:].mean())
+        """The free frequency (ps/s) of the next ``steps`` steps."""
+        f = np.diff(self.free) / self.step_s
+        mean = float(f[-self._steps(self.mean_window):].mean())
         p = len(self.ar)
         noise = list(f[-p:] - mean)
         out = []
@@ -392,20 +416,20 @@ class PredictiveSteering:
             self.first_count = count
             record["event"] = "started"
         index = count - self.first_count
-        if index < len(self.free):  # a second already taken (or an earlier one): nothing to do
+        if index < len(self.free):  # a step already taken (or an earlier one): nothing to do
             record["event"] = "second already taken"
             return record
-        while len(self.free) < index:  # seconds without theta: the free clocks as predicted
-            self.free.append(self.free[-1] + (self._predict(1)[0] if len(self.free) > len(self.ar) + 1 else 0.0))
+        while len(self.free) < index:  # steps without theta: the free clocks as predicted
+            self.free.append(self._next_free())
         if theta_ps is None:
             if self.free:
-                self.free.append(self.free[-1] + (self._predict(1)[0] if len(self.free) > len(self.ar) + 1 else 0.0))
+                self.free.append(self._next_free())
             return record
         self.free.append(theta_ps - self.own(count))
         record["free_ps"] = self.free[-1]
-        if index < max(self.settle_s, len(self.ar) + 2):
+        if index < max(self._steps(self.settle_s), len(self.ar) + 2):
             return record
-        free_pred = self.free[-1] + np.cumsum(self._predict(self.horizon))
+        free_pred = self.free[-1] + np.cumsum(self._predict(self.horizon)) * self.step_s
         error = free_pred + np.array([self.own(count + i) for i in range(1, self.horizon + 1)]) - self.target_ps
         a = np.vstack([self._g, np.sqrt(self.lam) * np.eye(self.moves)])
         b = np.concatenate([-error, np.zeros(self.moves)])
@@ -419,9 +443,9 @@ class PredictiveSteering:
             self.saturated_since = None
         else:
             self.saturated_since = count if self.saturated_since is None else self.saturated_since
-            if count - self.saturated_since >= self.max_saturated_s:
+            if count - self.saturated_since >= self._steps(self.max_saturated_s):
                 raise SteeringError(f"SF held at {sf}, the end of {self.sf0} +- {self.max_offset}, for "
-                                    f"{count - self.saturated_since} s: the reference cannot be followed")
+                                    f"{(count - self.saturated_since) * self.step_s:.0f} s: the reference cannot be followed")
         if not self.apply:
             return record
         self.remainder = max(-0.5, min(0.5, wanted - sf)) if sf == round(wanted) else 0.0
@@ -432,14 +456,28 @@ class PredictiveSteering:
             self.sf = sf
         return record
 
+    def _next_free(self) -> float:
+        """The free clocks' theta of a step without a measurement, as predicted."""
+        if len(self.free) > len(self.ar) + 1:
+            return self.free[-1] + self._predict(1)[0] * self.step_s
+        return self.free[-1]
 
-def predictive_for(target_ps: float, sf0: int, ga: int, *, late_fraction: float = 0.0, **kwargs: Any) -> PredictiveSteering:
-    """A ``PredictiveSteering`` with the loop model of gain ``ga`` (``LOOPS``) and theta the
-    mean over the last ``late_fraction`` of each second (0: the whole second)."""
+
+def predictive_for(target_ps: float, sf0: int, ga: int, *, late_s: float = 0.0, step_s: float = 1.0,
+                   **kwargs: Any) -> PredictiveSteering:
+    """A ``PredictiveSteering`` on steps of ``step_s`` (1 s, or 0.2 s: ``STEP_SETTINGS``) with
+    the loop model of gain ``ga`` (``LOOPS``) and theta the mean over the last ``late_s`` of
+    each step (0: the whole step); ``kwargs`` override the step's settings."""
     if ga not in LOOPS:
         raise SteeringError(f"no model of the FS725's frequency lock loop at GA {ga} (known: {sorted(LOOPS)})")
-    window = (1.0 - late_fraction, 1.0) if late_fraction else (0.0, 1.0)
-    return PredictiveSteering(target_ps=target_ps, sf0=sf0, model=LoopModel(*LOOPS[ga], window=window), **kwargs)
+    if step_s not in STEP_SETTINGS:
+        raise SteeringError(f"no settings for steps of {step_s} s (known: {sorted(STEP_SETTINGS)})")
+    settings = dict(STEP_SETTINGS[step_s])
+    command_s = settings.pop("command_s")
+    settings.update(kwargs)
+    window = (step_s - late_s, step_s) if late_s else (0.0, step_s)
+    model = LoopModel(*LOOPS[ga], window=window, command_s=command_s, step_s=step_s)
+    return PredictiveSteering(target_ps=target_ps, sf0=sf0, model=model, **settings)
 
 
 def fit_sf_response(counts: Sequence[float], theta_ps: Sequence[float], at_count: float, *,
