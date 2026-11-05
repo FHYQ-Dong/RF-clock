@@ -122,12 +122,14 @@ class SecondTheta:
     the peer's T_rx of this node's burst one slot earlier (experiments/m4c_v2_link.py
     computes the same offline)."""
 
-    def __init__(self, role: str, slots_per_second: int, slot_ticks: int, tx_offset: int) -> None:
+    def __init__(self, role: str, slots_per_second: int, slot_ticks: int, tx_offset: int, late_slots: int = 0) -> None:
         self.role_a = role == "A"
         self.slots, self.slot_ticks, self.tx_offset = slots_per_second, slot_ticks, tx_offset
+        self.late_slots = late_slots  # also theta over the last this many slots of each second
         self.own: dict[tuple[int, int], int] = {}
         self.count: int | None = None
         self.theta: list[float] = []
+        self.late: list[float] = []
         self.delay: list[float] = []
 
     def add(self, entry: OwnMeasurement | PeerPacket) -> dict | None:
@@ -147,6 +149,8 @@ class SecondTheta:
         m_out = (entry.t_rx_fs - own_tx) / 1e6  # ns, this node -> peer
         m_ab, m_ba = (m_out, m_in) if self.role_a else (m_in, m_out)
         self.theta.append((m_ab - m_ba) / 2)
+        if self.late_slots and entry.slot >= self.slots - self.late_slots:
+            self.late.append((m_ab - m_ba) / 2)
         self.delay.append((m_ab + m_ba) / 2)
         return done
 
@@ -162,7 +166,9 @@ class SecondTheta:
                       theta_pair_sd_ps=statistics.stdev(steps) / 2 ** 0.5 * 1000 if n > 2 else None,
                       delay_ns=statistics.fmean(self.delay),
                       delay_sd_ps=statistics.stdev(self.delay) * 1000 if n > 1 else None)
-        self.theta, self.delay = [], []
+        if self.late_slots:
+            record["theta_late_ns"] = statistics.fmean(self.late) if self.late else None
+        self.theta, self.late, self.delay = [], [], []
         assert self.count is not None
         self.own = {k: v for k, v in self.own.items() if k[0] >= self.count}
         return record
@@ -172,7 +178,7 @@ class FrequencyControl:
     """This node's FS725 for ``--sf-step`` and ``--steer-target-ns`` (role B): the unit's
     1 pps PLL off, so that SF takes effect, and SF back at its starting value at the end."""
 
-    def __init__(self, args, emit) -> None:
+    def __init__(self, args, emit, late_fraction: float = 0.0) -> None:
         from rf_clock.fs725 import FS725
         from rf_clock.twtt import steer
 
@@ -187,7 +193,19 @@ class FrequencyControl:
         self.keep = args.keep_sf
         self.steer_module = steer
         self.steering = None
-        if args.steer_target_ns is not None:
+        self.late = late_fraction > 0  # steer on theta over the end of each second
+        gain = self.unit.gain()
+        if args.steer_target_ns is not None and args.steer_mode == "predictive":
+            try:
+                self.steering = steer.predictive_for(
+                    args.steer_target_ns * 1000, self.sf0, gain, late_fraction=late_fraction,
+                    ar=tuple(float(a) for a in args.steer_ar.split(",")), horizon=args.steer_horizon,
+                    moves=args.steer_moves, lam=args.steer_lambda, settle_s=args.steer_settle,
+                    max_step=args.steer_max_step, max_offset=args.steer_max_offset)
+            except steer.SteeringError as exc:
+                self.unit.close()
+                raise SystemExit(str(exc)) from exc
+        elif args.steer_target_ns is not None:
             self.steering = steer.Steering(
                 target_ps=args.steer_target_ns * 1000, sf0=self.sf0,
                 filter=steer.filter_for(args.steer_clock_adev, args.steer_theta_sd), tau_s=args.steer_tau,
@@ -195,7 +213,7 @@ class FrequencyControl:
                 max_offset=args.steer_max_offset, response_delay_s=args.steer_response_delay,
                 response_lag_s=args.steer_response_lag)
         emit("frequency_control", identity=self.unit.identify(), sf0=self.sf0, status=list(status.bytes),
-             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=self.unit.gain())
+             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=gain)
         mark(f"FS725 SF {self.sf0} at the start; 1 pps PLL off")
 
     def set(self, sf: int, why: str, at_count: float | None = None) -> None:
@@ -211,7 +229,8 @@ class FrequencyControl:
         if self.steering is None:
             return
         try:
-            out = self.steering.step(record["count"], record["theta_ns"] * 1000)
+            theta = record.get("theta_late_ns") if self.late else record["theta_ns"]
+            out = self.steering.step(record["count"], None if theta is None else theta * 1000)
             self.emit("steer", **out)
             if out["sf"] is not None:
                 self.set(out["sf"], "steer")
@@ -294,6 +313,8 @@ def acquire_peer(pl, prn, taps, args, emit) -> None:
 
 
 def main() -> None:
+    from rf_clock.twtt import steer as steer_defaults
+
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--role", choices=("A", "B"), required=True)
     parser.add_argument("--seconds", type=int, default=60)
@@ -335,6 +356,16 @@ def main() -> None:
     parser.add_argument("--steer-theta-sd", type=float, default=3.0)
     parser.add_argument("--steer-response-delay", type=float, default=1.9,
                         help="s after the second that asked for it that a change of SF acts (B's FS725, 2026-11-03)")
+    parser.add_argument("--steer-mode", choices=("kalman", "predictive"), default="kalman",
+                        help="kalman: rf_clock.twtt.steer.Steering (tau, interval); predictive: PredictiveSteering, "
+                             "a correction every second from the FS725's loop model at its GA and an AR prediction")
+    parser.add_argument("--steer-late-slots", type=int, default=0, metavar="N",
+                        help="steer on theta over the last N slots of each second (second lines get theta_late_ns)")
+    parser.add_argument("--steer-ar", default=",".join(str(a) for a in steer_defaults.AR4),
+                        help="predictive: AR coefficients of the frequency about its 60 s mean")
+    parser.add_argument("--steer-horizon", type=int, default=4, help="predictive: s held on the target")
+    parser.add_argument("--steer-moves", type=int, default=2, help="predictive: changes planned each second")
+    parser.add_argument("--steer-lambda", type=float, default=0.05, help="predictive: cost of a change, ps^2 per unit^2")
     parser.add_argument("--steer-response-lag", type=float, default=0.0,
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
@@ -385,7 +416,9 @@ def main() -> None:
                                               "sf_step_at", "sf_step_for", "steer_target_ns", "steer_tau",
                                               "steer_interval", "steer_settle", "steer_max_step",
                                               "steer_max_offset", "steer_clock_adev", "steer_theta_sd",
-                                              "steer_response_delay", "steer_response_lag", "pps_out", "pps_out_amplitude",
+                                              "steer_response_delay", "steer_response_lag", "steer_mode",
+                                              "steer_late_slots", "steer_ar", "steer_horizon", "steer_moves",
+                                              "steer_lambda", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle")})
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
@@ -399,8 +432,9 @@ def main() -> None:
     if args.sf_step or args.steer_target_ns is not None or args.fc_every:
         if args.role != "B" or args.fs725 is None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every are for node B, with --fs725")
-        control = FrequencyControl(args, emit)
-    seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset)
+        control = FrequencyControl(args, emit, args.steer_late_slots / pl.slots.slots_per_second)
+    seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset,
+                          args.steer_late_slots)
     pl.queue.clear()
     pl.slots.configure(role_b=args.role == "B", rx_offset=rx_offset, tx_offset=args.tx_offset, packets=True)
     mark("slot engine enabled: it starts at the next PPS edge")

@@ -55,6 +55,23 @@ def test_second_theta_gives_theta_and_delay_per_second():
     assert records[0]["theta_pair_sd_ps"] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_second_theta_over_the_last_slots():
+    s = SecondTheta("B", 500, SLOT_TICKS, TX_OFFSET, late_slots=100)
+    for k in range(2, 500, 2):  # theta -21.5 ps before slot 400, -20.5 ps from it on
+        for e in entries_for_b(10, range(k, k + 1), -21_500 if k < 400 else -20_500, 292_005_000):
+            s.add(e)
+    r = s.flush()
+    assert r is not None
+    assert r["theta_late_ns"] == pytest.approx(-0.0205, abs=1e-9)
+    assert r["theta_ns"] == pytest.approx((199 * -0.0215 + 50 * -0.0205) / 249, abs=1e-9)
+    assert SecondTheta("B", 500, SLOT_TICKS, TX_OFFSET).flush() is None
+    s = SecondTheta("B", 500, SLOT_TICKS, TX_OFFSET, late_slots=100)
+    for e in entries_for_b(11, range(2, 100, 2), -21_500, 292_005_000):  # nothing in the last 100 slots
+        s.add(e)
+    r = s.flush()
+    assert r is not None and r["theta_late_ns"] is None
+
+
 def test_second_theta_skips_unlocked_windows_and_packets_without_a_measurement():
     s = SecondTheta("A", 500, SLOT_TICKS, TX_OFFSET)
     s.add(own(5, 3, 1, locked=False))

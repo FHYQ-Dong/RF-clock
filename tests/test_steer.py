@@ -5,8 +5,9 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import (ClockFilter, Steering, SteeringError, check_unit, filter_for, fit_sf_response, follow,
-                                  lag_phase)
+from rf_clock.twtt.steer import (AR4, LOOPS, ClockFilter, LoopModel, PredictiveSteering, Steering, SteeringError,
+                                  check_unit, filter_for, fit_frequency_ar, fit_sf_response, follow, lag_phase,
+                                  predictive_for)
 
 
 def run(steering: Steering, seconds: int, *, x0: float, y0: float, adev: float = 2e-11, theta_sd: float = 3.0,
@@ -190,3 +191,69 @@ def test_the_response_to_an_sf_step_is_fitted(delay):
 
 def test_a_fit_needs_seconds_on_both_sides():
     assert fit_sf_response(range(40), [0.0] * 40, 35.0) is None
+
+
+def run_predictive(steering: PredictiveSteering, free: np.ndarray, *, skip: tuple[int, ...] = ()) -> tuple[np.ndarray, list]:
+    """theta of every second for free clocks ``free`` (ps per second), the plant answering
+    exactly as the steering's model; the changes of SF made."""
+    model = steering.model
+    asked, changes, theta = [], [], []
+    for k, f in enumerate(free):
+        own = float(np.dot(changes, model.second(k - np.asarray(asked)))) if asked else 0.0
+        theta.append(f + own)
+        record = steering.step(k, None if k in skip else theta[-1])
+        if record["sf"] is not None:
+            asked.append(k)
+            changes.append(record["sf"] - (steering.sf0 + sum(changes)))
+    return np.array(theta), changes
+
+
+RESONANCE = (2 * 0.9 * np.cos(2 * np.pi / 6), -0.81)  # AR(2) of a 6 s resonance, as the bench pair's wander
+
+
+def wandering_pair(seconds: int, seed: int = 3) -> np.ndarray:
+    """A pair 66 ps/s apart whose frequency wanders with a 6 s resonance, as on the bench."""
+    rng = np.random.default_rng(seed)
+    f = np.zeros(seconds)
+    for k in range(2, seconds):
+        f[k] = RESONANCE[0] * f[k - 1] + RESONANCE[1] * f[k - 2] + rng.normal(0, 8.0)
+    return np.cumsum(-66.0 + f)
+
+
+def test_the_loop_model_answers_as_the_loop():
+    model = LoopModel(*LOOPS[8])
+    assert float(model.second(0)) == 0.0  # the second that asks is not touched
+    assert float(model.second(1)) < 0.2  # the next only by its last 0.85 s through the loop
+    late = float(model.second(80)) - float(model.second(79))
+    assert late == pytest.approx(1.0, abs=1e-3)  # then a ramp of 1 ps/s per unit
+    assert float(model.second(300)) - float(model.second(299)) == pytest.approx(1.0, abs=1e-3)  # beyond the table
+
+
+def test_predictive_steering_holds_a_wandering_pair():
+    # 3 ns off at the start; with the resonance known, theta holds to about 1.3 times the pair's
+    # second-to-second wander (Steering at tau 5 s, every 2 s: 1.6 times; no prediction: 2.0 times)
+    free = wandering_pair(900) + 3000.0
+    steering = PredictiveSteering(target_ps=0.0, sf0=3, model=LoopModel(*LOOPS[8]), ar=RESONANCE)
+    theta, changes = run_predictive(steering, free)
+    assert max(abs(c) for c in changes) <= steering.max_step
+    after = theta[300:]
+    assert abs(after.mean()) < 3
+    assert np.sqrt(np.mean(after ** 2)) < 1.4 * np.std(np.diff(free))
+
+
+def test_predictive_steering_rides_over_missing_seconds():
+    free = wandering_pair(600)
+    steering = PredictiveSteering(target_ps=float(free[0]), sf0=0, model=LoopModel(*LOOPS[7]), ar=RESONANCE)
+    theta, _ = run_predictive(steering, free, skip=(100, 101, 250, 320))
+    assert np.sqrt(np.mean((theta[330:] - free[0]) ** 2)) < 1.6 * np.std(np.diff(free))
+
+
+def test_predictive_needs_a_known_gain():
+    with pytest.raises(SteeringError, match="GA 5"):
+        predictive_for(0.0, 0, 5)
+
+
+def test_the_ar_fit_finds_the_resonance():
+    a = fit_frequency_ar(wandering_pair(3000, seed=5), order=2, mean_window=60)
+    assert a == pytest.approx(RESONANCE, abs=0.05)
+    assert len(AR4) == 4
