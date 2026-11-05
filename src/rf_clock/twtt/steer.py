@@ -86,6 +86,7 @@ import json
 import signal
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Sequence
 
@@ -337,11 +338,22 @@ class LoopModel:
         inside = np.interp(s, self._t, self._phase)
         return np.where(s <= 0, 0.0, np.where(s <= span, inside, self._phase[-1] + (s - span) * self._final))
 
+    @property
+    def last(self) -> int:
+        """The last step of the table; beyond it the answer grows linearly."""
+        return self._table.size - 1
+
     def answer(self, j: np.ndarray | int) -> np.ndarray:
         j = np.asarray(j)
-        last = self._table.size - 1
+        last = self.last
         return np.where(j <= last, self._table[np.clip(j, 0, last)],
                         self._table[last] + (j - last) * self.step_s * self._final)
+
+    def tail(self, count: int, total: float, moment: float) -> float:
+        """The summed answer in step ``count`` of changes all older than the table: ``total``
+        the sum of the changes, ``moment`` the sum of each change times its step."""
+        rate = self.step_s * self._final
+        return total * (float(self._table[self.last]) - self.last * rate) + rate * (count * total - moment)
 
 
 def fit_frequency_ar(theta_ps: Sequence[float] | np.ndarray, order: int = 4, mean_window: int = 60) -> tuple[float, ...]:
@@ -375,8 +387,10 @@ class PredictiveSteering:
     sf: int = 0
     first_count: int | None = None
     free: list[float] = field(default_factory=list)  # the free clocks' theta, one per step from first_count
-    asked: list[int] = field(default_factory=list)  # step that asked for each change
-    changes: list[int] = field(default_factory=list)
+    asked: deque = field(default_factory=deque)  # step that asked for each change within the model's table
+    changes: deque = field(default_factory=deque)
+    old_total: float = 0.0  # the changes older than the table, summed (their answer is linear: LoopModel.tail)
+    old_moment: float = 0.0  # ... each times its step
     remainder: float = 0.0
     saturated_since: int | None = None
 
@@ -390,15 +404,37 @@ class PredictiveSteering:
         return max(1, int(round(seconds / self.step_s)))
 
     def own(self, count: int) -> float:
-        """The phase the corrections so far give theta in step ``count``."""
-        if not self.asked:
-            return 0.0
-        return float(np.dot(self.changes, self.model.answer(count - np.asarray(self.asked))))
+        """The phase the corrections so far give theta in step ``count``, the last step taken
+        or a later one (older changes are folded for those)."""
+        total = self.model.tail(count, self.old_total, self.old_moment) if self.old_total or self.old_moment else 0.0
+        if self.asked:
+            total += float(np.dot(self.changes, self.model.answer(count - np.asarray(self.asked))))
+        return total
+
+    def _own_ahead(self, count: int) -> np.ndarray:
+        """``own`` for the ``horizon`` steps after ``count``, in one product."""
+        ahead = count + np.arange(1, self.horizon + 1)
+        rate = self.model.step_s * self.model._final
+        out = (self.old_total * (float(self.model.answer(self.model.last)) - self.model.last * rate)
+               + rate * (ahead * self.old_total - self.old_moment))
+        if self.asked:
+            out = out + self.model.answer(ahead[:, None] - np.asarray(self.asked)[None, :]) @ np.asarray(self.changes)
+        return out
+
+    def _fold(self, count: int) -> None:
+        """Move changes that no future step will see within the table into the linear sums,
+        so that ``own`` costs the same at any age (at 0.2 s steps it summed every change since
+        the start, and after 13 minutes the node fell behind its queue)."""
+        while self.asked and count - self.asked[0] > self.model.last + self.horizon + 1:
+            asked, change = self.asked.popleft(), self.changes.popleft()
+            self.old_total += change
+            self.old_moment += change * asked
 
     def _predict(self, steps: int) -> list[float]:
         """The free frequency (ps/s) of the next ``steps`` steps."""
-        f = np.diff(self.free) / self.step_s
-        mean = float(f[-self._steps(self.mean_window):].mean())
+        n = self._steps(self.mean_window)
+        f = np.diff(self.free[-(n + len(self.ar) + 1):]) / self.step_s
+        mean = float(f[-n:].mean())
         p = len(self.ar)
         noise = list(f[-p:] - mean)
         out = []
@@ -425,12 +461,13 @@ class PredictiveSteering:
             if self.free:
                 self.free.append(self._next_free())
             return record
+        self._fold(count)
         self.free.append(theta_ps - self.own(count))
         record["free_ps"] = self.free[-1]
         if index < max(self._steps(self.settle_s), len(self.ar) + 2):
             return record
         free_pred = self.free[-1] + np.cumsum(self._predict(self.horizon)) * self.step_s
-        error = free_pred + np.array([self.own(count + i) for i in range(1, self.horizon + 1)]) - self.target_ps
+        error = free_pred + self._own_ahead(count) - self.target_ps
         a = np.vstack([self._g, np.sqrt(self.lam) * np.eye(self.moves)])
         b = np.concatenate([-error, np.zeros(self.moves)])
         plan, *_ = np.linalg.lstsq(a, b, rcond=None)

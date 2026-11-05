@@ -299,3 +299,24 @@ def test_predictive_for_picks_the_steps_settings():
     assert predictive_for(0.0, 0, 8, step_s=0.2, lam=0.5).lam == 0.5
     with pytest.raises(SteeringError, match="0.5 s"):
         predictive_for(0.0, 0, 8, step_s=0.5)
+
+
+def test_old_changes_fold_into_the_linear_tail():
+    # a long run at 0.2 s steps with a short table: the folded own() equals the sum over every
+    # change made, whose steps this loop keeps itself
+    rng = np.random.default_rng(2)
+    free = np.cumsum((-66.0 + rng.normal(0, 8.0, 3000)) * 0.2)
+    model = LoopModel(*LOOPS[8], window=(0.1, 0.2), command_s=0.03, step_s=0.2, table_s=20)
+    steering = PredictiveSteering(target_ps=0.0, sf0=0, ar=(0.5,), horizon=20, lam=0.2, model=model)
+    asked, changes, sf = [], [], 0
+    for k, f in enumerate(free):
+        own = float(np.dot(changes, model.answer(k - np.asarray(asked)))) if asked else 0.0
+        record = steering.step(k, f + own)
+        if record["sf"] is not None:
+            asked.append(k)
+            changes.append(record["sf"] - sf)
+            sf = record["sf"]
+    assert steering.old_total != 0 and len(steering.asked) < len(changes)  # some folded
+    for k in (2999, 3010, 3100):  # own() holds for the last step taken and later ones
+        brute = float(np.dot(changes, model.answer(k - np.asarray(asked))))
+        assert steering.own(k) == pytest.approx(brute, abs=1e-6)
