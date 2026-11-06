@@ -12,6 +12,8 @@ Each directory holds a copy of one board's `/etc/rf-clock/board.json`, named by 
 
 887329260072A is node A of the bench and 8873292600AB node B (since 2026-11-03). 8873292600AB and 887329260101 have no band delays in their band tables yet: they need their own loopback cables (docs/board_setup.md section 4.7).
 
+**The FS725s' own settings** ([887329260072A/fs725-41175-20261106.json](887329260072A/fs725-41175-20261106.json), [8873292600AB/fs725-107129-20261106.json](8873292600AB/fs725-107129-20261106.json)): every query the PRS10 inside each board's FS725 answers (`docs/PRS10m.pdf` section 6, "Abridged Command List": identity and serial number, the frequency lock loop, the magnetic field, the 1PPS settings, the DACs SD0-SD7, the analog channels AD0-AD19), each running value (`XX?`) beside the one stored in the unit's EEPROM (`XX!?`), read with queries only on 2026-11-06, for when a unit goes to other use. rf-clock sends no command that writes the EEPROM (no `!`), so a power cycle puts each unit back to its `!?` values. On that date the running values differed from them only where the link sets them, all on B's unit: GA 8 (EEPROM 7), its 1 pps phase lock off (on), and the 1 pps delay DAC SD1 at 68 (128), moved by `--acquire`'s PP; FC, the crystal's tuning, belongs to the loop and wanders. `RS?` gets no answer from either unit. To read a unit again, send the same queries with `rf_clock.fs725.FS725.query`.
+
 **Putting a copy back** (after the SD card was rewritten): the `serial` in the file must be the board's, which `PL.open()` checks anyway:
 
 ```bash

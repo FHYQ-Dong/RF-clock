@@ -96,8 +96,13 @@ at ``--pps-out-comp-at`` of B's second (0.94), theta of the newest pairs (the la
 ``--pps-out-comp-window`` seconds, 0.02) is carried to the next edge by theta's rate over
 the last second, and P10's fraction is set so that the edge moves by theta - theta0:
 ``--pps-out-base-frac`` (32768, half a sample) plus the delay over ``--pps-out-ps-per-frac``
-(ps per unit of the fraction, calibrated on the scope; the default is one 1.25 ns sample
-over 2^16).  ``pps_comp`` lines log each edge's fraction and delay; FRAC is cleared at the end.
+(ps per unit of the fraction about the base, calibrated on the scope with
+experiments/m5_pps_frac.py; the default, 0.0275, is board 8873292600AB's of 2026-11-05,
+good to 2 ps within 4096 units, 113 ps, of the base: the edge moves along an S-shaped curve,
+steepest there, docs/ABI.md 4.13).  ``pps_comp`` lines log each edge's fraction and delay;
+FRAC is cleared at the end.  B's output PPS then no longer keeps a fixed place against B's
+10 MHz: it moves against it by the steering error, so equipment that times one against the
+other sees that error (docs/ABI.md 4.13).
 
 PASS (the link alone): locked when the engine is disabled, no lock lost after the
 first, no packet with a bad CRC, no queue entry dropped, no slot skipped after the
@@ -312,8 +317,8 @@ def main() -> None:
     parser.add_argument("--pps-out-idle", type=int, default=0, help="its DAC code between pulses (2.2)")
     parser.add_argument("--pps-out-comp", action="store_true",
                         help="node B: move the output edge by theta's steering error before each edge (2.3)")
-    parser.add_argument("--pps-out-ps-per-frac", type=float, default=1250.0 / 65536, metavar="PS",
-                        help="the edge's delay per unit of P10's fraction (calibrated on the scope)")
+    parser.add_argument("--pps-out-ps-per-frac", type=float, default=0.0275, metavar="PS",
+                        help="the edge's delay per unit of P10's fraction about the base (calibrated on the scope)")
     parser.add_argument("--pps-out-base-frac", type=int, default=0x8000, help="the fraction at zero steering error")
     parser.add_argument("--pps-out-comp-at", type=float, default=0.94, metavar="S",
                         help="when in B's second the fraction for the next edge is written")

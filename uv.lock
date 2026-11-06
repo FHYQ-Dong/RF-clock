@@ -1383,7 +1383,7 @@ wheels = [
 
 [[package]]
 name = "rf-clock"
-version = "2.3.0.0"
+version = "2.3.0.1"
 source = { editable = "." }
 default-groups = ["dev", "instruments", "plot"]
 dependencies = [
