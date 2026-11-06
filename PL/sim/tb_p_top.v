@@ -225,7 +225,7 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0002_0002, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0002_0003, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");
@@ -323,6 +323,12 @@ module tb_p_top;
         rd(REG_PPS_OUT_IDLE, v); check(v == 0, "PPS_OUT_IDLE reset value");
         wr(REG_PPS_OUT_IDLE, 32'hABCD_0123);
         rd(REG_PPS_OUT_IDLE, v); check(v == 32'h0123, "PPS_OUT_IDLE keeps 16 bits");
+        rd(REG_PPS_OUT_FRAC, v); check(v == 0, "PPS_OUT_FRAC reset value");
+        wr(REG_PPS_OUT_FRAC, 32'hABCD_8000);
+        rd(REG_PPS_OUT_FRAC, v); check(v == 32'h8000, "PPS_OUT_FRAC keeps 16 bits");
+        wr(REG_PPS_OUT_CONTROL, 32'hFFFF_FFFF);
+        rd(REG_PPS_OUT_CONTROL, v); check(v == 32'h7, "PPS_OUT_CONTROL keeps 3 bits");
+        wr(REG_PPS_OUT_CONTROL, 32'h0);
         rd(REG_PPS_OUT_OFFSET, v); check(v == 50, "PPS_OUT_OFFSET readback");
         rd(REG_PPS_OUT_SAMPLE, v); check(v == 2, "PPS_OUT_SAMPLE readback");
         rd(REG_PPS_OUT_WIDTH, v); check(v == 3, "PPS_OUT_WIDTH readback");

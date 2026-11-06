@@ -1,16 +1,20 @@
 """What one rf-clock 2 node does with its theta besides logging it: its FS725 (the check
-against the board config, SF steps and steering) and the output PPS's SYNCED.
+against the board config, SF steps and steering), the output PPS's SYNCED, and on node B
+the theta-compensated output PPS.
 
 ``configure_fs725`` checks the node's FS725 against the board config at the start of a run
 and sets its gain (``rf_clock.fs725.check_config``); ``FrequencyControl`` holds the unit for
 the run: the 1 pps PLL off so that SF takes effect, SF handed over from the calibration pot,
 each second's or step's theta into the control law, SF back at the end; ``SyncedRule``
-decides when the output PPS is declared synchronized.  ``rf_clock.checks.m4c_link`` drives
-them (docs/ABI.md 11.12, 13).
+decides when the output PPS is declared synchronized; ``EdgeCompensation`` gives, before
+each PPS edge, the fractional delay of B's output edge that makes it follow A's time scale
+to the measurement rather than to the steering.  ``rf_clock.checks.m4c_link`` drives them
+(docs/ABI.md 11.12, 13).
 """
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable, Protocol
 
 import numpy as np
@@ -201,3 +205,49 @@ class SyncedRule:
         """The link lost its lock between seconds."""
         self.errors = []
         return self._change(False)
+
+
+class EdgeCompensation:
+    """The theta-compensated output PPS on node B (plan/pps_output.md section 7).
+
+    Each node's output PPS leaves at its own tick, so out_B - out_A = C - (theta - theta0) at
+    an edge (results/pps-out-20261104 section 8): moved later by theta - theta0, B's edge
+    follows A's time scale to the measurement.  Before the edge that starts second ``edge``
+    (on B's PPS count), ``frac(edge)`` takes the mean theta of the pairs of the last
+    ``window_s`` before the newest, carries it to the edge by theta's rate over the last
+    ``rate_s``, and turns the delay into P10's fraction: ``base_frac`` (the plain edge's place
+    within its sample) plus the delay over ``ps_per_frac``, the slope calibrated on the scope,
+    clipped to 0 .. 65535.  Pairs come from ``SecondTheta``'s pair sink (``add``).  On the bench
+    (results/precision-20261105 section 6) the pairs up to 50 ms before an edge put it 1.4 ps
+    rms from theta at the edge."""
+
+    def __init__(self, target_ps: float, *, ps_per_frac: float, base_frac: int = 0x8000, window_s: float = 0.02,
+                 rate_s: float = 1.0, slots_per_second: int = 500) -> None:
+        self.target_ps, self.ps_per_frac, self.base = target_ps, ps_per_frac, base_frac
+        self.window, self.rate_s, self.slots = window_s, rate_s, slots_per_second
+        self.t: deque[float] = deque()
+        self.theta: deque[float] = deque()
+
+    def add(self, count: int, slot: int, theta_ns: float) -> None:
+        self.t.append(count + slot / self.slots)
+        self.theta.append(theta_ns * 1e3)
+        while self.t[-1] - self.t[0] > self.rate_s:
+            self.t.popleft()
+            self.theta.popleft()
+
+    def delay_ps(self, edge: float) -> float | None:
+        """theta - theta0 at ``edge`` (B's count), or None without a second of recent pairs."""
+        if len(self.t) < 50 or not 0 <= edge - self.t[-1] < 0.5:
+            return None
+        t = np.array(self.t)
+        th = np.array(self.theta)
+        rate = float(np.polyfit(t - t[-1], th, 1)[0])  # ps per second
+        recent = t >= t[-1] - self.window
+        return float(th[recent].mean() + rate * (edge - t[recent].mean())) - self.target_ps
+
+    def frac(self, edge: float) -> tuple[int, float] | None:
+        """P10's fraction for the edge, and the delay it stands for (ps), or None."""
+        d = self.delay_ps(edge)
+        if d is None:
+            return None
+        return int(min(max(round(self.base + d / self.ps_per_frac), 0), 0xFFFF)), d

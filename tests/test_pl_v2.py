@@ -100,6 +100,15 @@ def test_pps_out_configure_control_and_status():
     with pytest.raises(ValueError):
         out.configure(amplitude=1, idle=-0x8001)
 
+    assert out.frac is None
+    out.set_frac(0x8000)
+    assert regs.values[REG.PPS_OUT_FRAC] == 0x8000 and out.frac == 0x8000
+    assert regs.values[REG.PPS_OUT_CONTROL] >> ctl.FRAC & 1
+    out.set_frac(None)
+    assert out.frac is None and regs.values[REG.PPS_OUT_FRAC] == 0x8000
+    with pytest.raises(ValueError):
+        out.set_frac(0x10000)
+
     st = abi.ABI.PPSOUTST
     regs.values.update({REG.PPS_OUT_STATUS: (1 << st.HAVE_REF) | (1 << st.FLYWHEEL) | (1 << st.INVALID),
                         REG.PPS_OUT_CNT: 12, REG.PPS_OUT_FLYWHEEL_CNT: 2,

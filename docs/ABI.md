@@ -110,13 +110,13 @@ Confirms that the RF-clock bitstream is loaded. On any other value, stop and do 
 
 | Address | Access | Format | Reset |
 | ------- | ------ | ------ | ----- |
-| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00020002 (2.2) |
+| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00020003 (2.3) |
 
 ```text
-R32 0x04  → 0x00020002
+R32 0x04  → 0x00020003
 ```
 
-Refuse to run when major differs from the one the software supports. In 1.x, `PPS_INPUTS` and `PPS_CONFIG` came with minor 1, `BUILD_VERSION` with 2 and `TX_REPEAT` with 3; 2.0 keeps all of them and adds the slot engine, bursts from chips, the correlator, the packet and the queue (§4.8–§4.12, §14); 2.1 adds the output PPS (§4.13), 2.2 its idle level `PPS_OUT_IDLE`. Python: `PLClient.validate()`, `DeviceInfo.version`.
+Refuse to run when major differs from the one the software supports. In 1.x, `PPS_INPUTS` and `PPS_CONFIG` came with minor 1, `BUILD_VERSION` with 2 and `TX_REPEAT` with 3; 2.0 keeps all of them and adds the slot engine, bursts from chips, the correlator, the packet and the queue (§4.8–§4.12, §14); 2.1 adds the output PPS (§4.13), 2.2 its idle level `PPS_OUT_IDLE`, 2.3 its fractional edge delay `PPS_OUT_FRAC`. Python: `PLClient.validate()`, `DeviceInfo.version`.
 
 #### 4.1.3 `CONTROL` — command pulses
 
@@ -708,15 +708,17 @@ P10 sends one pulse a second on the stream of DAC tile 0, whose output is DAC_B 
 ```text
 pulse of second k: the beat on DAC tile 0's stream when raw_tick = PPS_TICK(k) + PPS_OUT_OFFSET:
                    I samples PPS_OUT_SAMPLE … 7 = PPS_OUT_AMPLITUDE, the earlier ones PPS_OUT_IDLE, Q = 0;
+                   with FRAC (2.3) the first of them = AMPLITUDE + (IDLE − AMPLITUDE) × PPS_OUT_FRAC / 2^16;
                    then PPS_OUT_WIDTH − 1 beats of PPS_OUT_AMPLITUDE in all eight I samples; then PPS_OUT_IDLE
 edge on J20 = start of second k + PPS_OUT_OFFSET × 10 ns + PPS_OUT_SAMPLE × 1.25 ns + D_board
+              (with FRAC: later by 0 … 1.25 ns as PPS_OUT_FRAC goes 0 … 65535, an S-shaped curve; below)
 ```
 
 D_board is the delay from the stream to J20: the DAC's latency, which MTS fixes at every power-up, and the analog path. It is a board constant, still to be measured.
 
 | Address | Name | Access | Reset | Meaning |
 | ------- | ---- | ------ | ----- | ------- |
-| 0x140 | `PPS_OUT_CONTROL` | RW | 0 | bit 0 `ENABLE` (taken at the next second), bit 1 `SYNCED` (the ARM vouches for the time scale; acts at once) |
+| 0x140 | `PPS_OUT_CONTROL` | RW | 0 | bit 0 `ENABLE` (taken at the next second), bit 1 `SYNCED` (the ARM vouches for the time scale; acts at once), bit 2 `FRAC` (delay the edge by `PPS_OUT_FRAC`, 2.3; taken at the next second) |
 | 0x144 | `PPS_OUT_OFFSET` | RW | 8 | ticks from the second's start to the pulse, `PPSOUT_MIN_OFFSET` (8) … 99 999 999 (other values: SLVERR). Taken at the next second |
 | 0x148 | `PPS_OUT_SAMPLE` | RW | 0 | the step's first I sample in its beat, 0 … 7, 1.25 ns each (other values: SLVERR). Taken at the next second |
 | 0x14C | `PPS_OUT_WIDTH` | RW | 4 | beats of the pulse, 1 … 65535 (other values: SLVERR). Taken at the next second |
@@ -727,8 +729,10 @@ D_board is the delay from the stream to J20: the DAC's latency, which MTS fixes 
 | 0x160 | `PPS_OUT_TICK_LO` | RO | 0 | the tick of the last pulse's first beat; reading it latches HI |
 | 0x164 | `PPS_OUT_TICK_HI` | RO | 0 | latched high 32 bits |
 | 0x168 | `PPS_OUT_IDLE` | RW | 0 | [15:0] signed: the I samples between pulses (2.2); [31:16] ignored, read 0. Taken at the next second |
+| 0x16C | `PPS_OUT_FRAC` | RW | 0 | [15:0] unsigned: with `FRAC`, the edge's delay in 2^-16 of a sample (2.3); [31:16] ignored, read 0. Taken at the next second |
 
 - The stream's TVALID is high from reset on, so the DAC reads `PPS_OUT_IDLE` between pulses. The path to J20 is AC-coupled, so `PPS_OUT_IDLE` sets no level at J20; `PPS_OUT_IDLE` = −`PPS_OUT_AMPLITUDE` doubles the step (2.2). A new `PPS_OUT_IDLE` steps the output once, at the start of the second it is taken.
+- The fractional delay (2.3): with `FRAC`, the step's first sample lies `PPS_OUT_FRAC` / 2^16 of the way from `PPS_OUT_AMPLITUDE` back to `PPS_OUT_IDLE`, so the step reaches its full height that much of a sample later; after the DAC's interpolation filter its 50 % crossing moves by up to one 1.25 ns sample, along an S-shaped curve, steepest in the middle. Measured on board 8873292600AB (`experiments/m5_pps_frac.py`, `results/m5-pps-frac-20261105_214333`): 0 ps at 0, 102 ps at 8192, 636 ps at 32768, 1158 ps at 57344, 1254 ps at 65535; 0.0275 ps per unit within 4096 of 32768, where a straight line is good to 2 ps, against 0.0191 on average. Node B uses it for the theta-compensated output PPS (`m4c_link --pps-out-comp`, §13; `plan/pps_output.md` section 7): it moves its edge by the steering error before each second, so that its output PPS follows A's time scale to the measurement. Without `FRAC` the first sample is `PPS_OUT_AMPLITUDE`, as before 2.3.
 - `PL.open()` puts DAC tile 0 block 0 at baseband with the mixer bypassed (§7.1 step 7), so the DAC outputs the stream's I samples. The path to J20 is AC-coupled (100 nF, balun, 100 nF; RFSoC 4x2 schematic, sheet 28 "RF DAC"): the start of the pulse gives one edge and its end an edge of the other sign. DAC_A's output is inverted against I (§13); a negative `PPS_OUT_AMPLITUDE` inverts the pulse.
 - A pulse is never sent within half a second of the previous one. When a locked edge sets the count later than the flywheel had it (the PPS moved later, as after a PP), the pulse already sent in that second is not repeated; when the PPS moved earlier, that second's pulse follows the new edge.
 - `PPSOUT_MIN_OFFSET`: the edge that starts a second reaches P10 three ticks after the tick that latched it (P1's two synchronizer stages and its register), so every pulse is scheduled from its own second's edge.
@@ -938,7 +942,7 @@ Offsets from the P2 base.
 | Offset | Name              | Access | Reset      | Meaning | See |
 | ------ | ----------------- | ------ | ---------- | ------- | --- |
 | 0x00   | `ID`              | RO     | 0x52434C4B | design identifier "RCLK" | §4.1.1 |
-| 0x04   | `VERSION`         | RO     | 0x00020002 | [31:16] major, [15:0] minor | §4.1.2 |
+| 0x04   | `VERSION`         | RO     | 0x00020003 | [31:16] major, [15:0] minor | §4.1.2 |
 | 0x08   | `CONTROL`         | WO     | —          | command pulses | §4.1.3 |
 | 0x0C   | `STATUS`          | RO     | —          | status word | §4.2.1 |
 | 0x10   | `TIME_EPOCH`      | RO     | 0          | number of clock relocks | §4.1.4 |
@@ -975,7 +979,7 @@ Offsets from the P2 base.
 | 0x90   | `PPS_CONFIG`      | RW     | 0          | PPS source and polarity (1.1) | §4.4.5 |
 | 0x94   | `BUILD_VERSION`   | RO     | set at build | rf-clock version at build time, 0xAABBCCDD (1.2) | §4.1.6 |
 | 0x100 … 0x124 | `SLOT_*`, `RX_WINDOW_BEATS`, `RX_SPAN_BEATS` | | | slot engine (2.0) | §4.8 |
-| 0x140 … 0x168 | `PPS_OUT_*` | | | output PPS (2.1; `PPS_OUT_IDLE` 2.2) | §4.13 |
+| 0x140 … 0x16C | `PPS_OUT_*` | | | output PPS (2.1; `PPS_OUT_IDLE` 2.2, `PPS_OUT_FRAC` 2.3) | §4.13 |
 | 0x180 … 0x19C | `BURST_*`, `PACKET_SPREAD`, `PACKET_BITS`, `CHIP_MEM_CHIPS` | | | bursts from chips (2.0) | §4.9 |
 | 0x200 … 0x234 | `P8_*`, `QUALITY_OFFSET` | | | correlator (2.0) | §4.10 |
 | 0x240 … 0x284 | `SR_*` | RO | 0 | search report (2.0) | §4.10 |
@@ -1518,6 +1522,7 @@ The offset is known to within the error of `arrival_ticks`, the assumed one-way 
 | `configure(*, amplitude, offset=MIN_OFFSET, sample=0, width=4, idle=0, enable=True)` | writes the pulse and `ENABLE`, taken at the next second (`idle`: `PPS_OUT_IDLE`, 2.2). `ValueError` for what P2 would refuse: `amplitude` or `idle` outside int16, `sample` outside 0 … 7, `width` outside 1 … 65535, `offset` outside `MIN_OFFSET` (8) … 99 999 999 |
 | `enable()`, `disable()` | `ENABLE`, taken at the next second |
 | `set_synced(synced)` | `SYNCED`, at once: the validity line may go low |
+| `set_frac(frac)`, `frac` | 2.3: `frac` 0 … 65535 writes `PPS_OUT_FRAC` and sets `FRAC`, None clears `FRAC`; taken at the next second. `frac` reads None while `FRAC` is clear. `ValueError` outside 0 … 65535 |
 | `status()` | `PPSOutStatus(have_ref, running, flywheel, invalid, pulses, flywheel_pulses, last_tick)` |
 | `amplitude`, `offset`, `sample`, `width` | the registers read back (`amplitude` signed) |
 
@@ -1567,7 +1572,7 @@ Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 X
 | `mts_dtc`      | board config (§11.1) | `record [--write] [--runs N]` powers up N times (default 6) without the recorded codes and, per converter, clock and tile, takes the window picked most often, and per tile the MTS offset seen most often; `--write` stores both in the board config. `check [--runs N]` powers up with them and reports how far each picked code lies from its record and how many power-ups had other offsets. Run it after `vco_bands scan --write`, which drops the codes (they depend on the bands) |
 | `vco_bands`    | board config (§11.1) | `scan [--write] [--label S/N] [--calibrations N]` writes the clocks N times (default 20) and suggests the band each LMX2594's calibration picks most often, so that the chip stays at the calibration's own operating point; it then forces the bands below and above it until one does not lock, to show the margin; `--write` saves the suggestion, the counts, the bands that lock and this board's serial number in the board config. `delays [--write] [--span N] [--runs N] [--captures N]`, with the loopback cable DAC_A → ADC_B: the loopback delay of each band within N (default 2) of the configured one from the carrier phase, over power-ups in separate processes; `--write` saves the band table; records go to `vco_bands_runs.jsonl` |
 | `fs725_loop`   | board config (§11.1) | `[--port PORT] --gain GA [--step 200] [--steps 4] [--hold 40] [--write]`: this board's FS725 (on the port the board config records, without `--port`) and its frequency lock loop at gain GA, from FC's answer to steps of SF, alternately up and back, one loop fitted to all steps together (`rf_clock.twtt.steer.fit_loop`; FC alone fixes the loop, so neither the other board nor the link is needed, but no link may use this board's clock meanwhile); `--write` records the unit, its port, GA and the loop in the board config (`fs725`); records go to `fs725_loop_runs.jsonl` (since 2.2.0.8) |
-| `m4c_link`     | M4b, M5: the rf-clock 2 link | `--role A\|B [--start-at T --stop-at T]`: one node of the link; the queue entries and one `second` line per second (theta, one-way delay, their scatter) go to `--out` (`--no-entries`: the second lines only); protocol tests (`--copy-every`, `--search-every`, `--silent-at`, `--refusal-checks`, `--pause-reads-at`); `--fs725 [PORT]` names this node's FS725, on the port the board config records without PORT (since 2.2.0.9), checked at the start against the board config (`rf_clock.twtt.control.configure_fs725`: the unit it names, GA set to its gain; refused otherwise, since 2.2.0.8); `--acquire [--fs725 PORT]` acquires the peer's PPS first (§11.15) and moves this node's PPS onto it; on B with `--fs725`, `--sf-step N` (each step fitted at the end: the FS725's rate change per SF unit and its delay, `sf_response` lines) and `--steer-target-ns T` (`rf_clock.twtt.steer` on the second lines; SF back to its start at the end unless `--keep-sf`), `--fc-every S` (the FS725's FC read every S seconds, `fc` lines with the time on this node's PPS count, since 2.2.0.1; on either node with `--fs725` since 2.2.0.4, as is `--sf-step`); `--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]` (`PredictiveSteering` with the unit's loop at its GA from the board config, since 2.2.0.2; `--steer-step 0.2` since 2.2.0.6); `--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` turns on the output PPS (§4.13, since 2.1.0.0; left on at the end) and, since 2.2.0.4, sets SYNCED by `SyncedRule` (A: link locked and B's packets coming in; B: also steering, with the steering error's 60 s rms below `--synced-rms` (100 ps) and mean below `--synced-mean` (30 ps), cleared above `--synced-clear-rms` (200 ps) over 10 s), cleared at the end. `experiments/m4c_v2_link.py` runs both nodes |
+| `m4c_link`     | M4b, M5: the rf-clock 2 link | `--role A\|B [--start-at T --stop-at T]`: one node of the link; the queue entries and one `second` line per second (theta, one-way delay, their scatter) go to `--out` (`--no-entries`: the second lines only); protocol tests (`--copy-every`, `--search-every`, `--silent-at`, `--refusal-checks`, `--pause-reads-at`); `--fs725 [PORT]` names this node's FS725, on the port the board config records without PORT (since 2.2.0.9), checked at the start against the board config (`rf_clock.twtt.control.configure_fs725`: the unit it names, GA set to its gain; refused otherwise, since 2.2.0.8); `--acquire [--fs725 PORT]` acquires the peer's PPS first (§11.15) and moves this node's PPS onto it; on B with `--fs725`, `--sf-step N` (each step fitted at the end: the FS725's rate change per SF unit and its delay, `sf_response` lines) and `--steer-target-ns T` (`rf_clock.twtt.steer` on the second lines; SF back to its start at the end unless `--keep-sf`), `--fc-every S` (the FS725's FC read every S seconds, `fc` lines with the time on this node's PPS count, since 2.2.0.1; on either node with `--fs725` since 2.2.0.4, as is `--sf-step`); `--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]` (`PredictiveSteering` with the unit's loop at its GA from the board config, since 2.2.0.2; `--steer-step 0.2` since 2.2.0.6); `--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` turns on the output PPS (§4.13, since 2.1.0.0; left on at the end) and, since 2.2.0.4, sets SYNCED by `SyncedRule` (A: link locked and B's packets coming in; B: also steering, with the steering error's 60 s rms below `--synced-rms` (100 ps) and mean below `--synced-mean` (30 ps), cleared above `--synced-clear-rms` (200 ps) over 10 s), cleared at the end. `--pps-out-comp` (node B, with `--steer-target-ns`; since 2.3.0.0): the theta-compensated output PPS (`rf_clock.twtt.control.EdgeCompensation`): at `--pps-out-comp-at` of each second (0.94) theta of the newest pairs (`--pps-out-comp-window`, 0.02 s), carried to the next edge by its rate over the last second, sets `PPS_OUT_FRAC` to `--pps-out-base-frac` (32768) plus theta − target over `--pps-out-ps-per-frac` (the scope's calibration); `pps_comp` lines; `FRAC` cleared at the end. `experiments/m4c_v2_link.py` runs both nodes |
 | `pps_out`      | output PPS (2.1) | `[seconds] [--offset N] [--sample S] [--width W] [--amplitude A] [--idle I] [--synced] [--keep]`: the output PPS on DAC_B (§4.13) and one line per second (where the pulse was presented against its PPS_TICK, the pulse and flywheel counts, the validity line, the die temperature); PASS when every second from the first pulse on has its pulse at PPS_TICK + offset and none came from the flywheel (with `--synced`, the validity line low too); records to `pps_out_runs.jsonl`. The edge itself is measured on the scope |
 | `pps_pp_scan`  | PPS sub-tick phase | `--fs725 PORT [--steps 22] [--edges 8] [--no-center]`: PP in 1 ns steps until PPS_TICK moves, which gives where the PPS edge lies before its sampling edge; then PP to the middle of the tick; records to `pps_pp_scan_runs.jsonl` |
 
@@ -1594,6 +1599,7 @@ For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: th
 | 2.0     | the measurements ride in the bursts: slot engine (0x100), bursts from chips and the burst memory (0x180), correlator and search report (0x200, 0x240), measurement packet (0x300), measurement queue (0x380); register offsets widened to 12 bits; P2's commands refused while the slot engine runs. The 1.x registers keep their offsets and meanings |
 | 2.1     | added the output PPS (0x140, P10): one pulse a second on DAC tile 0 (DAC_B), whose stream now comes from the PL, and its validity line on the Pmod header |
 | 2.2     | added `PPS_OUT_IDLE` (0x168), the output PPS's level between pulses |
+| 2.3     | added `PPS_OUT_FRAC` (0x16C) and `PPS_OUT_CONTROL.FRAC`: the output PPS's edge delayed by a fraction of a sample |
 
 ### 14.1 Package and overlay
 

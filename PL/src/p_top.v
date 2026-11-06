@@ -15,7 +15,8 @@
 // engine off; P4 also copies a window to DDR on SLOT_COPY.
 // Since 2.1 P10 sends the output PPS on DAC tile 0's stream (DAC_B) and drives
 // its validity line (a Pmod pin, high = not valid) and an LED (lit = valid).
-// Since 2.2 the pulse can start from an idle level (PPS_OUT_IDLE).
+// Since 2.2 the pulse can start from an idle level (PPS_OUT_IDLE); since 2.3 its edge can be delayed by a
+// fraction of a sample (PPS_OUT_FRAC with PPS_OUT_CONTROL.FRAC).
 // The X_INTERFACE_* attributes let the block design (module reference) see
 // the clock/reset associations and the BRAM port as interfaces.
 module p_top #(
@@ -273,10 +274,10 @@ module p_top #(
     wire        engine_lock = slot_control[SLOTCTL_ENABLE] || slots_running;
 
     // ---------------- 2.1 signals: P10 ----------------
-    wire [1:0]  pps_out_control;
+    wire [2:0]  pps_out_control;
     wire [31:0] pps_out_offset;
     wire [2:0]  pps_out_sample;
-    wire [15:0] pps_out_width, pps_out_amplitude, pps_out_idle;
+    wire [15:0] pps_out_width, pps_out_amplitude, pps_out_idle, pps_out_frac;
     wire        pps_out_have_ref, pps_out_running, pps_out_flywheel;
     wire [31:0] pps_out_count, pps_out_flywheel_count;
     wire [63:0] pps_out_tick;
@@ -440,6 +441,7 @@ module p_top #(
         .pps_out_width      (pps_out_width),
         .pps_out_amplitude  (pps_out_amplitude),
         .pps_out_idle       (pps_out_idle),
+        .pps_out_frac       (pps_out_frac),
         .pps_out_status     ({pps_out_invalid, pps_out_flywheel, pps_out_running, pps_out_have_ref}),
         .pps_out_count      (pps_out_count),
         .pps_out_flywheel_count(pps_out_flywheel_count),
@@ -684,6 +686,8 @@ module p_top #(
         .cfg_width       (pps_out_width),
         .cfg_amplitude   (pps_out_amplitude),
         .cfg_idle        (pps_out_idle),
+        .cfg_frac_en     (pps_out_control[PPSOUTCTL_FRAC]),
+        .cfg_frac        (pps_out_frac),
         .m_axis_tdata    (m_axis_dac0_tdata),
         .m_axis_tvalid   (m_axis_dac0_tvalid),
         .m_axis_tready   (m_axis_dac0_tready),

@@ -7,7 +7,11 @@ of that tick from ``sample`` on (1.25 ns each) are ``amplitude``, ``width`` - 1 
 ticks follow, then ``idle`` again (since 2.2; zero before).  So the edge on J20 lies
 ``offset`` x 10 ns + ``sample`` x 1.25 ns plus the board's own delay after the start
 of the node's second.  ``idle`` = -``amplitude`` doubles the step; the path is
-AC-coupled, so ``idle`` sets no level at J20.
+AC-coupled, so ``idle`` sets no level at J20.  With a fraction (``set_frac``, since
+2.3) the step's first sample is ``amplitude`` + (``idle`` - ``amplitude``) x frac / 2^16,
+which delays the edge after the DAC's interpolation by up to one sample, nearly in
+proportion (calibrated on the scope): the fractional delay of the theta-compensated
+output PPS (``rf_clock.twtt.control.EdgeCompensation``, plan/pps_output.md section 7).
 ``PL.open()`` puts tile 0 at baseband (``rf_clock.pl.rfdc.baseband_dac``); the path
 to J20 is AC-coupled, so the output is a short pulse (plan/pps_output.md).
 
@@ -15,7 +19,8 @@ The validity line (Pmod J1 pin 1) is high, and the LED W_LED_0 dark, unless the
 output is enabled, its second was started by a locked PPS edge, the clocks are
 locked, DAC tile 0 takes the stream, and ``synced`` is set: the ARM sets it once
 the link is locked and the steering has settled.  ENABLE, OFFSET, SAMPLE, WIDTH,
-AMPLITUDE and IDLE are taken at the start of the next second; ``synced`` at once.
+AMPLITUDE, IDLE and the fraction are taken at the start of the next second; ``synced``
+at once.
 """
 
 from __future__ import annotations
@@ -88,6 +93,24 @@ class PPSOut:
     @property
     def width(self) -> int:
         return self.client.read32(REG.PPS_OUT_WIDTH)
+
+    @property
+    def frac(self) -> int | None:
+        """The edge's delay in 2^-16 of a sample, or None while FRAC is clear."""
+        if not self.client.read32(REG.PPS_OUT_CONTROL) >> abi.ABI.PPSOUTCTL.FRAC & 1:
+            return None
+        return self.client.read32(REG.PPS_OUT_FRAC) & 0xFFFF
+
+    def set_frac(self, frac: int | None) -> None:
+        """Delay the edge by ``frac`` / 2^16 of a sample (0 .. 65535), from the next second;
+        None clears FRAC, the plain step."""
+        if frac is None:
+            self._control(abi.ABI.PPSOUTCTL.FRAC, False)
+            return
+        if not 0 <= int(frac) <= 0xFFFF:
+            raise ValueError("frac must be 0 .. 65535")
+        self.client.write32(REG.PPS_OUT_FRAC, int(frac))
+        self._control(abi.ABI.PPSOUTCTL.FRAC, True)
 
     def enable(self) -> None:
         self._control(abi.ABI.PPSOUTCTL.ENABLE, True)

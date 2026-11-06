@@ -13,7 +13,12 @@
 // software) turns it into a pulse on DAC_B whose edge lies at the second's
 // start + OFFSET x 10 ns + SAMPLE x 1.25 ns + the stream-to-pin latency.  An
 // IDLE of -AMPLITUDE doubles the step (since 2.2; the path is AC-coupled, so
-// IDLE sets no level at the connector).  TVALID stays high out of reset, so
+// IDLE sets no level at the connector).  With FRAC (since 2.3) the step's first
+// sample is AMPLITUDE + (IDLE - AMPLITUDE) x FRAC / 2^16 instead of AMPLITUDE, which
+// moves the edge after the DAC's interpolation by up to one sample (1.25 ns),
+// nearly in proportion to FRAC (calibrated on the scope): the fractional delay
+// with which the ARM makes B's output follow A's time scale to the measurement
+// (plan/pps_output.md section 7).  TVALID stays high out of reset, so
 // the DAC reads IDLE between pulses and never repeats a pulse's last sample.
 //
 // OFFSET >= MIN_OFFSET (P2 refuses less), so the edge that anchors a second
@@ -51,6 +56,8 @@ module p10_pps_out #(
     input  wire [15:0]       cfg_width,
     input  wire [15:0]       cfg_amplitude,
     input  wire [15:0]       cfg_idle,
+    input  wire              cfg_frac_en,
+    input  wire [15:0]       cfg_frac,
     // DAC tile 0 stream.
     output reg  [DATA_W-1:0] m_axis_tdata,
     output reg               m_axis_tvalid,
@@ -74,6 +81,7 @@ module p10_pps_out #(
     reg [15:0] width_l;
     reg [15:0] amp_l;
     reg [15:0] idle_l;
+    reg [15:0] edge_l;       // the step's first sample
     reg [15:0] beats_left;
 
     wire anchor = pps_event && pps_locked;
@@ -82,15 +90,21 @@ module p10_pps_out #(
     wire fire = have_ref && running && !anchor && (phase == off_l - 32'd1) &&
                 (!fired_once || (raw_tick - last_tick) > {32'd0, PPS_PERIOD >> 1});
 
-    // A beat: I = idle before sample `first`, amp from it on; Q = 0.
-    function [DATA_W-1:0] step_beat(input [2:0] first, input [15:0] amp, input [15:0] idle);
+    // A beat: I = idle before sample `first`, first_v at it, amp after it; Q = 0.
+    function [DATA_W-1:0] step_beat(input [2:0] first, input [15:0] amp, input [15:0] idle, input [15:0] first_v);
         integer n;
         begin
             step_beat = {DATA_W{1'b0}};
             for (n = 0; n < SAMPLES; n = n + 1)
-                step_beat[32*n +: 16] = (n >= first) ? amp : idle;
+                step_beat[32*n +: 16] = (n > first) ? amp : (n == first) ? first_v : idle;
         end
     endfunction
+
+    // The first sample with FRAC: amp + (idle - amp) x frac / 2^16, between amp and idle.
+    wire signed [16:0] span     = $signed({cfg_idle[15], cfg_idle}) - $signed({cfg_amplitude[15], cfg_amplitude});
+    wire signed [33:0] scaled   = span * $signed({1'b0, cfg_frac});
+    wire signed [16:0] edge_cfg = $signed({cfg_amplitude[15], cfg_amplitude}) + $signed(scaled[32:16]);
+    wire        [15:0] edge_new = cfg_frac_en ? edge_cfg[15:0] : cfg_amplitude;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -108,6 +122,7 @@ module p10_pps_out #(
             width_l        <= 16'd1;
             amp_l          <= 16'd0;
             idle_l         <= 16'd0;
+            edge_l         <= 16'd0;
             beats_left     <= 16'd0;
             m_axis_tdata   <= {DATA_W{1'b0}};
             m_axis_tvalid  <= 1'b0;
@@ -126,6 +141,7 @@ module p10_pps_out #(
                 width_l  <= cfg_width;
                 amp_l    <= cfg_amplitude;
                 idle_l   <= cfg_idle;
+                edge_l   <= edge_new;
             end else if (have_ref) begin
                 phase <= wrap ? 32'd0 : phase + 32'd1;
                 if (wrap) begin  // a new second: take the configuration, not yet anchored
@@ -136,13 +152,14 @@ module p10_pps_out #(
                     width_l  <= cfg_width;
                     amp_l    <= cfg_amplitude;
                     idle_l   <= cfg_idle;
+                    edge_l   <= edge_new;
                 end
             end
 
             // The pulse.
-            m_axis_tdata <= step_beat(3'd0, idle_l, idle_l);
+            m_axis_tdata <= step_beat(3'd0, idle_l, idle_l, idle_l);
             if (fire) begin
-                m_axis_tdata   <= step_beat(sample_l, amp_l, idle_l);
+                m_axis_tdata   <= step_beat(sample_l, amp_l, idle_l, edge_l);
                 beats_left     <= width_l - 16'd1;
                 fired_once     <= 1'b1;
                 last_tick      <= raw_tick + 64'd1;
@@ -150,7 +167,7 @@ module p10_pps_out #(
                 last_flywheel  <= !anchored;
                 if (!anchored) flywheel_count <= flywheel_count + 32'd1;
             end else if (beats_left != 16'd0) begin
-                m_axis_tdata <= step_beat(3'd0, amp_l, amp_l);
+                m_axis_tdata <= step_beat(3'd0, amp_l, amp_l, amp_l);
                 beats_left   <= beats_left - 16'd1;
             end
         end

@@ -1,24 +1,24 @@
 {
-  "build_version": "2.2.0.0",
-  "source": "/home/haoyu/build/rf_clock_v2_run8",
-  "packaged_utc": "2026-11-05T04:07:45Z",
+  "build_version": "2.3.0.0",
+  "source": "/home/haoyu/build/rf_clock_v2_run9",
+  "packaged_utc": "2026-11-06T02:42:24Z",
   "build_status": {
     "tool": "Vivado 2024.1",
     "part": "xczu48dr-ffvg1517-2-e",
     "board_part": "realdigital.org:rfsoc4x2:part0:1.0",
     "stage": "impl",
-    "build_version": "2.2.0.0",
+    "build_version": "2.3.0.0",
     "bd": "complete",
     "synth": "complete",
-    "wns": "0.336",
-    "whs": "0.009",
+    "wns": "0.359",
+    "whs": "0.010",
     "impl": "complete",
     "timing": "met",
     "state": "complete"
   },
   "sha256": {
-    "rf_clock.bit": "38ddb47b8e6ef8530f7598af90a81637e6b3a32e9ebe9feef0423574282341fe",
-    "rf_clock.hwh": "f8d530a83383caa907a93a8322c7babdd4695438db392d20a69df942a4023447",
-    "rf_clock_hw.xsa": "2f0d97aba1677f0694786f0acfba62481b46d8155014db61adf9d5ff958e6bae"
+    "rf_clock.bit": "6d19278f1e50dd171b4cdd15b937cd92b96119983d6210daa6919fea3b2ec87b",
+    "rf_clock.hwh": "3b384941da132c051db1cabd338fb81fce91a0d65ac43ae29191924dbfbc7bfc",
+    "rf_clock_hw.xsa": "8f149ba989d1779b6373d0cbd4d721084c55163f989632fc1d9ed45a576a9f96"
   }
 }

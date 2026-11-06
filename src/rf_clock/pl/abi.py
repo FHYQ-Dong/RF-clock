@@ -64,6 +64,7 @@ class ABI:
         PPS_OUT_TICK_LO = 0x160
         PPS_OUT_TICK_HI = 0x164
         PPS_OUT_IDLE = 0x168
+        PPS_OUT_FRAC = 0x16C
         BURST_PRN_CHIPS = 0x180
         BURST_GUARD_CHIPS = 0x184
         BURST_BEATS = 0x188
@@ -223,6 +224,7 @@ class ABI:
     class PPSOUTCTL:
         ENABLE = 0x0
         SYNCED = 0x1
+        FRAC = 0x2
 
     class PPSOUTST:
         HAVE_REF = 0x0
@@ -237,7 +239,7 @@ class ABI:
     RX_RESULT_FLAGS_LSB = 0x8
     FAULT_INFO_COUNT_LSB = 0x10
     DESIGN_ID = 0x52434C4B
-    VERSION = 0x00020002
+    VERSION = 0x00020003
 
 class TxState(IntEnum):
     IDLE = 0x0

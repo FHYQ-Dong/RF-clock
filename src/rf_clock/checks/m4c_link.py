@@ -89,6 +89,16 @@ is below ``--synced-rms`` and its mean below ``--synced-mean``, cleared when the
 or the steering stops or the last 10 s exceed ``--synced-clear-rms``.  SYNCED is
 cleared at the end.
 
+``--pps-out-comp`` (node B, with ``--pps-out`` and ``--steer-target-ns``; since 2.3) makes B's
+output PPS follow A's time scale to the measurement rather than to the steering
+(``rf_clock.twtt.control.EdgeCompensation``, plan/pps_output.md section 7): once a second,
+at ``--pps-out-comp-at`` of B's second (0.94), theta of the newest pairs (the last
+``--pps-out-comp-window`` seconds, 0.02) is carried to the next edge by theta's rate over
+the last second, and P10's fraction is set so that the edge moves by theta - theta0:
+``--pps-out-base-frac`` (32768, half a sample) plus the delay over ``--pps-out-ps-per-frac``
+(ps per unit of the fraction, calibrated on the scope; the default is one 1.25 ns sample
+over 2^16).  ``pps_comp`` lines log each edge's fraction and delay; FRAC is cleared at the end.
+
 PASS (the link alone): locked when the engine is disabled, no lock lost after the
 first, no packet with a bad CRC, no queue entry dropped, no slot skipped after the
 first lock, and PEER packets in at least 90 % of the peer's bursts since the
@@ -121,7 +131,7 @@ from rf_clock.pl.waveform import (DEFAULT_BETA, DEFAULT_SAMPLES_PER_SYMBOL, DEFA
                                   rrc_config_id)
 from rf_clock.plmodel import fir
 from rf_clock.twtt import steer
-from rf_clock.twtt.control import FrequencyControl, SyncedRule, configure_fs725
+from rf_clock.twtt.control import EdgeCompensation, FrequencyControl, SyncedRule, configure_fs725
 from rf_clock.twtt.pairs import SecondTheta, StepTheta
 
 PRN_CHIPS = 4096
@@ -300,6 +310,15 @@ def main() -> None:
                         help="the output PPS on DAC_B, OFFSET ticks after each PPS_TICK")
     parser.add_argument("--pps-out-amplitude", type=int, default=-24000, help="its DAC code")
     parser.add_argument("--pps-out-idle", type=int, default=0, help="its DAC code between pulses (2.2)")
+    parser.add_argument("--pps-out-comp", action="store_true",
+                        help="node B: move the output edge by theta's steering error before each edge (2.3)")
+    parser.add_argument("--pps-out-ps-per-frac", type=float, default=1250.0 / 65536, metavar="PS",
+                        help="the edge's delay per unit of P10's fraction (calibrated on the scope)")
+    parser.add_argument("--pps-out-base-frac", type=int, default=0x8000, help="the fraction at zero steering error")
+    parser.add_argument("--pps-out-comp-at", type=float, default=0.94, metavar="S",
+                        help="when in B's second the fraction for the next edge is written")
+    parser.add_argument("--pps-out-comp-window", type=float, default=0.02, metavar="S",
+                        help="theta over the newest pairs of this span, carried to the edge")
     add_common_args(parser)
     add_rfdc_args(parser)
     args = parser.parse_args()
@@ -345,7 +364,9 @@ def main() -> None:
                                               "steer_late_slots", "steer_step", "steer_ar", "steer_horizon", "steer_moves",
                                               "steer_lambda", "pps_out", "pps_out_amplitude",
                                               "pps_out_idle", "synced_rms", "synced_mean",
-                                              "synced_clear_rms", "fs725", "fc_every")})
+                                              "synced_clear_rms", "fs725", "fc_every", "pps_out_comp",
+                                              "pps_out_ps_per_frac", "pps_out_base_frac", "pps_out_comp_at",
+                                              "pps_out_comp_window")})
     loop = None
     if args.fs725 is not None:
         config = pl.board.config
@@ -386,9 +407,25 @@ def main() -> None:
                 or pl.slots.slots_per_second % step_slots):
             raise SystemExit("--steer-step below 1 s is for the predictive control law, in whole slots dividing a second")
         step_theta = StepTheta(step_slots, args.steer_late_slots, pl.slots.slots_per_second)
+    comp = None
+    if args.pps_out_comp:
+        if args.role != "B" or args.pps_out is None or args.steer_target_ns is None:
+            raise SystemExit("--pps-out-comp is for node B, with --pps-out and --steer-target-ns")
+        comp = EdgeCompensation(args.steer_target_ns * 1000, ps_per_frac=args.pps_out_ps_per_frac,
+                                base_frac=args.pps_out_base_frac, window_s=args.pps_out_comp_window,
+                                slots_per_second=pl.slots.slots_per_second)
+        pl.pps_out.set_frac(args.pps_out_base_frac)  # the plain edge at the base, from the next second
+    sinks = [f for f in (step_theta.add if step_theta is not None else None, comp.add if comp is not None else None)
+             if f is not None]
+
+    def pair_sink(count: int, slot: int, theta_ns: float) -> None:
+        for f in sinks:
+            f(count, slot, theta_ns)
+
     seconds = SecondTheta(args.role, pl.slots.slots_per_second, pl.slots.slot_ticks, args.tx_offset,
                           args.steer_late_slots if args.steer_step >= 1 else 0,
-                          pair_sink=step_theta.add if step_theta is not None else None)
+                          pair_sink=pair_sink if sinks else None)
+    comp_second = None  # the second whose next edge has its fraction
     synced = None
     if args.pps_out is not None:
         synced = SyncedRule(args.role == "B", set_rms_ps=args.synced_rms, set_mean_ps=args.synced_mean,
@@ -583,10 +620,22 @@ def main() -> None:
                  bursts=pl.ctrl.read32(ABI.REG.BURST_CNT), dropped=pl.queue.dropped(),
                  pps_jitter=pl.ctrl.read32(ABI.REG.PPS_JITTER_CNT), die_c=die_c(),
                  pps_out=asdict(pl.pps_out.status()) if args.pps_out is not None else None)
+        if comp is not None and first_lock is not None:
+            at = pps_now(pl)
+            sec = int(at)
+            if at - sec >= args.pps_out_comp_at and sec != comp_second:
+                comp_second = sec
+                found = comp.frac(sec + 1)
+                if found is not None:
+                    pl.pps_out.set_frac(found[0])
+                emit("pps_comp", count=sec + 1, at_count=at, frac=None if found is None else found[0],
+                     delay_ps=None if found is None else found[1])
         time.sleep(args.poll)
 
     locked_at_stop = pl.correlator.status().locked
     final = pl.correlator.status()
+    if comp is not None:
+        pl.pps_out.set_frac(None)  # the plain edge again, from the next second
     if synced is not None:
         pl.pps_out.set_synced(False)  # this node stops measuring: it can no longer vouch for its PPS
         if synced.synced:

@@ -4,7 +4,9 @@
 // moves later, a PPS moved earlier with a new configuration taken at its early edge,
 // the configuration taken at the next second, disabling, and the validity line (no
 // blink at the second's start).  A nonzero idle level (2.2); from second 8 on idle
-// and amplitude of opposite sign.
+// and amplitude of opposite sign.  From second 13 the fractional edge (2.3): FRAC set but
+// not enabled leaves the plain step; enabled, the step's first sample is
+// amp + (idle - amp) x FRAC / 2^16, also with amp above idle.
 module tb_p10_pps_out;
     localparam [31:0] PERIOD = 32'd1000;
     localparam [31:0] MINOFF = 32'd8;
@@ -21,6 +23,8 @@ module tb_p10_pps_out;
     reg  [31:0] offset = 32'd20;
     reg  [2:0]  sample = 3'd3;
     reg  [15:0] width = 16'd4, amp = 16'd1234, idle = 16'd3000;
+    reg         frac_en = 1'b0;
+    reg  [15:0] frac = 16'd0;
 
     wire [255:0] tdata;
     wire         tvalid, have_ref, running, last_flywheel, invalid;
@@ -31,7 +35,7 @@ module tb_p10_pps_out;
         .clk (clk), .rst (rst), .raw_tick (raw_tick), .pps_event (pps_event), .pps_tick (pps_tick),
         .pps_locked (pps_locked), .clocks_locked (clocks_locked),
         .cfg_enable (enable), .cfg_synced (synced), .cfg_offset (offset), .cfg_sample (sample),
-        .cfg_width (width), .cfg_amplitude (amp), .cfg_idle (idle),
+        .cfg_width (width), .cfg_amplitude (amp), .cfg_idle (idle), .cfg_frac_en (frac_en), .cfg_frac (frac),
         .m_axis_tdata (tdata), .m_axis_tvalid (tvalid), .m_axis_tready (tready),
         .have_ref (have_ref), .running (running), .last_flywheel (last_flywheel),
         .pulse_count (pulses), .flywheel_count (flywheels), .last_tick (last_tick),
@@ -51,14 +55,18 @@ module tb_p10_pps_out;
         end
     endtask
 
-    // A beat: I = id before sample `first`, a from it on; Q = 0.
-    function [255:0] beat(input integer first, input [15:0] a, input [15:0] id);
+    // A beat: I = id before sample `first`, e at it, a after it; Q = 0.
+    function [255:0] beat_e(input integer first, input [15:0] a, input [15:0] id, input [15:0] e);
         integer n;
         begin
-            beat = 256'd0;
+            beat_e = 256'd0;
             for (n = 0; n < 8; n = n + 1)
-                beat[32 * n +: 16] = (n >= first) ? a : id;
+                beat_e[32 * n +: 16] = (n > first) ? a : (n == first) ? e : id;
         end
+    endfunction
+
+    function [255:0] beat(input integer first, input [15:0] a, input [15:0] id);
+        beat = beat_e(first, a, id, a);
     endfunction
 
     // Pulses seen (beats other than idle; TVALID stays high): their start ticks, and the
@@ -69,6 +77,7 @@ module tb_p10_pps_out;
     integer    beat_i = 0;
     reg [2:0]  exp_sample;
     reg [15:0] exp_width, exp_amp, exp_idle;
+    reg [15:0] exp_edge;  // the step's first sample: exp_amp unless FRAC
     wire       in_pulse = tdata != beat(0, exp_idle, exp_idle);
     reg        rst_d = 1'b1;  // TVALID is registered: high from the second cycle out of reset
     always @(posedge clk) rst_d <= rst;
@@ -81,7 +90,7 @@ module tb_p10_pps_out;
             if (last_tick !== raw_tick) begin errors = errors + 1; $display("last_tick %0d at %0d", last_tick, raw_tick); end
         end
         if (in_pulse) begin
-            if (tdata !== (beat_i == 0 ? beat(exp_sample, exp_amp, exp_idle) : beat(0, exp_amp, exp_amp))) begin
+            if (tdata !== (beat_i == 0 ? beat_e(exp_sample, exp_amp, exp_idle, exp_edge) : beat(0, exp_amp, exp_amp))) begin
                 errors = errors + 1; $display("beat %0d of the pulse at %0d wrong", beat_i, starts[n_pulses - 1]);
             end
             beat_i = beat_i + 1;
@@ -107,7 +116,7 @@ module tb_p10_pps_out;
     reg [63:0] s;
     integer k, n_before;
     initial begin
-        exp_sample = sample; exp_width = width; exp_amp = amp; exp_idle = 16'd0;
+        exp_sample = sample; exp_width = width; exp_amp = amp; exp_idle = 16'd0; exp_edge = amp;
         repeat (5) @(posedge clk);
         rst <= 1'b0;
         // Out of reset the output is zero until the first locked edge takes IDLE.
@@ -159,7 +168,7 @@ module tb_p10_pps_out;
         s = s - 30;
         edge_at(s + 8 * PERIOD);
         @(posedge clk); #1;  // the new idle level from the cycle after the edge
-        exp_sample = 3'd1; exp_width = 16'd2; exp_amp = 16'hFC00; exp_idle = 16'h0400;
+        exp_sample = 3'd1; exp_width = 16'd2; exp_amp = 16'hFC00; exp_idle = 16'h0400; exp_edge = 16'hFC00;
         repeat (120) @(posedge clk);
         expect_pulse(8, s + 8 * PERIOD + 100);
 
@@ -189,6 +198,31 @@ module tb_p10_pps_out;
         repeat (200) @(posedge clk);
         if (n_pulses != n_before || running) begin errors = errors + 1; $display("pulses while disabled"); end
         if (!invalid) begin errors = errors + 1; $display("validity line low while disabled"); end
+
+        // FRAC set but not enabled (second 13): the plain step.
+        enable <= 1'b1; frac <= 16'h4000;
+        edge_at(s + 13 * PERIOD);
+        repeat (120) @(posedge clk);
+        expect_pulse(n_before, s + 13 * PERIOD + 100);
+        // Enabled (second 14): amp -1024, idle +1024, a quarter: -1024 + 512 = -512.
+        frac_en <= 1'b1;
+        exp_edge = 16'hFE00;
+        edge_at(s + 14 * PERIOD);
+        repeat (120) @(posedge clk);
+        expect_pulse(n_before + 1, s + 14 * PERIOD + 100);
+        // FRAC 0xFFFF (second 15): -1024 + floor(2048 x 65535 / 65536) = 1023.
+        frac <= 16'hFFFF;
+        exp_edge = 16'h03FF;
+        edge_at(s + 15 * PERIOD);
+        repeat (120) @(posedge clk);
+        expect_pulse(n_before + 2, s + 15 * PERIOD + 100);
+        // Amp above idle (second 16, idle unchanged): amp 3072, idle 1024, a half: 3072 - 1024 = 2048.
+        repeat (200) @(posedge clk);
+        amp <= 16'h0C00; frac <= 16'h8000;
+        edge_at(s + 16 * PERIOD);
+        exp_amp = 16'h0C00; exp_edge = 16'h0800;
+        repeat (120) @(posedge clk);
+        expect_pulse(n_before + 3, s + 16 * PERIOD + 100);
 
         if (pulses != n_pulses) begin errors = errors + 1; $display("pulse_count %0d, seen %0d", pulses, n_pulses); end
         if (errors == 0) $display("PASS tb_p10_pps_out");

@@ -143,12 +143,13 @@ module p2_control_regs #(
     input  wire [31:0] queue_head,
     input  wire [31:0] queue_dropped_count,
     // P10 output PPS (since 2.1).
-    output reg  [1:0]  pps_out_control,  // {PPSOUTCTL_SYNCED, PPSOUTCTL_ENABLE}
+    output reg  [2:0]  pps_out_control,  // {PPSOUTCTL_FRAC, PPSOUTCTL_SYNCED, PPSOUTCTL_ENABLE}
     output reg  [31:0] pps_out_offset,
     output reg  [2:0]  pps_out_sample,
     output reg  [15:0] pps_out_width,
     output reg  [15:0] pps_out_amplitude,
     output reg  [15:0] pps_out_idle,      // 2.2
+    output reg  [15:0] pps_out_frac,      // 2.3
     input  wire [3:0]  pps_out_status,
     input  wire [31:0] pps_out_count,
     input  wire [31:0] pps_out_flywheel_count,
@@ -199,12 +200,13 @@ module p2_control_regs #(
             quality_offset    <= 32'd0;
             packet_config_id  <= 32'd0;
             queue_tail        <= 32'd0;
-            pps_out_control   <= 2'd0;
+            pps_out_control   <= 3'd0;
             pps_out_offset    <= PPSOUT_MIN_OFFSET;
             pps_out_sample    <= 3'd0;
             pps_out_width     <= 16'd4;
             pps_out_amplitude <= 16'd0;
             pps_out_idle      <= 16'd0;
+            pps_out_frac      <= 16'd0;
         end else begin
             if (s_axi_bvalid && s_axi_bready)
                 s_axi_bvalid <= 1'b0;
@@ -259,7 +261,7 @@ module p2_control_regs #(
                             else
                                 queue_tail <= s_axi_wdata;
                         end
-                        REG_PPS_OUT_CONTROL: pps_out_control <= s_axi_wdata[1:0];
+                        REG_PPS_OUT_CONTROL: pps_out_control <= s_axi_wdata[2:0];
                         REG_PPS_OUT_OFFSET: begin
                             if (s_axi_wdata < PPSOUT_MIN_OFFSET || s_axi_wdata >= PPS_PERIOD)
                                 s_axi_bresp <= RESP_SLVERR;
@@ -280,6 +282,7 @@ module p2_control_regs #(
                         end
                         REG_PPS_OUT_AMPLITUDE: pps_out_amplitude <= s_axi_wdata[15:0];
                         REG_PPS_OUT_IDLE:      pps_out_idle      <= s_axi_wdata[15:0];
+                        REG_PPS_OUT_FRAC:      pps_out_frac      <= s_axi_wdata[15:0];
                         default:          s_axi_bresp      <= RESP_SLVERR;
                     endcase
                 end
@@ -412,12 +415,13 @@ module p2_control_regs #(
             REG_QUEUE_TAIL:        rd_value = queue_tail;
             REG_QUEUE_ENTRIES:     rd_value = QUEUE_ENTRIES;
             REG_QUEUE_DROPPED_CNT: rd_value = queue_dropped_count;
-            REG_PPS_OUT_CONTROL:      rd_value = {30'd0, pps_out_control};
+            REG_PPS_OUT_CONTROL:      rd_value = {29'd0, pps_out_control};
             REG_PPS_OUT_OFFSET:       rd_value = pps_out_offset;
             REG_PPS_OUT_SAMPLE:       rd_value = {29'd0, pps_out_sample};
             REG_PPS_OUT_WIDTH:        rd_value = {16'd0, pps_out_width};
             REG_PPS_OUT_AMPLITUDE:    rd_value = {16'd0, pps_out_amplitude};
             REG_PPS_OUT_IDLE:         rd_value = {16'd0, pps_out_idle};
+            REG_PPS_OUT_FRAC:         rd_value = {16'd0, pps_out_frac};
             REG_PPS_OUT_STATUS:       rd_value = {28'd0, pps_out_status};
             REG_PPS_OUT_CNT:          rd_value = pps_out_count;
             REG_PPS_OUT_FLYWHEEL_CNT: rd_value = pps_out_flywheel_count;

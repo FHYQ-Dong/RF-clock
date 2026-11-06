@@ -9,7 +9,7 @@
 // 0x060 (RX), 0x080 (counters/config), and since 2.0 0x100 (P7 slot engine),
 // 0x180 (P3 bursts from chips), 0x200 (P8 correlator), 0x240 (P8 search
 // report), 0x300 (P9 packet) and 0x380 (measurement queue); since 2.1 0x140
-// (P10 output PPS; PPS_OUT_IDLE since 2.2).
+// (P10 output PPS; PPS_OUT_IDLE since 2.2, PPS_OUT_FRAC since 2.3).
 
 // ---- identity, control, status ----
 localparam [11:0] REG_ID              = 12'h000;  // RO
@@ -82,6 +82,7 @@ localparam [11:0] REG_PPS_OUT_FLYWHEEL_CNT = 12'h15C;  // RO, of them in seconds
 localparam [11:0] REG_PPS_OUT_TICK_LO      = 12'h160;  // RO, the last pulse; read latches PPS_OUT_TICK_HI
 localparam [11:0] REG_PPS_OUT_TICK_HI      = 12'h164;  // RO
 localparam [11:0] REG_PPS_OUT_IDLE         = 12'h168;  // RW, i16 in [15:0]: the I samples between pulses (2.2)
+localparam [11:0] REG_PPS_OUT_FRAC         = 12'h16C;  // RW, u16 in [15:0]: the edge's delay in 2^-16 of a sample, with FRAC (2.3)
 
 // ---- P3 bursts from chips (since 2.0) ----
 localparam [11:0] REG_BURST_PRN_CHIPS   = 12'h180;  // RW, PRN or acquisition code length
@@ -194,6 +195,7 @@ localparam integer SLOTST_SLOT_LSB = 16;  // [24:16] the current slot
 // ---- PPS_OUT_CONTROL bits (reset 0) ----
 localparam integer PPSOUTCTL_ENABLE = 0;  // a pulse every second, from the next second on
 localparam integer PPSOUTCTL_SYNCED = 1;  // the ARM vouches for the time scale (validity line, at once)
+localparam integer PPSOUTCTL_FRAC   = 2;  // delay the edge by PPS_OUT_FRAC, taken at the next second (2.3)
 
 // ---- PPS_OUT_STATUS bits ----
 localparam integer PPSOUTST_HAVE_REF = 0;  // a locked PPS edge has set the phase
@@ -230,4 +232,4 @@ localparam integer RX_RESULT_FLAGS_LSB   = 8;   // RX_RESULT [11:8]
 localparam integer FAULT_INFO_COUNT_LSB  = 16;  // FAULT_INFO [31:16]
 
 localparam [31:0] P_DESIGN_ID = 32'h5243_4C4B;  // "RCLK"
-localparam [31:0] P_VERSION   = 32'h0002_0002;  // major.minor = 2.2
+localparam [31:0] P_VERSION   = 32'h0002_0003;  // major.minor = 2.3

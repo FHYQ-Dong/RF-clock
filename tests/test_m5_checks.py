@@ -9,7 +9,7 @@ import pytest
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.fs725 import FS725, FS725Error
 from rf_clock.pl.board_config import BoardConfig, BoardConfigError
-from rf_clock.twtt.control import SyncedRule, configure_fs725
+from rf_clock.twtt.control import EdgeCompensation, SyncedRule, configure_fs725
 from rf_clock.twtt.pairs import SecondTheta, StepTheta
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
@@ -198,3 +198,26 @@ def test_the_link_checks_its_fs725_against_the_board_config(monkeypatch):
         configure_fs725(BoardConfig(serial="0" * 32, fs725=no_port), None, lambda kind, **fields: None)
     with pytest.raises(BoardConfigError, match="no board config"):
         configure_fs725(None, "PORT", lambda kind, **fields: None)
+
+
+def test_the_edge_compensation_carries_theta_to_the_edge():
+    """theta 30 ps above the target at count 9, rising 4 ps/s: at the edge of count 10 the
+    steering error is 34 ps, which the fraction stands for about the base."""
+    comp = EdgeCompensation(-21.5, ps_per_frac=1250 / 65536, slots_per_second=500)
+    assert comp.frac(10.0) is None  # no pairs yet
+    for count in (8, 9):
+        for slot in range(0, 500, 2):
+            t = count + slot / 500
+            if 8.9 <= t <= 9.94:
+                comp.add(count, slot, (-21.5 + 30 + 4 * (t - 9)) / 1000)
+    found = comp.frac(10.0)
+    assert found is not None
+    frac, delay = found
+    assert delay == pytest.approx(34.0, abs=1e-6)
+    assert frac == round(0x8000 + 34.0 / (1250 / 65536))
+    assert comp.frac(10.6) is None  # the newest pair too far from the edge
+    far = EdgeCompensation(-21.5, ps_per_frac=1250 / 65536)
+    for slot in range(0, 500, 2):
+        far.add(9, slot, 1.0)  # a whole ns off: clipped
+    clipped = far.frac(10.0)
+    assert clipped is not None and clipped[0] == 0xFFFF
