@@ -72,6 +72,13 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         and ``--steer-step 0.2`` corrects every 0.2 s instead of every
                         second (results/two-loops-20261105): ``step`` lines, SF written
                         without a read-back, the unit checked once a second.
+                        ``--steer-actuator fc`` (since 2.3.0.2, with ``--steer-step 0.1``)
+                        sets FC, the crystal's tuning, instead of SF: the unit at GA 1
+                        for the run, FC written every step, ``fc_set`` lines, the law's
+                        model the board config's ``fs725.fc`` made slower
+                        (``--fc-model-lag``, ``--fc-model-dead`` override it);
+                        ``rf_clock.twtt.control.FrequencyControl``, results/precision-20261105
+                        section 8.
 
 ``--fc-every S``         on either node with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S
@@ -164,9 +171,10 @@ def steer_fit(thetas: list[tuple[int, float]], at_count: float) -> dict | None:
     return steer.fit_sf_response([c for c, _ in thetas], [t for _, t in thetas], at_count)
 
 
-def steering_law(args, late_s: float, loop: tuple[float, float, float] | None):
-    """The control law ``--steer-target-ns`` and ``--steer-mode`` ask for, as a function of the
-    unit's SF and GA (``FrequencyControl`` calls it once it has read them); None without a target."""
+def steering_law(args, late_s: float, loop: tuple[float, float, float] | None, fc_plant: dict | None = None):
+    """The control law ``--steer-target-ns``, ``--steer-mode`` and ``--steer-actuator`` ask for, as a
+    function of the unit's SF (or FC) and GA (``FrequencyControl`` calls it once it has read them);
+    None without a target.  ``fc_plant``: the board config's ``fs725["fc"]``."""
     if args.steer_target_ns is None:
         return None
     target_ps = args.steer_target_ns * 1000
@@ -180,6 +188,13 @@ def steering_law(args, late_s: float, loop: tuple[float, float, float] | None):
                                            ("lam", args.steer_lambda)) if v is not None}
             if args.steer_ar is not None:
                 overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
+            if args.steer_actuator == "fc":
+                if fc_plant is None:
+                    raise steer.SteeringError("the board config has no answer of this FS725's crystal to FC "
+                                              "(fs725.fc): measure it with experiments/m5_fll_off.py")
+                return steer.predictive_fc(target_ps, sf0, fc_plant, late_s=late_s, step_s=args.steer_step,
+                                           settle_s=args.steer_settle, lag_s=args.fc_model_lag,
+                                           dead_s=args.fc_model_dead, **overrides)
             return steer.predictive_for(target_ps, sf0, loop, late_s=late_s, step_s=args.steer_step,
                                         settle_s=args.steer_settle, max_step=args.steer_max_step,
                                         max_offset=args.steer_max_offset, **overrides)
@@ -308,6 +323,13 @@ def main() -> None:
                         help="predictive: cost of a change, ps^2 per unit^2 (default: the step's)")
     parser.add_argument("--steer-response-lag", type=float, default=0.0,
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
+    parser.add_argument("--steer-actuator", choices=("sf", "fc"), default="sf",
+                        help="predictive: what the law sets, SF, or FC with the unit at GA 1 (2.3.0.2; 0.1 s steps, "
+                             "the board config's fs725 fc)")
+    parser.add_argument("--fc-model-lag", type=float, default=None, metavar="S",
+                        help="FC: the law's model lag (default: the board config's times steer.FC_MODEL_LAG)")
+    parser.add_argument("--fc-model-dead", type=float, default=None, metavar="S",
+                        help="FC: the law's model dead time (default: the board config's plus steer.FC_MODEL_DEAD_S)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
     parser.add_argument("--fc-every", type=float, default=0.0, metavar="S",
                         help="with --fs725: log the FS725's FC every S seconds (it changes between most reads 0.1 s apart)")
@@ -371,8 +393,10 @@ def main() -> None:
                                               "pps_out_idle", "synced_rms", "synced_mean",
                                               "synced_clear_rms", "fs725", "fc_every", "pps_out_comp",
                                               "pps_out_ps_per_frac", "pps_out_base_frac", "pps_out_comp_at",
-                                              "pps_out_comp_window")})
+                                              "pps_out_comp_window", "steer_actuator", "fc_model_lag",
+                                              "fc_model_dead")})
     loop = None
+    fc_plant = None
     if args.fs725 is not None:
         config = pl.board.config
         try:
@@ -381,8 +405,11 @@ def main() -> None:
             raise SystemExit(str(exc)) from exc
         assert config is not None  # configure_fs725 refuses a board without one
         fs = config.fs725
+        fc_plant = fs.get("fc")
         mark(f"FS725 S/N {fs['serial']} on {args.fs725}, as the board config names it: GA {fs['gain']}, "
-             f"loop {loop if loop else 'not measured at this gain'}")
+             f"loop {loop if loop else 'not measured at this gain'}"
+             + (f", FC answer {fc_plant['lag_s']} s lag, {fc_plant['dead_s']} s dead, {fc_plant['ps_per_step']} "
+                f"ps/s per step" if fc_plant else ""))
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
     if time.time() < start_at:
@@ -397,11 +424,17 @@ def main() -> None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
+        if args.steer_actuator == "fc" and (args.steer_mode != "predictive" or args.steer_target_ns is None
+                                            or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
+            raise SystemExit(f"--steer-actuator fc is for the predictive law with --steer-target-ns, on steps of "
+                             f"{sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
         late_s = args.steer_late_slots / pl.slots.slots_per_second
         try:
             control = FrequencyControl(args.fs725, emit, set_sf=bool(args.sf_step or args.steer_target_ns is not None),
-                                       law=steering_law(args, late_s, loop), step_s=args.steer_step, late=late_s > 0,
-                                       keep_sf=args.keep_sf, say=mark)
+                                       law=steering_law(args, late_s, loop, fc_plant), step_s=args.steer_step,
+                                       late=late_s > 0, keep_sf=args.keep_sf,
+                                       actuator=args.steer_actuator if args.steer_target_ns is not None else "sf",
+                                       say=mark)
         except (steer.SteeringError, FS725Error) as exc:
             raise SystemExit(str(exc)) from exc
     step_theta = None

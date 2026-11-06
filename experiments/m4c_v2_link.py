@@ -32,7 +32,8 @@ slope and the scatter about the fitted line.  The M5 scenarios, each board on it
 own FS725, all start with B's acquisition and log one line per second instead of
 the queue entries: ``free`` lets the clocks run, ``sf-step`` raises B's SF by 100
 from 120 s to 240 s (theta's rate must rise by 100 ps/s), and ``steer`` steers B's
-FS725 so that theta goes to theta0, the shared-reference theta of the wiring on the bench
+FS725 so that theta goes to theta0, through FC with the predictive law on 0.1 s steps
+(``--steer-actuator fc``, since rf-clock 2.3.0.2; ``--b-args`` overrides it), the shared-reference theta of the wiring on the bench
 (links/887329260072A_8873292600AB.json: its ``current`` wiring, or ``--wiring NAME``;
 ``--target-ns`` overrides it).  B's FS725 is the one its board config names, on the port
 the config records (``m4c_link --fs725``).  ``--scope`` logs the two FS725s' 10 MHz on the
@@ -87,7 +88,10 @@ SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "acquire": ("", "--acquire --fs725"),
     "free": ("--no-entries", "--no-entries --acquire --fs725"),
     "sf-step": ("--no-entries", "--no-entries --acquire --fs725 --sf-step 100 --sf-step-at 120 --sf-step-for 120"),
-    "steer": ("--no-entries", "--no-entries --acquire --fs725 --steer-target-ns {target}"),
+    # B steered through FC, the regular way since rf-clock 2.3.0.2 (results/precision-20261105
+    # section 8); --b-args overrides it, e.g. --steer-actuator sf --steer-step 0.2 --steer-late-slots 50
+    "steer": ("--no-entries", "--no-entries --acquire --fs725 --steer-target-ns {target} --steer-mode predictive "
+                              "--steer-step 0.1 --steer-late-slots 25 --steer-actuator fc"),
 }
 
 

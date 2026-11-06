@@ -60,6 +60,8 @@ from typing import Callable, Protocol
 DEFAULT_PORT = "/dev/ttyUSB0"
 SF_LIMIT = 2000  # parts in 1e12
 PP_LIMIT = 999_999_999  # ns
+FC_HIGH = (0, 4095)  # FC's coarse DAC (PRS10 manual p. 24)
+FC_LOW = (1024, 3072)  # its fine DAC, kept to half its range; FC = 1000 high + low in fine steps
 TIMEOUT_S = 1.0
 # The PRS10 status bytes (PRS10 manual, "Status Bytes"): bit -> condition, per byte.
 STATUS_BITS = (
@@ -285,6 +287,21 @@ class FS725:
         except ValueError as exc:
             raise FS725Error(f"FC? returned {reply!r}") from exc
         return high, low
+
+    def write_frequency_control(self, high: int, low: int) -> None:
+        """Set FC, the crystal's tuning, without reading it back, for a law that writes it
+        several times a second (``FrequencyControl`` with the FC actuator; the caller logs and
+        checks it).  Meant for GA 1: the loop then pulls FC back with a 128 s time constant,
+        about 2 low steps a second 200 steps off, so a value written every step stays (measured
+        on B's unit, 2026-11-06); at the normal gains the loop pulls it back within seconds.
+        Not at GA 0 or with the loop stopped (LO 0): the unit then reports itself unlocked and
+        its 1PPS stops (PRS10 manual p. 20, "LM"; measured).  The fine DAC is kept to its half
+        range (``FC_LOW``, p. 24); the crystal follows FC through a 1 s RC (p. 47)."""
+        if not isinstance(high, int) or not FC_HIGH[0] <= high <= FC_HIGH[1]:
+            raise ValueError(f"FC's coarse DAC takes {FC_HIGH[0]} to {FC_HIGH[1]}: {high!r}")
+        if not isinstance(low, int) or not FC_LOW[0] <= low <= FC_LOW[1]:
+            raise ValueError(f"FC's fine DAC takes {FC_LOW[0]} to {FC_LOW[1]}: {low!r}")
+        self.port.write(f"FC{high},{low}\r".encode())
 
     def gain(self) -> int:
         """GA: the frequency lock loop's gain, 0 (the loop stopped) to 10; each step up halves

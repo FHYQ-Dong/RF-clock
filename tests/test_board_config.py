@@ -12,7 +12,8 @@ SERIAL = "16908308541004718c1ca080a0800000"
 
 
 FS725_ENTRY = {"serial": "41175", "identity": "PRS10_3.24_SN_41175", "gain": 7,
-               "loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65, "dead_s": 0.125, "measured": {"steps": 2}}}}
+               "loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65, "dead_s": 0.125, "measured": {"steps": 2}}},
+               "fc": {"lag_s": 1.12, "dead_s": 0.0, "ps_per_step": 0.86, "measured": {"steps": 12}}}
 
 
 def test_config_round_trips(tmp_path):
@@ -36,6 +37,9 @@ def test_config_round_trips(tmp_path):
     {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"7": {"k_per_s": 1.5, "lag_s": 1.65}}}},
     {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"7": {"k_per_s": 0, "lag_s": 1.65, "dead_s": 0.1}}}},
     {"serial": SERIAL, "fs725": FS725_ENTRY | {"loops": {"GA 7": FS725_ENTRY["loops"]["7"]}}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"fc": {"lag_s": 1.12, "dead_s": 0.0}}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"fc": {"lag_s": 1.12, "dead_s": -0.1, "ps_per_step": 0.86}}},
+    {"serial": SERIAL, "fs725": FS725_ENTRY | {"fc": {"lag_s": 1.12, "dead_s": 0.0, "ps_per_step": 0.86, "gain": 1}}},
 ])
 def test_bad_configs_are_refused(data):
     with pytest.raises(BoardConfigError):

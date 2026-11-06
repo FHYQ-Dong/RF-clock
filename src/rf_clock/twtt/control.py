@@ -19,7 +19,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
-from rf_clock.fs725 import FS725, FS725Error, check_config
+from rf_clock.fs725 import FC_LOW, FS725, FS725Error, check_config
 from rf_clock.pl.board_config import BoardConfig, BoardConfigError, config_path
 
 from . import steer
@@ -58,12 +58,29 @@ class FrequencyControl:
     PLL off, so that SF takes effect, and back on at the end if it was; SF set once to the
     value read (``sf0``), and back there at the end unless ``keep_sf``.  ``law(sf0, gain)``
     builds the control law once SF and GA are read; ``late``: steer on theta over the end of
-    each second; ``step_s`` below 1: on ``StepTheta``'s steps instead."""
+    each second; ``step_s`` below 1: on ``StepTheta``'s steps instead.
+
+    ``actuator="fc"`` (with a law on steps below a second, ``steer.predictive_fc``): the law
+    sets FC, the crystal's tuning, instead of SF (results/precision-20261105 section 8).  The
+    unit goes to GA 1, where it stays locked and keeps its 1PPS while FC written stays (GA 0
+    or LO 0 would stop the 1PPS); FC is written every step, also when the law keeps it, which
+    undoes the slow loop's pull; the law starts from the FC read (``sf0`` holds 1000 coarse +
+    fine steps), its fine DAC first brought back near the middle of its range by a carry to
+    the coarse one when less than ``FC_ROOM`` is left, and the law's range is what is left;
+    SF is not touched.  When the steering stops, and at the end, GA goes back."""
+
+    FC_ROOM = 500  # fine steps the law needs on either side of its start
 
     def __init__(self, port: str, emit: Callable[..., None], *, set_sf: bool,
                  law: Callable[[int, int], Law] | None = None, step_s: float = 1.0, late: bool = False,
-                 keep_sf: bool = False, say: Callable[[str], None] = print) -> None:
+                 keep_sf: bool = False, actuator: str = "sf", say: Callable[[str], None] = print) -> None:
+        if actuator not in ("sf", "fc"):
+            raise ValueError(f"actuator is 'sf' or 'fc': {actuator!r}")
+        if actuator == "fc" and (law is None or step_s >= 1):
+            raise ValueError("the FC actuator is for a control law on steps below a second")
         self.emit, self.say = emit, say
+        self.fc = actuator == "fc"
+        self.gain_restore: int | None = None
         self.unit = FS725.open(port, log=lambda e: emit("fs725", **e))
         try:
             status = self.unit.status()
@@ -73,16 +90,25 @@ class FrequencyControl:
             if set_sf and self.unit.phase_lock():
                 self.unit.set_phase_lock(False)  # SF is ignored while it phase-locks to a 1 pps input
                 self.pll_restore = True  # back on at the end, as found
-            self.sf0 = self.sf = self.unit.frequency()
-            if set_sf:
-                # A unit that has had no SF command since power-up takes SF from its calibration
-                # pot, whose reading flickers by a unit (A's: 2 and 3, 2026-11-05), so check_unit
-                # would see a change nobody made.  The first SF command hands SF over from the pot
-                # until the next restart: set the value read, once, here.
-                self.unit.set_frequency(self.sf0)
-            gain = self.unit.gain()
-            self.steering: Law | None = None if law is None else law(self.sf0, gain)
+            if self.fc:
+                gain = self.unit.gain()
+                self.sf0 = self.sf = self._start_fc(gain)
+                self.steering: Law | None = law(self.sf0, gain) if law is not None else None
+                room = min(self.sf0 - 1000 * self.fc_high - FC_LOW[0], FC_LOW[1] - (self.sf0 - 1000 * self.fc_high))
+                if self.steering is not None and hasattr(self.steering, "max_offset"):
+                    self.steering.max_offset = min(self.steering.max_offset, room)  # type: ignore[attr-defined]
+            else:
+                self.sf0 = self.sf = self.unit.frequency()
+                if set_sf:
+                    # A unit that has had no SF command since power-up takes SF from its calibration
+                    # pot, whose reading flickers by a unit (A's: 2 and 3, 2026-11-05), so check_unit
+                    # would see a change nobody made.  The first SF command hands SF over from the pot
+                    # until the next restart: set the value read, once, here.
+                    self.unit.set_frequency(self.sf0)
+                gain = self.unit.gain()
+                self.steering = None if law is None else law(self.sf0, gain)
         except BaseException:
+            self._restore_gain()
             self.unit.close()
             raise
         self.keep = keep_sf
@@ -90,8 +116,34 @@ class FrequencyControl:
         self.step_s = step_s
         self.steps_taken = 0
         emit("frequency_control", identity=self.unit.identify(), sf0=self.sf0, status=list(status.bytes),
-             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=gain)
-        say(f"FS725 SF {self.sf0} at the start; GA {gain}; 1 pps PLL {'on' if self.unit.phase_lock() else 'off'}")
+             conditions=status.conditions(), magnetic_dac=self.unit.magnetic_dac(), gain=gain, actuator=actuator)
+        if self.fc:
+            say(f"FS725 FC {self.fc_high},{self.sf0 - 1000 * self.fc_high} at the start, GA {gain} -> 1 for FC "
+                f"steering; 1 pps PLL {'on' if self.unit.phase_lock() else 'off'}")
+        else:
+            say(f"FS725 SF {self.sf0} at the start; GA {gain}; 1 pps PLL {'on' if self.unit.phase_lock() else 'off'}")
+
+    def _start_fc(self, gain: int) -> int:
+        """FC read, its fine DAC brought near the middle when short of room, GA 1; FC's total."""
+        high, low = self.unit.frequency_control()
+        if min(low - FC_LOW[0], FC_LOW[1] - low) < self.FC_ROOM:
+            shift = round((low - (FC_LOW[0] + FC_LOW[1]) / 2) / 1000)
+            self.unit.write_frequency_control(high + shift, low - 1000 * shift)
+            self.emit("fc_recentred", before=[high, low], after=[high + shift, low - 1000 * shift])
+            high, low = high + shift, low - 1000 * shift
+        self.gain_restore = gain
+        self.unit.set_gain(1)
+        self.fc_high = high
+        return 1000 * high + low
+
+    def _restore_gain(self) -> None:
+        if self.gain_restore is None:
+            return
+        try:
+            self.unit.set_gain(self.gain_restore)
+        except Exception as exc:
+            self.emit("restore_failed", reason=f"GA {self.gain_restore}: {exc}")
+        self.gain_restore = None
 
     def set(self, sf: int, why: str, at_count: float | None = None) -> None:
         """Set SF (``at_count``: when, on this node's PPS count, for the step's fit)."""
@@ -105,6 +157,7 @@ class FrequencyControl:
         self.emit("steer_stopped", reason=str(exc), sf=self.sf)
         self.say(f"steering stopped: {exc}")
         self.steering = None
+        self._restore_gain()  # FC steering: the unit's own loop takes the crystal back
 
     def step(self, record: dict, at_count: float) -> None:
         """One step's theta (``StepTheta``) into a law faster than a second; SF written at
@@ -117,14 +170,20 @@ class FrequencyControl:
             out = self.steering.step(record["index"], None if theta is None else theta * 1000)
             out["index"] = out.pop("count")
             self.emit("steer", count=record["count"], step=record["step"], **out)
-            if out["sf"] is not None:
+            if self.fc:  # every step: also undoes what the slow loop pulled since the last
+                new = self.sf if out["sf"] is None else out["sf"]
+                self.unit.write_frequency_control(self.fc_high, new - 1000 * self.fc_high)
+                if new != self.sf:
+                    self.emit("fc_set", fc=new, low=new - 1000 * self.fc_high, at_count=at_count, change=new - self.sf)
+                self.sf = new
+            elif out["sf"] is not None:
                 before = self.sf
                 self.unit.write_frequency(out["sf"])
                 self.sf = out["sf"]
                 self.emit("sf", sf=self.sf, why="steer", at_count=at_count, change=self.sf - before)
             self.steps_taken += 1
             if self.steps_taken % round(1 / self.step_s) == 0:
-                steer.check_unit(self.unit, self.sf)
+                (steer.check_fc if self.fc else steer.check_unit)(self.unit, self.sf)
         except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
             self._stopped(exc)
 
@@ -142,7 +201,9 @@ class FrequencyControl:
             self._stopped(exc)
 
     def close(self) -> None:
-        if not self.keep and self.sf != self.sf0:
+        if self.fc:  # FC stays where the law left it; the unit's own loop at its gain takes it back
+            self._restore_gain()
+        elif not self.keep and self.sf != self.sf0:
             try:
                 self.set(self.sf0, "restore")
             except Exception as exc:
@@ -152,7 +213,7 @@ class FrequencyControl:
                 self.unit.set_phase_lock(True)
             except Exception as exc:
                 self.emit("restore_failed", reason=f"1 pps PLL: {exc}")
-        self.say(f"FS725 SF {self.sf} at the end (started at {self.sf0})")
+        self.say(f"FS725 {'FC' if self.fc else 'SF'} {self.sf} at the end (started at {self.sf0})")
         self.unit.close()
 
 

@@ -9,7 +9,7 @@ import pytest
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.fs725 import FS725, FS725Error
 from rf_clock.pl.board_config import BoardConfig, BoardConfigError
-from rf_clock.twtt.control import EdgeCompensation, SyncedRule, configure_fs725
+from rf_clock.twtt.control import EdgeCompensation, FrequencyControl, SyncedRule, configure_fs725
 from rf_clock.twtt.pairs import SecondTheta, StepTheta
 from rf_clock.pl.abi import ABI
 from rf_clock.pl.measurements import OwnMeasurement, PeerPacket
@@ -221,3 +221,95 @@ def test_the_edge_compensation_carries_theta_to_the_edge():
         far.add(9, slot, 1.0)  # a whole ns off: clipped
     clipped = far.frac(10.0)
     assert clipped is not None and clipped[0] == 0xFFFF
+
+
+class SteeredPRS10:
+    """A locked PRS10 that keeps GA, PL, SF and FC as written and answers their queries."""
+
+    def __init__(self, fc: tuple[int, int], ga: int = 8) -> None:
+        self.ga, self.fc, self.pll, self.sf = ga, fc, 0, 3
+        self.replies: list[bytes] = []
+        self.sent: list[str] = []
+
+    def write(self, data: bytes) -> None:
+        command = data.decode().strip("\r")
+        self.sent.append(command)
+        name, arg = command[:2], command[2:]
+        if arg == "?":
+            self.replies.append({"ID": "PRS10_3.56_SN_107129", "ST": "0,0,0,0,128,0", "GA": str(self.ga),
+                                 "PL": str(self.pll), "SF": str(self.sf), "MR": "2621",
+                                 "FC": f"{self.fc[0]},{self.fc[1]}"}[name].encode())
+        elif name == "GA":
+            self.ga = int(arg)
+        elif name == "PL":
+            self.pll = int(arg)
+        elif name == "SF":
+            self.sf = int(arg)
+        elif name == "FC":
+            high, low = (int(v) for v in arg.split(","))
+            self.fc = (high, low)
+
+    def read_line(self, timeout: float) -> bytes | None:
+        return self.replies.pop(0) if self.replies else None
+
+    def flush_input(self) -> None:
+        self.replies.clear()
+
+    def close(self) -> None:
+        pass
+
+
+class ScriptedLaw:
+    """A control law that returns the FC values it is given, one a step."""
+
+    def __init__(self, fc0: int, wanted: list[int | None]) -> None:
+        self.fc0, self.wanted, self.max_offset = fc0, wanted, 1000
+
+    def step(self, count: int, theta_ps: float | None) -> dict:
+        return {"count": count, "sf": self.wanted.pop(0) if self.wanted else None}
+
+
+def test_frequency_control_steers_through_fc_at_ga_1(monkeypatch):
+    prs = SteeredPRS10((1675, 1250))  # the fine DAC 226 steps from its end: brought to the middle first
+    monkeypatch.setattr(FS725, "open", lambda path, **kwargs: FS725(prs, **kwargs))
+    lines: list[tuple[str, dict]] = []
+    laws: list[ScriptedLaw] = []
+
+    def law(fc0: int, gain: int) -> ScriptedLaw:
+        laws.append(ScriptedLaw(fc0, [fc0 + 5, None, fc0 - 3]))
+        return laws[-1]
+
+    control = FrequencyControl("port", lambda kind, **f: lines.append((kind, f)), set_sf=True, law=law,
+                               step_s=0.1, actuator="fc", say=lambda text: None)
+    assert prs.fc == (1674, 2250) and prs.ga == 1 and prs.sf == 3  # SF untouched
+    assert control.sf0 == 1_676_250 and laws[0].fc0 == 1_676_250
+    assert laws[0].max_offset == 822  # what the fine DAC has left above
+    assert ("fc_recentred", {"before": [1675, 1250], "after": [1674, 2250]}) in lines
+    for index in range(3):
+        control.step({"count": 10, "step": index, "index": index, "theta_late_ns": 0.0}, at_count=10.1 * index)
+    assert prs.fc == (1674, 2247)
+    assert sum(1 for c in prs.sent if c.startswith("FC1674")) == 4  # every step, also when the law keeps FC
+    assert [f["change"] for kind, f in lines if kind == "fc_set"] == [5, -8]
+    prs.ga = 7  # the unit restarted, with its EEPROM's GA: the once-a-second check stops the steering
+    for index in range(3, 10):
+        control.step({"count": 10, "step": index, "index": index, "theta_late_ns": 0.0}, at_count=10.0)
+    assert control.steering is None and prs.ga == 8  # GA back as soon as the steering stops
+    assert any(kind == "steer_stopped" and "GA is 7" in f["reason"] for kind, f in lines)
+    control.close()
+    assert prs.ga == 8 and not any(c.startswith(("GA!", "FC!")) for c in prs.sent)
+
+
+def test_frequency_control_gives_ga_back_at_the_end_and_refuses_fc_without_a_fast_law(monkeypatch):
+    prs = SteeredPRS10((1675, 2100), ga=7)
+    monkeypatch.setattr(FS725, "open", lambda path, **kwargs: FS725(prs, **kwargs))
+    control = FrequencyControl("port", lambda kind, **f: None, set_sf=True,
+                               law=lambda fc0, gain: ScriptedLaw(fc0, []), step_s=0.1, actuator="fc",
+                               say=lambda text: None)
+    assert prs.fc == (1675, 2100) and prs.ga == 1  # room enough: no carry
+    control.close()
+    assert prs.ga == 7
+    with pytest.raises(ValueError):
+        FrequencyControl("port", lambda kind, **f: None, set_sf=True, law=None, step_s=0.1, actuator="fc")
+    with pytest.raises(ValueError):
+        FrequencyControl("port", lambda kind, **f: None, set_sf=True, law=lambda fc0, gain: ScriptedLaw(fc0, []),
+                         step_s=1.0, actuator="fc")

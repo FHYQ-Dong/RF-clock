@@ -92,7 +92,7 @@ from typing import Any, Iterator, Sequence
 
 import numpy as np
 
-from rf_clock.fs725 import FS725Error
+from rf_clock.fs725 import FC_HIGH, FC_LOW, FS725Error
 
 GATE = 5.0  # reject a theta further than this many standard deviations from the prediction
 MAX_REJECTS = 10  # rejections in a row after which the filter starts again
@@ -286,6 +286,23 @@ STEP_SETTINGS = {1.0: dict(ar=AR4, horizon=4, moves=2, lam=0.05, command_s=0.15)
                  0.2: dict(ar=AR20_STEP_02, horizon=20, moves=2, lam=0.2, command_s=0.03)}
 STEP_DT = 0.02  # s, the grid of the loop's step response
 
+# Steering through FC (``predictive_fc``), B's unit at GA 1: the AR model of theta's frequency on
+# 0.1 s steps (40 of them, fitted on B's record at GA 1, results/m4c-v2-acquire-20261106_030506);
+# the law's settings, lam per (ps/s)^2 as for SF (scaled by the plant's gain squared for FC's
+# steps), changes of up to 1000 fine steps; and its model slower than the plant measured, the lag
+# times FC_MODEL_LAG and the dead time plus FC_MODEL_DEAD_S: in replay (results/precision-20261105
+# section 8) that holds theta to 4.6-5.6 ps rms with the plant's lag 0.8-1.1 s, dead time up to
+# 0.1 s and gain +-10 %, and oscillates once its dead time is 0.2 s
+AR40_STEP_01 = (0.3493, 0.4318, 0.2519, 0.0724, -0.001, -0.0456, -0.05, -0.047, -0.0346, -0.0154,
+                -0.0204, -0.0002, 0.0018, 0.004, 0.0113, -0.0014, 0.0057, -0.0149, -0.0007, 0.0021,
+                -0.0126, -0.0041, -0.0036, -0.004, 0.0231, 0.0197, -0.0042, 0.0039, -0.019, -0.0016,
+                0.0122, -0.0109, 0.0011, -0.0066, -0.0004, 0.0035, 0.0105, 0.0131, 0.0206, -0.0201)
+FC_STEP_SETTINGS: dict[float, dict[str, Any]] = {
+    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=4, lam=0.08, command_s=0.03, max_step=1000, max_offset=1000)}
+FC_MODEL_LAG = 1.25
+FC_MODEL_DEAD_S = 0.1
+FC_TOLERANCE = 3  # fine steps between the FC last written and FC? (the slow loop's pull in a step)
+
 
 def loop_response(k: float, lag_s: float, dead_s: float, *, dt: float = STEP_DT, span_s: float = 60.0) -> np.ndarray:
     """The output frequency's answer to a unit step of the rubidium reference (SF) at t = 0,
@@ -300,6 +317,15 @@ def loop_response(k: float, lag_s: float, dead_s: float, *, dt: float = STEP_DT,
         out += (fc - out) / lag_s * dt
         y[i] = out
     return y
+
+
+def lag_response(lag_s: float, dead_s: float, *, dt: float = STEP_DT, span_s: float = 60.0) -> np.ndarray:
+    """The crystal's frequency answer to a unit step of FC at t = 0, the loop out of the way
+    (GA 1): FC's DAC reaches the varactor through a 1 s RC (PRS10 manual p. 47), a first-order
+    lag ``lag_s`` after ``dead_s``; fitted on B's unit at 1.12 s after about 0 s
+    (results/precision-20261105 section 8)."""
+    t = np.arange(0, span_s, dt)
+    return np.where(t > dead_s, 1.0 - np.exp(-(t - dead_s) / lag_s), 0.0)
 
 
 def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, at: Sequence[float], *,
@@ -372,8 +398,9 @@ class LoopModel:
     a unit change asked for in step k - j gives (ps per SF unit)."""
 
     def __init__(self, k: float, lag_s: float, dead_s: float, *, window: tuple[float, float] = (0.0, 1.0),
-                 command_s: float = 0.15, table_s: int = 120, step_s: float = 1.0) -> None:
-        y = loop_response(k, lag_s, dead_s)
+                 command_s: float = 0.15, table_s: int = 120, step_s: float = 1.0,
+                 response: np.ndarray | None = None) -> None:
+        y = loop_response(k, lag_s, dead_s) if response is None else np.asarray(response, dtype=float)
         self._phase = np.concatenate([[0.0], np.cumsum(y[:-1]) * STEP_DT])
         self._t = np.arange(self._phase.size) * STEP_DT
         self._final = float(y[-1])
@@ -386,6 +413,12 @@ class LoopModel:
         n = int(round(table_s / step_s))
         self._table = np.array([float(np.mean(self.phase(j * step_s - step_s - command_s + grid)))
                                 for j in range(n + 1)])
+
+    @classmethod
+    def crystal(cls, lag_s: float, dead_s: float, gain: float, **kwargs: Any) -> "LoopModel":
+        """theta's answer to one change of FC, in its fine steps, with the unit at GA 1: the
+        crystal follows FC through a first-order lag (``lag_response``), ``gain`` ps/s per step."""
+        return cls(0.0, lag_s, dead_s, response=gain * lag_response(lag_s, dead_s), **kwargs)
 
     def phase(self, s: np.ndarray | float) -> np.ndarray:
         """The phase (ps) of a unit change, s seconds after it leaves (interpolated)."""
@@ -439,6 +472,7 @@ class PredictiveSteering:
     max_step: int = 100  # per change
     max_offset: int = 500
     max_saturated_s: float = 120
+    limits: tuple[int, int] = (-SF_LIMIT, SF_LIMIT)  # the setting's own range: SF's, or FC's (predictive_fc)
     apply: bool = True
     sf: int = 0
     first_count: int | None = None
@@ -529,8 +563,8 @@ class PredictiveSteering:
         plan, *_ = np.linalg.lstsq(a, b, rcond=None)
         wanted = self.sf + float(plan[0]) + self.remainder
         record["error_predicted_ps"] = float(error[0])
-        lo = max(self.sf0 - self.max_offset, -SF_LIMIT)
-        hi = min(self.sf0 + self.max_offset, SF_LIMIT)
+        lo = max(self.sf0 - self.max_offset, self.limits[0])
+        hi = min(self.sf0 + self.max_offset, self.limits[1])
         sf = max(lo, min(hi, max(self.sf - self.max_step, min(self.sf + self.max_step, round(wanted)))))
         if lo <= round(wanted) <= hi:
             self.saturated_since = None
@@ -570,6 +604,44 @@ def predictive_for(target_ps: float, sf0: int, loop: tuple[float, float, float],
     window = (step_s - late_s, step_s) if late_s else (0.0, step_s)
     model = LoopModel(*loop, window=window, command_s=command_s, step_s=step_s)
     return PredictiveSteering(target_ps=target_ps, sf0=sf0, model=model, **settings)
+
+
+def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.0, step_s: float = 0.1,
+                  lag_s: float | None = None, dead_s: float | None = None, **kwargs: Any) -> PredictiveSteering:
+    """A ``PredictiveSteering`` that sets FC (1000 coarse + fine steps, from ``fc0``) instead of
+    SF, B's unit at GA 1 (``FrequencyControl`` with ``actuator="fc"``).  ``plant``: the board
+    config's ``fs725["fc"]``, the crystal's answer to FC (``lag_s``, ``dead_s``, ``ps_per_step``);
+    the law's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``) unless ``lag_s`` and
+    ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2."""
+    if step_s not in FC_STEP_SETTINGS:
+        raise SteeringError(f"no FC settings for steps of {step_s} s (known: {sorted(FC_STEP_SETTINGS)})")
+    settings = dict(FC_STEP_SETTINGS[step_s])
+    command_s = settings.pop("command_s")
+    settings.update(kwargs)
+    gain = float(plant["ps_per_step"])
+    settings["lam"] = settings["lam"] * gain ** 2
+    settings["limits"] = (1000 * FC_HIGH[0] + FC_LOW[0], 1000 * FC_HIGH[1] + FC_LOW[1])
+    window = (step_s - late_s, step_s) if late_s else (0.0, step_s)
+    model = LoopModel.crystal(lag_s if lag_s is not None else plant["lag_s"] * FC_MODEL_LAG,
+                              dead_s if dead_s is not None else plant["dead_s"] + FC_MODEL_DEAD_S, gain,
+                              window=window, command_s=command_s, step_s=step_s)
+    return PredictiveSteering(target_ps=target_ps, sf0=fc0, model=model, **settings)
+
+
+def check_fc(unit: Any, fc: int) -> None:
+    """Now and then while steering through FC: the 1 pps PLL still off, GA still 1 and the unit
+    locked (else its 1PPS stops), and FC within ``FC_TOLERANCE`` of the value last written."""
+    if unit.phase_lock():
+        raise SteeringError("the FS725's 1 pps PLL is on again (did the unit restart?): steering stops")
+    gain = unit.gain()
+    if gain != 1:
+        raise SteeringError(f"the FS725's GA is {gain}, not the 1 FC steering set (did the unit restart?): steering stops")
+    high, low = unit.frequency_control()
+    if abs(1000 * high + low - fc) > FC_TOLERANCE:
+        raise SteeringError(f"the FS725's FC is {high},{low} ({1000 * high + low}), not the {fc} last written: "
+                            "steering stops")
+    if not unit.status().rb_locked:
+        raise SteeringError("the FS725 lost its rubidium lock: steering stops")
 
 
 def fit_sf_response(counts: Sequence[float], theta_ps: Sequence[float], at_count: float, *,

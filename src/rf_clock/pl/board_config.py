@@ -34,7 +34,11 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   frequency lock loop's gain GA the link sets at its start; ``loops``,
                   per GA the loop measured from FC's answer to SF steps (``k_per_s``,
                   ``lag_s``, ``dead_s``, and ``measured``: when and how), which the
-                  predictive control law steers by.  ``rf_clock.fs725.check_config``
+                  predictive control law steers by; ``fc``, optional, the crystal's
+                  answer to FC with the unit at GA 1 (``lag_s``, ``dead_s``,
+                  ``ps_per_step``: theta's rate per fine step, and ``measured``), which
+                  the law steers by when it sets FC (``m4c_link --steer-actuator fc``;
+                  measured with experiments/m5_fll_off.py).  ``rf_clock.fs725.check_config``
                   checks a unit against it (docs/ABI.md 11.13)
 
 Example (887329260072A; the delays from results/lmx-sync-loopback-20261019)::
@@ -138,14 +142,21 @@ def check_fs725(entry: Any, source: str = "board config") -> None:
                 and all(type(loop.get(key)) in (int, float) for key in ("k_per_s", "lag_s", "dead_s"))
                 and loop["k_per_s"] > 0 and loop["lag_s"] > 0 and loop["dead_s"] >= 0)
 
+    def fc_ok(fc: Any) -> bool:
+        return (isinstance(fc, dict) and set(fc) <= {"lag_s", "dead_s", "ps_per_step", "measured"}
+                and all(type(fc.get(key)) in (int, float) for key in ("lag_s", "dead_s", "ps_per_step"))
+                and fc["lag_s"] > 0 and fc["dead_s"] >= 0 and fc["ps_per_step"] > 0)
+
     loops = entry.get("loops", {}) if isinstance(entry, dict) else None
-    if (not isinstance(entry, dict) or not set(entry) <= {"serial", "identity", "port", "gain", "loops"}
+    if (not isinstance(entry, dict) or not set(entry) <= {"serial", "identity", "port", "gain", "loops", "fc"}
+            or ("fc" in entry and not fc_ok(entry["fc"]))
             or not isinstance(entry.get("serial"), str) or not entry["serial"].isdigit()
             or not isinstance(entry.get("port", ""), str)
             or type(entry.get("gain")) is not int or not 0 <= entry["gain"] <= 10
             or not isinstance(loops, dict) or not all(loop_ok(ga, loop) for ga, loop in loops.items())):
-        raise BoardConfigError(f"{source}: fs725 must hold serial (digits), port, gain (0-10) and loops (per gain "
-                               f"k_per_s, lag_s, dead_s, measured), not {entry!r}")
+        raise BoardConfigError(f"{source}: fs725 must hold serial (digits), port, gain (0-10), loops (per gain "
+                               f"k_per_s, lag_s, dead_s, measured) and optionally fc (lag_s, dead_s, ps_per_step, "
+                               f"measured), not {entry!r}")
 
 
 def config_path() -> Path:

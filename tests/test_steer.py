@@ -5,9 +5,10 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import (AR4, AR20_STEP_02, ClockFilter, LoopModel, PredictiveSteering, Steering, SteeringError,
-                                  check_unit, filter_for, fit_frequency_ar, fit_loop, fit_sf_response, follow, lag_phase,
-                                  loop_response, predictive_for)
+from rf_clock.twtt.steer import (AR4, AR20_STEP_02, AR40_STEP_01, FC_MODEL_DEAD_S, FC_MODEL_LAG, ClockFilter,
+                                  LoopModel, PredictiveSteering, Steering, SteeringError, check_unit, filter_for,
+                                  fit_frequency_ar, fit_loop, fit_sf_response, follow, lag_phase, lag_response,
+                                  loop_response, predictive_fc, predictive_for)
 
 # B's FS725 (S/N 107129) by GA, as its board config holds it (results/fs725-fll-20261105)
 LOOPS = {7: (0.95, 1.1, 0.15), 8: (2.2, 1.2, 0.12)}
@@ -338,3 +339,56 @@ def test_old_changes_fold_into_the_linear_tail():
     for k in (2999, 3010, 3100):  # own() holds for the last step taken and later ones
         brute = float(np.dot(changes, model.answer(k - np.asarray(asked))))
         assert steering.own(k) == pytest.approx(brute, abs=1e-6)
+
+
+FC_PLANT = {"lag_s": 1.12, "dead_s": 0.0, "ps_per_step": 0.86}  # B's crystal at GA 1 (results/precision-20261105)
+
+
+def test_the_crystal_model_answers_as_the_rc():
+    y = lag_response(1.12, 0.1)
+    assert y[5] == 0.0 and y[-1] == pytest.approx(1.0)  # nothing within the dead time, then all of it
+    model = LoopModel.crystal(1.12, 0.0, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    assert float(model.answer(0)) == 0.0
+    late = float(model.answer(500)) - float(model.answer(499))
+    assert late == pytest.approx(0.086, abs=1e-4)  # 0.86 ps/s per fine step, 0.1 s a step
+    assert float(model.answer(1300)) - float(model.answer(1299)) == pytest.approx(0.086, abs=1e-4)  # beyond the table
+
+
+def test_predictive_fc_slows_the_model_and_scales_the_cost():
+    law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.05)
+    assert law.step_s == 0.1 and tuple(law.ar) == AR40_STEP_01 and (law.horizon, law.moves) == (30, 4)
+    assert law.lam == pytest.approx(0.08 * 0.86 ** 2) and (law.max_step, law.max_offset) == (1000, 1000)
+    slow = LoopModel.crystal(1.12 * FC_MODEL_LAG, FC_MODEL_DEAD_S, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    assert np.allclose(law.model.answer(np.arange(60)), slow.answer(np.arange(60)))
+    given = predictive_fc(0.0, 0, FC_PLANT, late_s=0.05, lag_s=1.25, dead_s=0.2, lam=0.1)
+    other = LoopModel.crystal(1.25, 0.2, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    assert np.allclose(given.model.answer(np.arange(60)), other.answer(np.arange(60)))
+    assert given.lam == pytest.approx(0.1 * 0.86 ** 2)
+    with pytest.raises(SteeringError, match="0.2 s"):
+        predictive_fc(0.0, 0, FC_PLANT, step_s=0.2)
+
+
+def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
+    # the 6 s resonance of wandering_pair on a 0.1 s grid; the plant 0.05 s later and 5 % harder
+    # than the measured one, the law's model slower still (FC_MODEL_LAG, FC_MODEL_DEAD_S)
+    rng = np.random.default_rng(6)
+    r, w = 0.99, 2 * np.pi * 0.1 / 6
+    ar = (2 * r * np.cos(w), -r * r)
+    f = np.zeros(5000)
+    for i in range(2, f.size):
+        f[i] = ar[0] * f[i - 1] + ar[1] * f[i - 2] + rng.normal(0, 1.0)
+    free = np.cumsum((-66.0 + f) * 0.1) + 2000.0
+    law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.05, ar=ar)
+    plant = LoopModel.crystal(1.12, 0.05, 0.86 * 1.05, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    asked, changes, theta = [], [], []
+    for k, fk in enumerate(free):
+        theta.append(fk + (float(np.dot(changes, plant.answer(k - np.asarray(asked)))) if asked else 0.0))
+        record = law.step(k, theta[-1])
+        if record["sf"] is not None:
+            asked.append(k)
+            changes.append(record["sf"] - (law.sf0 + sum(changes)))
+    theta = np.array(theta)
+    assert max(abs(c) for c in changes) <= law.max_step
+    after = theta[2000:]
+    assert abs(after.mean()) < 2
+    assert np.sqrt(np.mean(after ** 2)) < 0.2 * np.std(np.diff(free[::10]))  # a seventh of the second-to-second wander

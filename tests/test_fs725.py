@@ -12,6 +12,7 @@ class FakePRS10:
     def __init__(self, *, sf: int = 37, pll: int = 1, pps_locked: bool = False, input_ns: int = 0) -> None:
         self.sf, self.pll, self.pps_locked = sf, pll, pps_locked
         self.ga = 7
+        self.fc = (1675, 1618)
         self.input_ns = input_ns  # when the 1 pps input arrives, from a fixed origin
         self.output_ns = 0
         self.replies: list[bytes] = []
@@ -23,7 +24,7 @@ class FakePRS10:
         self.sent.append(command)
         name, arg = command[:2], command[2:]
         if arg == "?":
-            reply = {"ID": "PRS10_3.24_SN_12345", "SF": str(self.sf), "PL": str(self.pll), "MR": "3010", "GA": str(self.ga), "FC": "1675,1618",
+            reply = {"ID": "PRS10_3.24_SN_12345", "SF": str(self.sf), "PL": str(self.pll), "MR": "3010", "GA": str(self.ga), "FC": f"{self.fc[0]},{self.fc[1]}",
                      "TT": str((self.input_ns - self.output_ns) % 1_000_000_000),
                      "ST": f"0,0,0,0,{4 if self.pps_locked else 128},0"}[name]
             if self.restart_pending:
@@ -39,6 +40,8 @@ class FakePRS10:
             self.pps_locked = self.pps_locked and bool(self.pll)
         elif name == "GA":
             self.ga = int(arg)
+        elif name == "FC":
+            self.fc = tuple(int(v) for v in arg.split(","))
         elif name == "PP":
             self.output_ns -= int(arg)  # earlier
 
@@ -182,3 +185,15 @@ def test_write_frequency_sends_sf_alone():
     assert prs.sent == ["SF-17"]  # no query before or after
     with pytest.raises(ValueError):
         unit.write_frequency(2001)
+
+
+def test_write_frequency_control_sends_fc_alone():
+    prs = FakePRS10()
+    unit = FS725(prs)
+    unit.write_frequency_control(1676, 2100)
+    assert prs.sent[-1] == "FC1676,2100" and prs.fc == (1676, 2100)
+    assert unit.frequency_control() == (1676, 2100)
+    for high, low in ((1676, 1023), (1676, 3073), (4096, 2000), (-1, 2000), (1676, 2000.0)):
+        with pytest.raises(ValueError):
+            unit.write_frequency_control(high, low)  # type: ignore[arg-type]
+    assert not any(c.startswith("FC!") for c in prs.sent)
