@@ -148,6 +148,48 @@
             }
           ]
         }
+      },
+      "9": {
+        "k_per_s": 5.7,
+        "lag_s": 1.45,
+        "dead_s": 0.2,
+        "measured": {
+          "time": "2026-11-05T23:31:51+00:00",
+          "rf_clock": "2.2.0.10",
+          "sf_step": 200,
+          "hold_s": 40.0,
+          "rms_steps": 39.9,
+          "steps": [
+            {
+              "sf_change": 200,
+              "k_per_s": 5.9,
+              "lag_s": 1.4,
+              "dead_s": 0.3,
+              "rms_steps": 32.182
+            },
+            {
+              "sf_change": -200,
+              "k_per_s": 6.25,
+              "lag_s": 1.55,
+              "dead_s": 0.2,
+              "rms_steps": 32.975
+            },
+            {
+              "sf_change": 200,
+              "k_per_s": 6.25,
+              "lag_s": 1.65,
+              "dead_s": 0.25,
+              "rms_steps": 38.969
+            },
+            {
+              "sf_change": -200,
+              "k_per_s": 5.5,
+              "lag_s": 1.4,
+              "dead_s": 0.15,
+              "rms_steps": 46.144
+            }
+          ]
+        }
       }
     }
   }

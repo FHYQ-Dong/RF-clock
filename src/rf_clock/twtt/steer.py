@@ -308,7 +308,8 @@ def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, 
     times ``at`` (results/fs725-fll-20261105 section 5.1): FC (``t`` when read, ``fc`` in low DAC
     steps, 1000 high + low) from ``before_s`` before to ``after_s`` after each change, fitted by
     a + b t + D u(t), u FC's answer to a unit step in that loop, over the integrator's gain k
-    0.3-3 per s, the crystal's lag 0.5-2 s and the dead time 0-0.4 s in steps of 0.05.  FC
+    0.3-16 per s (in steps of 0.05 up to 3, 0.1 up to 6, 0.25 above: GA 9 and 10 put it
+    beyond 3), the crystal's lag 0.5-2 s and the dead time 0-0.4 s in steps of 0.05.  FC
     alone fixes them: the loop drives FC until the crystal, lagging behind it, meets the
     new reference.  One k, lag and dead time hold for every change (each its own a, b, D):
     FC's own wander, 10-20 steps rms over a fit, moves the fit of a single change of 100
@@ -317,7 +318,9 @@ def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, 
     ``alone``: each change fitted by itself, which shows how well they agree."""
     when = np.asarray(t, dtype=float)
     values = np.asarray(fc, dtype=float)
-    k, lag, dead = (a.ravel() for a in np.meshgrid(np.arange(0.3, 3.0 + 1e-9, 0.05), np.arange(0.5, 2.0 + 1e-9, 0.05),
+    gains = np.concatenate([np.arange(0.3, 3.0 - 1e-9, 0.05), np.arange(3.0, 6.0 - 1e-9, 0.1),
+                            np.arange(6.0, 16.0 + 1e-9, 0.25)])
+    k, lag, dead = (a.ravel() for a in np.meshgrid(gains, np.arange(0.5, 2.0 + 1e-9, 0.05),
                                                     np.arange(0.0, 0.4 + 1e-9, 0.05), indexing="ij"))
 
     def one(time: float) -> tuple[np.ndarray, np.ndarray, int]:
