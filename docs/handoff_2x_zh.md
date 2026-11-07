@@ -1,6 +1,6 @@
 # 从 rf-clock 1.x 升级到 2.x
 
-写给用过 1.x 包（最后一版 1.3.0.12）、要换到 2.x（目前 2.3.0.2）的人。细节见 [docs/ABI_zh.md](ABI_zh.md) 和 [docs/board_setup_zh.md](board_setup_zh.md)。下面链接的报告在 `results/` 里，它不在 Git 中；实验室 NAS 上有一份：`smb://kinabalu2.stdusr.yale.internal/kinabalu/Haoyu/RF-clock/results`（Windows 下为 `\\kinabalu2.stdusr.yale.internal\kinabalu\Haoyu\RF-clock\results`）。
+写给用过 1.x 包（最后一版 1.3.0.12）、要换到 2.x（目前 2.3.0.4）的人。细节见 [docs/ABI_zh.md](ABI_zh.md) 和 [docs/board_setup_zh.md](board_setup_zh.md)。下面链接的报告在 `results/` 里，它不在 Git 中；实验室 NAS 上有一份：`smb://kinabalu2.stdusr.yale.internal/kinabalu/Haoyu/RF-clock/results`（Windows 下为 `\\kinabalu2.stdusr.yale.internal\kinabalu\Haoyu\RF-clock\results`）。
 
 ## 改了什么
 
@@ -17,7 +17,7 @@
 
 ## 怎么用
 
-1. 两块板都装 2.x 的 wheel，方法和以前一样（[docs/ABI_zh.md §9.1](ABI_zh.md)）：`sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index rf_clock-2.3.0.2-py3-none-any.whl`。
+1. 两块板都装 2.x 的 wheel，方法和以前一样（[docs/ABI_zh.md §9.1](ABI_zh.md)）：`sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index rf_clock-2.3.0.4-py3-none-any.whl`。`experiments/m4c_v2_link.py` 等两个节点都就绪后才让它们开始（`m4c_link --start-file`），这要求两块板上都装 2.3.0.3 或更新的版本。
 2. 接线：每块板接自己的 FS725（10 MHz 和 1PPS）；每块板的 DAC_A 经带通滤波器和衰减器接到对方的 ADC_B；每台 FS725 的 RS-232 口接它所在板的 USB。输出 PPS 在 DAC_B 上。
 3. 把每块板的 FS725 记进它的板级配置，每台设备做一次：`$run -m rf_clock.checks.fs725_loop --port /dev/serial/by-id/... --gain GA --write`（`run` 同 README），B 用 GA 8，A 用 7；端口也会记下，之后运行不用再给。它把 SF 阶跃 200 再回来，共四次，只用 FC 拟合出设备的锁频环，约 3 分钟；不需要另一块板，也不需要链路。此后每次 `m4c_link --fs725` 启动时都会核对设备是不是记录的那台，并设定它的 GA，改了的话发 warning 说明从多少改成多少；配置里没有的设备会让节点停下，直到把它记进去。B 的设备改写 FC 来修正，所以它的那一项里还有晶振对 FC 的响应（`fc`：滞后 1.12 s，死区 0 s，每个细步 0.86 ps/s），用 `experiments/m5_fll_off.py` 测出后手工写进去；B 的已经记好了。
 4. 运行链路，可以在 RF-clock-PC 上（两块板空闲时）：
@@ -59,11 +59,11 @@
 | θ 测量次数 | 每秒 1 次 | 每秒约 250 次 |
 | θ 噪声，两块板共用一个参考 | 每秒 sd 2.95 ps | 每对 0.81-0.87 ps，每秒平均远低于 0.1 ps |
 | 一次测量送到对方节点的时间 | 约 1 s，走以太网 | 不到 2 ms，在下一个 burst 里 |
-| 修正误差（B 被修正时的 θ − θ₀，rms） | 66 ps（1.x 的 Kalman 控制律：τ 50 s，每 10 s 修正一次；在 2.x 链路上运行） | 27-29 ps（预测控制律，1 s 步长）；约 15 ps（0.2 s 步长，2.2.0.7：两次 20 分钟的运行分别为 15.3 和 15.7 ps）；5.3-5.6 ps（改写 FC，0.1 s 步长，2.3.0.2：两次 25 分钟的运行分别为 5.34 和 5.56 ps） |
+| 修正误差（B 被修正时的 θ − θ₀，rms） | 66 ps（1.x 的 Kalman 控制律：τ 50 s，每 10 s 修正一次；在 2.x 链路上运行） | 27-29 ps（预测控制律，1 s 步长）；约 15 ps（0.2 s 步长，2.2.0.7：两次 20 分钟的运行分别为 15.3 和 15.7 ps）；5.3-5.6 ps（改写 FC，0.1 s 步长，2.3.0.2：两次 25 分钟的运行分别为 5.34 和 5.56 ps；八小时的夜里每小时 5.36-5.64 ps） |
 | 节点 PPS 相对自己的 10 MHz，秒与秒之间 | FS725 1PPS：43.9 ps rms | 输出 PPS：7.7 ps rms（示波器的分辨率） |
-| B 被修正时 B 的输出 PPS 相对 A 的，秒与秒之间 | | 改写 FC 时 9.2 ps rms；加 `--pps-out-comp`（2.3）时 8.6-8.8 ps，示波器的分辨率为 7.8-8.2 ps |
+| B 被修正时 B 的输出 PPS 相对 A 的，秒与秒之间 | | 改写 FC 时 9.1-9.5 ps rms，1000 s 上 0.24-0.81 ps（八小时，[results/m5-overnight-20261107_011058/REPORT_zh.md](../results/m5-overnight-20261107_011058/REPORT_zh.md)）；加 `--pps-out-comp`（2.3）时 8.6-8.8 ps，示波器的分辨率为 7.8-8.2 ps |
 | PP 命令移动 PPS | 1PPS 的移动量偏差 40-260 ps | 输出 PPS 正好移动整 tick，偏差 3.1 ps rms |
-| 重新启动并重新引导后两板 PPS 的常数 | 1PPS：变了 145 ps | 输出 PPS：0.9 ps |
+| 重新启动并重新引导后两板 PPS 的常数 | 1PPS：变了 145 ps | 输出 PPS：最初两次相差 0.9 ps；一夜八次的标准差 0.28 ps |
 
 ## 怎么提升的
 

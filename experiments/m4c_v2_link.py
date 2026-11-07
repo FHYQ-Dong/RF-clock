@@ -80,6 +80,7 @@ NODE = " -m rf_clock[.]checks[.]m4c_link "
 # a node was ready 15.5-40.4 s (median 18.5 s) after this script started
 READY_S = 120
 READY = "ready: waiting for the start time in"  # rf_clock.checks.m4c_link.READY
+MIN_VERSION = (2, 3, 0, 3)  # the first rf-clock whose m4c_link takes --start-file
 LINK = Path(__file__).parents[1] / "links" / "887329260072A_8873292600AB.json"  # theta0 by wiring
 SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "link": ("", ""),
@@ -111,6 +112,20 @@ def start(ip: str, role: str, extra: str) -> None:
     if ssh(ip, cmd).returncode:
         sys.exit(f"cannot start node {role} on {ip}")
     print(f"node {role} started on {ip}", flush=True)
+
+
+def check_version(role: str, ip: str) -> None:
+    """The node's rf-clock must know ``--start-file`` (2.3.0.3); an older one would refuse the
+    argument only once started."""
+    got = ssh(ip, f"{PYNQ_PYTHON} -c 'import importlib.metadata as m; print(m.version(\"rf-clock\"))'").stdout.strip()
+    try:
+        ok = tuple(int(v) for v in got.split(".")) >= MIN_VERSION
+    except ValueError:
+        ok = False
+    if not ok:
+        sys.exit(f"node {role} ({ip}) has rf-clock {got or '(none)'}; this script needs "
+                 f"{'.'.join(map(str, MIN_VERSION))} or later on both boards (m4c_link --start-file): install the "
+                 f"release's wheel there (docs/handoff_2x.md, step 1), or run this script from that release")
 
 
 def stop_nodes(why: str) -> None:
@@ -234,8 +249,9 @@ def main() -> None:
     if args.scenario == "steer":
         print(f"steering to {target * 1000:+.1f} ps"
               + ("" if args.target_ns is not None else f", theta0 of wiring {wiring} ({LINK.name})"), flush=True)
-    for ip in BOARDS.values():
+    for role, ip in BOARDS.items():
         check_idle(ip)
+        check_version(role, ip)
     out = results_dir(f"m4c-v2-{args.scenario}")
     own = {"A": args.a_args, "B": args.b_args}
     extra = {role: f"{a.format(target=target)} {args.node_args} {own[role]}".strip()
