@@ -1512,7 +1512,7 @@ Plan section 5.2: with its slot engine off, a node finds the peer's PPS on its o
 | `locate(window_tick, own_pps_tick, own_pps_count, bursts, arrival_ticks)` | arrival − T_tx − `arrival_ticks` for each decoded burst, folded into ±0.5 s of this node's PPS | `Acquisition(window_tick, own_pps_tick, own_pps_count, bursts, peer_pps_tick, offset_ticks, peer_pps_count, spread_ticks)`, `offset_ns` |
 | `place_pulse_ns(offset_ns)` | the FS725 PP argument that moves this node's PPS by `offset_ns` (positive: later), rounded to whole ticks (since 2.0.1.2) | int, or None under half a tick |
 
-The offset is known to within the error of `arrival_ticks`, the assumed one-way delay. Whole ticks, because the PL latches the PPS on its tick: a move by whole ticks moves PPS_TICK by exactly that many and keeps the edge's place within its tick; the rest stays in theta. One acquisition of 11 ms takes about 25 s on the board's ARM.
+The offset is known to within the error of `arrival_ticks`, the assumed one-way delay. Whole ticks, because the PL latches the PPS on its tick: a move by whole ticks moves PPS_TICK by exactly that many and keeps the edge's place within its tick; the rest stays in theta. One acquisition of 11 ms takes about 3 s on the board's ARM since 2.3.0.4, of which 2.2 s is the coarse correlation (single-precision FFT blocks over the four cores, `correlation_power`; 24 s before, of 25 s).
 
 ### 11.16 `rf_clock.pl.pps_out` (the output PPS, since 2.1.0.0)
 

@@ -34,7 +34,7 @@ def test_two_bursts_give_the_peer_pps():
     rx_i, rx_q = np.rint(rx.real).astype(np.int16), np.rint(rx.imag).astype(np.int16)
 
     ref = fir.shape(prn, taps).astype(np.int64)
-    power = acq.correlation_power(rx_i, rx_q, ref, chunk=1 << 17)
+    power = acq.correlation_power(rx_i, rx_q, ref, nfft=1 << 17)
     lags = acq.find_peaks(power, ref.size)
     assert len(lags) == 2
     bursts = [acq.decode_burst(rx_i, rx_q, k, ref, p9.code_reference(taps), 4096) for k in lags]
@@ -57,3 +57,16 @@ def test_folding_and_place_pulse():
     assert acq.place_pulse_ns(-7234.1) == 7230
     assert acq.place_pulse_ns(4.9) is None
     assert acq.place_pulse_ns(-5.1) == 10
+
+
+def test_the_coarse_correlation_equals_the_direct_one_across_its_blocks():
+    # blocks of 4096 samples, 3001 lags each, three at a time: block edges and a short last block
+    rng = np.random.default_rng(9)
+    ref = rng.integers(-300, 300, 1096)
+    rx_i, rx_q = rng.integers(-2000, 2000, 50_000).astype(np.int16), rng.integers(-2000, 2000, 50_000).astype(np.int16)
+    power = acq.correlation_power(rx_i, rx_q, ref, nfft=1 << 12, blocks=3)
+    ci = np.correlate(rx_i.astype(np.float64), ref.astype(np.float64), mode="valid")
+    cq = np.correlate(rx_q.astype(np.float64), ref.astype(np.float64), mode="valid")
+    direct = ci * ci + cq * cq
+    assert power.shape == direct.shape and power.dtype == np.float32
+    assert np.max(np.abs(power - direct)) < 1e-5 * direct.max()

@@ -1383,11 +1383,12 @@ wheels = [
 
 [[package]]
 name = "rf-clock"
-version = "2.3.0.3"
+version = "2.3.0.4"
 source = { editable = "." }
 default-groups = ["dev", "instruments", "plot"]
 dependencies = [
     { name = "numpy" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -1407,7 +1408,10 @@ plot = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = "==1.21.5" }]
+requires-dist = [
+    { name = "numpy", specifier = "==1.21.5" },
+    { name = "scipy", specifier = "==1.8.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1685,6 +1689,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ba/a5/9672e532fe02cd3b92c78cfd8743abca939d96853006c63835009a1ecb6f/rpds_py-2026.9.1-pp312-pypy312_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:6b9bf3135b4ad5981df9a73d71a35272d650a2985ae9c2746357b24d59de2448", size = 591126, upload-time = "2026-10-04T16:32:29.274Z" },
     { url = "https://files.pythonhosted.org/packages/80/ef/3a9f8e4279c7920af561deed4cb7ebebed2794a8f608cf404d5eef14a105/rpds_py-2026.9.1-pp312-pypy312_pp80-macosx_10_12_x86_64.whl", hash = "sha256:56c6952a9b15047466d0c2347c446a761d4527f89976156341e68f0ce5cc08b0", size = 357108, upload-time = "2026-10-04T16:32:31.641Z" },
     { url = "https://files.pythonhosted.org/packages/b7/55/4b2fa381a583760aea5c92841e4e928a358e1c6511b129219e9c2826a226/rpds_py-2026.9.1-pp312-pypy312_pp80-macosx_11_0_arm64.whl", hash = "sha256:b242c27c8f836305a4a72df9cdd564386ac57b807bd252a063223331c9316b37", size = 346877, upload-time = "2026-10-04T16:32:34.061Z" },
+]
+
+[[package]]
+name = "scipy"
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/a2/4faa34bf0cdbefd5c706625f1234987795f368eb4e97bde9d6f46860843e/scipy-1.8.0.tar.gz", hash = "sha256:31d4f2d6b724bc9a98e527b5849b8a7e589bf1ea630c33aa563eda912c9ff0bd", size = 38313602, upload-time = "2022-02-05T22:55:35.273Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/ba/aae6bd9ae6a32a544da269628de590a57b8f3eeac3125e0acb6046110348/scipy-1.8.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:87b01c7d5761e8a266a0fbdb9d88dcba0910d63c1c671bdb4d99d29f469e9e03", size = 35024441, upload-time = "2022-02-05T22:53:25.062Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/bc/161e1f88cb532a42c3cfbd0065c2261defae77226d967fe9f862f7c6bd1f/scipy-1.8.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:ae3e327da323d82e918e593460e23babdce40d7ab21490ddf9fc06dec6b91a18", size = 28656036, upload-time = "2022-02-05T22:53:28.998Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/ee/46cd82404fb4e76d4a79ef45fa78454b791b9698e1de6f294f32b1fd4544/scipy-1.8.0-cp310-cp310-macosx_12_0_universal2.macosx_10_9_x86_64.whl", hash = "sha256:16e09ef68b352d73befa8bcaf3ebe25d3941fe1a58c82909d5589856e6bc8174", size = 55624807, upload-time = "2022-02-05T22:53:34.33Z" },
+    { url = "https://files.pythonhosted.org/packages/19/a6/98a8411b6e5b3b1dac7c0b3a1f569dbd8c603698863598472013f7b54441/scipy-1.8.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c17a1878d00a5dd2797ccd73623ceca9d02375328f6218ee6d921e1325e61aff", size = 39004702, upload-time = "2022-02-05T22:53:39.26Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/a1/f516ca2ada6305690e53d8108b6f83eb3b981504bd95b022b2d518664e3f/scipy-1.8.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:937d28722f13302febde29847bbe554b89073fbb924a30475e5ed7b028898b5f", size = 42274855, upload-time = "2022-02-05T22:53:43.874Z" },
+    { url = "https://files.pythonhosted.org/packages/82/2d/4eb74076a57d371eff9f0c06f170f9b2ed2e8292f4065d41e148d55a9a0b/scipy-1.8.0-cp310-cp310-win_amd64.whl", hash = "sha256:8f4d059a97b29c91afad46b1737274cb282357a305a80bdd9e8adf3b0ca6a3f0", size = 36951688, upload-time = "2022-02-05T22:53:48.553Z" },
 ]
 
 [[package]]

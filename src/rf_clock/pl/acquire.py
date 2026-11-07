@@ -13,14 +13,20 @@ peer's; afterwards both nodes' slots line up and each node's window, opened a
 fixed lead before the expected arrival, holds the other's bursts.
 
 A long window of 11 ms holds at least two of the peer's bursts (one every 4 ms),
-whatever the offset.
+whatever the offset.  The coarse search over its 8.8 M samples (``correlation_power``) is
+what takes the time: 24 s of each 25 s acquisition until 2.3.0.4, 2.2 s since, on the
+board's four cores (results/m5-acquire-timing-20261107_005054).  It only has to find each
+burst to within two samples; ``decode_burst`` then sets its lag, sub-sample position and
+packet exactly, in integers, as P8 does.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.fft as sfft
 
 from . import abi
 from ..plmodel import correlator as p8
@@ -30,7 +36,8 @@ from ..plmodel import packet as p9
 TICKS_PER_SECOND = 100_000_000
 SAMPLES_PER_TICK = fir.SPS
 LONG_WINDOW_BEATS = 1_100_000  # 11 ms
-CHUNK = 1 << 20  # correlation samples per FFT block
+NFFT = 1 << 18  # the coarse correlation's FFT length, the fastest on the board (2^16-2^21 timed)
+BLOCKS = 8  # FFT blocks transformed together, over the cores
 
 
 @dataclass(frozen=True)
@@ -77,19 +84,35 @@ def capture(pl, beats: int = LONG_WINDOW_BEATS, lead_ticks: int = 2_000_000) -> 
     return window.actual, rx_i, rx_q
 
 
-def correlation_power(rx_i: np.ndarray, rx_q: np.ndarray, ref: np.ndarray, chunk: int = CHUNK) -> np.ndarray:
-    """|sum_n rx[k + n] ref[n]|^2 for every lag k where the reference fits, by FFT blocks (float32)."""
-    x = rx_i.astype(np.float32) + 1j * rx_q.astype(np.float32)
+def correlation_power(rx_i: np.ndarray, rx_q: np.ndarray, ref: np.ndarray, nfft: int = NFFT,
+                      blocks: int = BLOCKS) -> np.ndarray:
+    """|sum_n rx[k + n] ref[n]|^2 for every lag k where the reference fits, in single precision.
+
+    Overlapping blocks of ``nfft`` samples, each giving the nfft - ref.size + 1 lags whose
+    reference lies inside it (no wrap of the circular correlation), ``blocks`` of them
+    transformed together so that scipy.fft spreads them over every core.  On the board this
+    is 11 times as fast as one double-precision FFT at a time, with the same peaks (power
+    within 3e-6 of it on bench windows)."""
     r = ref.size
-    lags = x.size - r + 1
-    nfft = 1 << int(np.ceil(np.log2(chunk + r - 1)))
-    h = np.conj(np.fft.fft(ref.astype(np.float32), nfft))
+    lags = rx_i.size - r + 1
+    step = nfft - r + 1
+    x = np.empty(rx_i.size, dtype=np.complex64)
+    x.real, x.imag = rx_i, rx_q
+    h = np.conj(np.asarray(sfft.fft(ref.astype(np.complex64), nfft)))  # asarray: scipy 1.8's fft is untyped
+    workers = os.cpu_count() or 1
     out = np.empty(lags, dtype=np.float32)
-    for start in range(0, lags, chunk):
-        count = min(chunk, lags - start)
-        seg = x[start:start + count + r - 1]
-        c = np.fft.ifft(np.fft.fft(seg, nfft) * h)[:count]
-        out[start:start + count] = (c.real * c.real + c.imag * c.imag).astype(np.float32)
+    n = -(-lags // step)
+    for b0 in range(0, n, blocks):
+        nb = min(blocks, n - b0)
+        seg = np.zeros((nb, nfft), dtype=np.complex64)
+        for j in range(nb):
+            piece = x[(b0 + j) * step:(b0 + j) * step + nfft]
+            seg[j, :piece.size] = piece
+        spectrum = np.asarray(sfft.fft(seg, axis=-1, workers=workers, overwrite_x=True)) * h
+        c = np.asarray(sfft.ifft(spectrum, axis=-1, workers=workers, overwrite_x=True))[:, :step]
+        p = (c.real * c.real + c.imag * c.imag).ravel()
+        first, last = b0 * step, min(lags, (b0 + nb) * step)
+        out[first:last] = p[:last - first]
     return out
 
 

@@ -1492,7 +1492,7 @@ for entry in pl.queue.read(): ...
 | `locate(window_tick, own_pps_tick, own_pps_count, bursts, arrival_ticks)` | 对每个解出的突发取 到达时刻 − T_tx − `arrival_ticks`，折算到本节点 PPS 的 ±0.5 s 以内 | `Acquisition(window_tick, own_pps_tick, own_pps_count, bursts, peer_pps_tick, offset_ticks, peer_pps_count, spread_ticks)`，`offset_ns` |
 | `place_pulse_ns(offset_ns)` | 把本节点 PPS 移动 `offset_ns`（正：推后）所需的 FS725 PP 参数，取整到整 tick（2.0.1.2 起） | int；不到半个 tick 时为 None |
 
-偏移的误差就是 `arrival_ticks`（假设的单程延时）的误差。取整 tick 是因为 PL 在 tick 上锁存 PPS：按整 tick 移动时 PPS_TICK 正好移动这么多，边沿在 tick 内的位置不变；剩下的留在 θ 里。板上 ARM 做一次 11 ms 的捕获约 25 s。
+偏移的误差就是 `arrival_ticks`（假设的单程延时）的误差。取整 tick 是因为 PL 在 tick 上锁存 PPS：按整 tick 移动时 PPS_TICK 正好移动这么多，边沿在 tick 内的位置不变；剩下的留在 θ 里。2.3.0.4 起，板上 ARM 做一次 11 ms 的引导约 3 s，其中粗搜的相关占 2.2 s（单精度 FFT 分块、在四个核上并行，`correlation_power`；之前是 25 s 里的 24 s）。
 
 ### 11.16 `rf_clock.pl.pps_out`（输出 PPS，2.1.0.0 起）
 
