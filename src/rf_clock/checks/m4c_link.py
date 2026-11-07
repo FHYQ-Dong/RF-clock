@@ -16,7 +16,11 @@ now); then until ``--stop-at`` (default ``--seconds`` later) read the measuremen
 queue into ``--out``, one JSON line per entry, with the status every second.  Both
 nodes get the same two times, half a second into a second, so that their engines
 start and stop at the same PPS edge (the boards keep NTP time) and neither listens
-while the other is silent.  Whenever a search waits for the ARM, its strongest
+while the other is silent.  With ``--start-file PATH`` instead (since 2.3.0.3) the node,
+once its PL is open and its FS725 checked, prints ``ready: waiting for the start time in
+PATH`` and waits for PATH to appear with ``{"start_at": T, "stop_at": T}``, which
+experiments/m4c_v2_link.py writes as soon as both nodes are ready; it gives up after
+``--start-timeout`` seconds, and refuses a start time already past.  Whenever a search waits for the ARM, its strongest
 peak is accepted if it lies within ``--lag-tolerance`` samples of the lag the
 expected arrival gives and its peak-to-sidelobe ratio reaches ``--min-psl-db``;
 otherwise the PL keeps searching fresh windows.  At the end the engine is disabled.
@@ -126,6 +130,8 @@ import json
 import os
 import time
 from dataclasses import asdict
+from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -258,12 +264,38 @@ def acquire_peer(pl, prn, taps, args, emit) -> None:
         raise SystemExit(f"acquisition: still {after.offset_ns} ns from the peer's PPS after PP (target {goal} ns)")
 
 
+READY = "ready: waiting for the start time in"  # experiments/m4c_v2_link.py looks for this line
+
+
+def wait_start_file(path: Path, timeout_s: float, *, poll_s: float = 0.05, clock: Callable[[], float] = time.time,
+                    sleep: Callable[[float], None] = time.sleep) -> tuple[float, float]:
+    """The start and stop times (Unix) from ``path``, once it appears (the runner writes it
+    whole, by a rename); SystemExit after ``timeout_s`` without it, or for a start time
+    already past, which the peer may have taken while this node was late."""
+    deadline = clock() + timeout_s
+    while not path.exists():
+        if clock() > deadline:
+            raise SystemExit(f"no start time in {path} within {timeout_s:.0f} s")
+        sleep(poll_s)
+    times = json.loads(path.read_text(encoding="utf-8"))
+    start_at, stop_at = float(times["start_at"]), float(times["stop_at"])
+    if start_at <= clock():
+        raise SystemExit(f"the start time in {path} passed {clock() - start_at:.2f} s ago")
+    if stop_at <= start_at:
+        raise SystemExit(f"the stop time in {path} is not after its start time")
+    return start_at, stop_at
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--role", choices=("A", "B"), required=True)
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--start-at", type=float, default=None, help="Unix time to enable the slot engine")
     parser.add_argument("--stop-at", type=float, default=None, help="Unix time to disable it")
+    parser.add_argument("--start-file", type=Path, default=None, metavar="PATH",
+                        help="instead: once ready, take both times from PATH when it appears (2.3.0.3)")
+    parser.add_argument("--start-timeout", type=float, default=180.0, metavar="S",
+                        help="with --start-file: give up after S seconds without it")
     parser.add_argument("--out", default="/dev/shm/m4c_link.jsonl")
     parser.add_argument("--copy-dir", default="/dev/shm/m4c_copies")
     parser.add_argument("--log", default="m4c_link_runs.jsonl")
@@ -410,6 +442,11 @@ def main() -> None:
              f"loop {loop if loop else 'not measured at this gain'}"
              + (f", FC answer {fc_plant['lag_s']} s lag, {fc_plant['dead_s']} s dead, {fc_plant['ps_per_step']} "
                 f"ps/s per step" if fc_plant else ""))
+    if args.start_file is not None:
+        if args.start_at is not None or args.stop_at is not None:
+            raise SystemExit("--start-file replaces --start-at and --stop-at")
+        mark(f"{READY} {args.start_file}")
+        args.start_at, args.stop_at = wait_start_file(args.start_file, args.start_timeout)
     start_at = time.time() if args.start_at is None else args.start_at
     stop_at = start_at + args.seconds if args.stop_at is None else args.stop_at
     if time.time() < start_at:

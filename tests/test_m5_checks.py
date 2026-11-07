@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from rf_clock.checks.m4c_link import wait_start_file
 from rf_clock.checks.pps_pp_scan import crossings, ticks_moved
 from rf_clock.fs725 import FS725, FS725Error
 from rf_clock.pl.board_config import BoardConfig, BoardConfigError
@@ -313,3 +314,37 @@ def test_frequency_control_gives_ga_back_at_the_end_and_refuses_fc_without_a_fas
     with pytest.raises(ValueError):
         FrequencyControl("port", lambda kind, **f: None, set_sf=True, law=lambda fc0, gain: ScriptedLaw(fc0, []),
                          step_s=1.0, actuator="fc")
+
+
+class FakeClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, s: float) -> None:
+        self.now += s
+
+
+def test_a_node_takes_its_start_time_from_the_start_file(tmp_path):
+    path = tmp_path / "m4c_A_start.json"
+    clock = FakeClock(1000.0)
+    sleeps: list[float] = []
+
+    def sleep(s: float) -> None:  # the runner writes the file 3 s after the node is ready
+        sleeps.append(s)
+        clock.sleep(s)
+        if clock.now >= 1003.0 and not path.exists():
+            path.write_text('{"start_at": 1005.5, "stop_at": 1065.5}', encoding="utf-8")
+
+    assert wait_start_file(path, 60.0, clock=clock, sleep=sleep) == (1005.5, 1065.5)
+    assert 1003.0 <= clock.now < 1003.1 and set(sleeps) == {0.05}
+    with pytest.raises(SystemExit, match="passed 0.50 s ago"):
+        wait_start_file(path, 60.0, clock=FakeClock(1006.0), sleep=lambda s: None)
+    with pytest.raises(SystemExit, match="no start time"):
+        idle = FakeClock(0.0)
+        wait_start_file(tmp_path / "never.json", 5.0, clock=idle, sleep=idle.sleep)
+    path.write_text('{"start_at": 1005.5, "stop_at": 1005.5}', encoding="utf-8")
+    with pytest.raises(SystemExit, match="not after"):
+        wait_start_file(path, 60.0, clock=FakeClock(1000.0), sleep=lambda s: None)

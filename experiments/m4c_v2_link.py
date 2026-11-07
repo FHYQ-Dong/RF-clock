@@ -45,7 +45,11 @@ one node only: since 2026-11-04 A times its Schmitt-trigger PPS copy (``--a-args
 
 Each board runs ``rf_clock.checks.m4c_link`` (A: even slots, B: odd), both told
 to enable their slot engines at one time and disable them at another, half a
-second into a second, so that both run from the same PPS edge to the same PPS edge.  Results go
+second into a second, so that both run from the same PPS edge to the same PPS edge.
+The two times are given once both nodes are ready (``m4c_link --start-file``, since
+rf-clock 2.3.0.3): this script waits for both nodes' ready line, at most ``READY_S``,
+and writes the times 2-3 s ahead into each node's start file; a node not ready by
+then stops both.  Results go
 to results/m4c-v2-link-<time>/: each node's queue log and console output, and
 summary.json with each node's result, theta, m_AB, m_BA and the one-way delay
 (mean, sd), computed from each node's own queue as the node does
@@ -72,7 +76,10 @@ BOARDS = {"A": "192.168.2.99", "B": "192.168.2.100"}  # S/N 887329260072A, 88732
 PYNQ_PYTHON = "/usr/local/share/pynq-venv/bin/python"
 OUT_DIR = "/dev/shm"  # node output in RAM: SD card writes have stalled node loops
 NODE = " -m rf_clock[.]checks[.]m4c_link "
-START_S = 150  # time for both PL.open
+# the longest wait for both nodes' ready lines: over the 132 node starts of 2026-11-03 to 11-06
+# a node was ready 15.5-40.4 s (median 18.5 s) after this script started
+READY_S = 120
+READY = "ready: waiting for the start time in"  # rf_clock.checks.m4c_link.READY
 LINK = Path(__file__).parents[1] / "links" / "887329260072A_8873292600AB.json"  # theta0 by wiring
 SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "link": ("", ""),
@@ -95,15 +102,48 @@ SCENARIOS = {  # scenario: (node A's arguments, node B's)
 }
 
 
-def start(ip: str, role: str, start_at: float, stop_at: float, extra: str) -> None:
+def start(ip: str, role: str, extra: str) -> None:
     out = f"{OUT_DIR}/m4c_{role}"
-    cmd = (f"sudo -n rm -rf {out}.jsonl {out}.out {OUT_DIR}/m4c_copies_{role}; cd /tmp && "
+    cmd = (f"sudo -n rm -rf {out}.jsonl {out}.out {out}_start.json {OUT_DIR}/m4c_copies_{role}; cd /tmp && "
            f"(setsid nohup sudo -n env BOARD=RFSoC4x2 XILINX_XRT=/usr {PYNQ_PYTHON} -m rf_clock.checks.m4c_link "
-           f"--role {role} --start-at {start_at} --stop-at {stop_at} --out {out}.jsonl "
+           f"--role {role} --start-file {out}_start.json --start-timeout {READY_S + 60} --out {out}.jsonl "
            f"--copy-dir {OUT_DIR}/m4c_copies_{role} {extra} > {out}.out 2>&1 < /dev/null &)")
     if ssh(ip, cmd).returncode:
         sys.exit(f"cannot start node {role} on {ip}")
     print(f"node {role} started on {ip}", flush=True)
+
+
+def stop_nodes(why: str) -> None:
+    for ip in BOARDS.values():
+        ssh(ip, f"sudo -n pkill -TERM -f '^{PYNQ_PYTHON}{NODE}'")
+    sys.exit(why)
+
+
+def wait_ready() -> float:
+    """Both nodes' ready lines (PL open, FS725 checked); the seconds it took.  Stops both
+    nodes after ``READY_S`` or when one has exited."""
+    t0 = time.monotonic()
+    waiting = dict(BOARDS)
+    while waiting:
+        for role, ip in list(waiting.items()):
+            if ssh(ip, f"grep -qF '{READY}' {OUT_DIR}/m4c_{role}.out").returncode == 0:
+                del waiting[role]
+            elif not running(ip):
+                tail = ssh(ip, f"tail -3 {OUT_DIR}/m4c_{role}.out").stdout.strip()
+                stop_nodes(f"node {role} exited before it was ready: {tail}")
+        if waiting and time.monotonic() - t0 > READY_S:
+            stop_nodes(f"node(s) {', '.join(waiting)} not ready within {READY_S} s: both stopped")
+        if waiting:
+            time.sleep(0.5)
+    return time.monotonic() - t0
+
+
+def give_times(start_at: float, stop_at: float) -> None:
+    text = json.dumps({"start_at": start_at, "stop_at": stop_at})
+    for role, ip in BOARDS.items():
+        path = f"{OUT_DIR}/m4c_{role}_start.json"
+        if ssh(ip, f"echo '{text}' > {path}.tmp && mv {path}.tmp {path}").returncode:
+            stop_nodes(f"cannot write the start time on node {role}")
 
 
 def running(ip: str) -> bool:
@@ -206,10 +246,13 @@ def main() -> None:
                                                             "target_ns": target}},
                                                   indent=2) + "\n",
                                        encoding="utf-8", newline="\n")
-    start_at = int(time.time() + START_S) + 0.5  # both PL.open done by then
-    stop_at = start_at + args.seconds
     for role, ip in BOARDS.items():
-        start(ip, role, start_at, stop_at, extra[role])
+        start(ip, role, extra[role])
+    ready_s = wait_ready()
+    start_at = int(time.time() + 2.5) + 0.5  # 2-3 s ahead: both writes take well under a second
+    stop_at = start_at + args.seconds
+    give_times(start_at, stop_at)
+    print(f"both nodes ready after {ready_s:.1f} s; start at {start_at}", flush=True)
     scope = None
     if args.scope:
         scope = subprocess.Popen(["sudo", "-n", sys.executable, str(Path(__file__).with_name("m5_hdo_phase.py")),
