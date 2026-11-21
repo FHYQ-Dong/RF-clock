@@ -11,6 +11,8 @@
 #   pps_out_invalid    same repository, 4x2_PMOD.xdc: PMOD0_0 (J1 pin 1, through
 #                      the NVT2008BQ translator with 1.15k pull-ups to 3.3 V)
 #   pps_out_led        same repository, 4x2_LED_PB__SW.xdc: W_LED_0
+#   fs725_txd_a/b      same repository, 4x2_PMOD.xdc: PMOD1_6, PMOD1_2
+#   fs725_rxd_a/b      same repository, 4x2_PMOD.xdc: PMOD1_7, PMOD1_3
 # RFDC clock, SYSREF and analog pins are dedicated and placed by the IP.
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,17 @@ set_property PULLTYPE PULLUP [get_ports {pps_in pps_trig_in}]
 set_property PACKAGE_PIN AF16 [get_ports pps_out_invalid]
 set_property PACKAGE_PIN AR11 [get_ports pps_out_led]
 set_property IOSTANDARD LVCMOS18 [get_ports {pps_out_invalid pps_out_led}]
+# The FS725's serial line (2.5): a TTL-to-RS-232 module on PMOD1, through the
+# same NVT2008 translators with 1.15k pull-ups to 3.3 V.  Which half of the Pmod
+# the module sits on is not yet known, so both carry it: transmit on PMOD1_6 and
+# PMOD1_2, receive on PMOD1_7 and PMOD1_3 (RealDigitalOrg RFSoC4x2-BSP
+# hw/constraints/4x2_PMOD.xdc); the inputs need the FPGA pull-up as pps_in does.
+set_property PACKAGE_PIN AT15 [get_ports fs725_txd_a]
+set_property PACKAGE_PIN AU13 [get_ports fs725_txd_b]
+set_property PACKAGE_PIN AU14 [get_ports fs725_rxd_a]
+set_property PACKAGE_PIN AV13 [get_ports fs725_rxd_b]
+set_property IOSTANDARD LVCMOS18 [get_ports {fs725_txd_a fs725_txd_b fs725_rxd_a fs725_rxd_b}]
+set_property PULLTYPE PULLUP [get_ports {fs725_rxd_a fs725_rxd_b}]
 
 # ---------------------------------------------------------------------------
 # Clocks
@@ -54,9 +67,9 @@ set_input_delay -clock [get_clocks PL_CLK] -max 2.031 [get_ports PL_SYSREF_P]
 # ---------------------------------------------------------------------------
 # Asynchronous inputs (synchronized in RTL)
 # ---------------------------------------------------------------------------
-set_false_path -from [get_ports {pps_in pps_trig_in}]
+set_false_path -from [get_ports {pps_in pps_trig_in fs725_rxd_a fs725_rxd_b}]
 # Levels that change rarely; no timing to them.
-set_false_path -to [get_ports {pps_out_invalid pps_out_led}]
+set_false_path -to [get_ports {pps_out_invalid pps_out_led fs725_txd_a fs725_txd_b}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *u_p0/lock_sync_reg[0]}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *p_top_0/inst/overrange_sync_reg[0]}]
 

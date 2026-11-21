@@ -29,6 +29,8 @@ The measurement is 5.8 GHz over-the-air two-way time transfer (TWTT): A and B ex
  ARM_A: monitoring ─ measurements ride in the bursts (no network) ─ ARM_B: TWTT/Kalman ┘
 ~~~
 
+B's ARM steers its FS725 over RS-232, and since 2.5 B's PL can do it instead (P12, P13 in §6).
+
 Key premise: **on each board, the DAC/ADC sample clocks, the PL fabric clock and the raw tick are all derived from that node's FS725 10 MHz through the board PLLs.** The raw tick then counts the FS725's time; steering FS725_B moves all of node B's clocks and closes the loop.
 
 ### 2.1 Responsibilities
@@ -42,14 +44,15 @@ Key premise: **on each board, the DAC/ADC sample clocks, the PL fabric clock and
 | Correlation, peak quality, sub-sample delay, carrier phase | acquisition and verification only | tracker in every window; whole-window search on loss of lock or request |
 | Measurement packet: assemble, spread, despread, CRC | decodes during acquisition | yes |
 | Acquisition on long windows in DDR | yes | captures the windows |
-| TWTT, Kalman filter, FS725 steering | yes | no |
+| TWTT, Kalman filter, steering through SF | yes | no |
+| Steering through FC (each step's θ, the predictive steering algorithm, the FC command on the FS725's serial line at its tick) | yes (`--steer-actuator fc`). When the PL steers, the ARM computes the coefficient tables from its model of the FS725's response, loads them once, queries the FS725 between commands and logs each step | can do it instead (P12, P13, since 2.5) |
 | raw tick counting, PPS capture | no | yes |
 | Output PPS from the tick, its validity line | says when the PL's 100 MHz clock is synchronized | yes (P10, since 2.1) |
 | Phase of the 10 MHz reference against the tick | logs it | yes (P11, since 2.4) |
 | Actual start tick recording, fault detection | no | yes |
 | RFDC configuration and MTS | via driver | IP and clocks |
 
-The PL's DSP is limited to the per-burst chain: the RRC FIR, the correlator (tracker and whole-window search) with its estimator, and the packet's spreading and despreading. It runs in the PL because each measurement must be on air within 2 ms of the burst it measures (§5); everything else stays on the ARM.
+The PL's DSP is limited to the per-burst chain: the RRC FIR, the correlator (tracker and whole-window search) with its estimator, and the packet's spreading and despreading. It runs in the PL because each measurement must be on air within 2 ms of the burst it measures (§5). Since 2.5 the steering through FC (P13) and the FS725's serial line (P12) can run there too, because on the ARM each step's command left at a time that varied by tens of milliseconds, which the steering had to allow for (P13 below). Everything else stays on the ARM.
 
 ## 3. RF frequency plan (accepted by the RFDC IP; not yet verified on the board)
 
@@ -329,10 +332,20 @@ PPS event ──> the second kept: I, Q, beats, peak, PPS_COUNT ──> ARM: τ_
 - on both boards (2026-11-09, `results/m5-ref-phase-restarts-20261109_114652`): 0.2-0.6 ps from second to second; across PL.opens 0.4-0.6 ps rms without new clock writes, 3.4 and 8.2 ps rms (A, B) with them, so a restart's jump lies in the LMK04828 and LMX2594 rewrite, not in the tile PLLs or the bitstream as seen on ADC tile 0; against the scope over five restarts (`results/m5-10mhz-restarts-20261109_134943`) B's τ_ref less A's followed the scope's 10 MHz jumps (9.1 ps rms) with slope −1.04 and 2.5 ps rms left, so about 2 ps of a jump lies where P11 does not see it (the signal tiles' PLLs or the link, inferred);
 - registers `docs/ABI.md` §4.14; simulation `PL/sim/tb_p11_ref_phase.v`.
 
+### P12 serial: the FS725's serial line (since 2.5)
+
+The PL can drive node B's FS725's RS-232 line itself, through a TTL-to-RS-232 module (MAX3232, DB-9 male) on J1, the board's Pmod header, in place of the ARM's USB serial adapter. P12 sends P13's FC command at the tick P13 gives. It sends the ARM's own messages, such as queries and the settings at the start, only in gaps where they end before P13's next command, so a query never delays a command. Bytes from the FS725 wait in a FIFO the ARM reads. The line runs at 9600 baud with 8 data bits, no parity and one stop bit, and P12 does not act on the FS725's XON/XOFF characters ([docs/ABI.md §4.15](../docs/ABI.md)). P12 sends on both rows of PMOD1 and receives the AND of both, so that it works on either (J1 pins 16-21 or 10-15). On 8873292600AB the module is on pins 16-21 (bench, 2026-11-16).
+
+### P13 steer: steering through FC (since 2.5)
+
+The predictive steering algorithm through FC (§7.1) can run in the PL. P13 forms each window's pair from the OWN and PEER entries that P8 and P9 hand to the queue, and takes each step at its end tick, with θ the mean of the pairs in the step's last slots. It computes the step's change of FC as one linear filter of θ, of θ less B's own corrections and of the changes already made, through one 48 × 48 multiplier into a 104-bit sum, followed by the algorithm's rounding and clips. P12 sends the command a fixed `STEER_WRITE_DELAY` after the step's end, 0.2 ms by default, and a `QE_TYPE_STEER` queue entry logs the step. The ARM computes the coefficient tables from its model of the FS725's response, its AR model and the cost of a change (`rf_clock.plmodel.steer.tables`) and loads them once. It checks the FS725 through P12 between commands, and stops P13 and puts GA back when the check fails. `rf_clock.plmodel.steer` defines every step to the bit, and `PL/sim/tb_p13_steer.v` checks the RTL against it. Steering through FC on the ARM stays available.
+
+**Why it moved into the PL.** The measured reason is the time at which the ARM sends each command. With 2.4.0.0 a command left 22-151 ms after its step's end, and from 2.4.0.1 on, once a stall of about 100 ms once a second was fixed, 22-58 ms, at a time that varied from step to step. The algorithm could only model that with a margin ([FC response report](../results/fc-response-20261112/REPORT.md) section 1). In the PL each command is to start on its tick, 0.2 ms after its step by default, with nothing left to vary. Before the bench, what that is worth was estimated in replay at the cost of a change of 2.4.0.1 (λ 0.01), and the replay took 10 ms for the PL, more than the 0.2 ms P13 uses. There, writing each change 10 ms after its step instead of 30 ms lowered θ − θ₀ from 2.65 to 2.46 ps rms (7 %), steering every 0.05 s instead of 0.1 s lowered it to 1.94 ps (27 %), and both to 1.86 ps (same report, section 5). At the cost of 2.4.0.2 (λ 0.0003), with which the bench held 1.88 ps, these gains have not been replayed, and steps of 0.05 s need settings the package does not have yet. In the PL a shorter step needs no faster ARM, though each step must still leave room on the transmit wire for its 12.5 ms command and the ARM's 4 ms query (`FC?`). On the bench (2026-11-16, at λ 0.0003) two runs of 20 minutes with the steering in the PL, alternated with two of the same algorithm on the ARM, left θ − θ₀ at 1.69 and 1.63 ps rms against 1.94 and 2.05 ps, about 17 % less in the PL, with both writing through P12 ([results/pl-steering-20261116](../results/pl-steering-20261116/REPORT.md)). That is more than the replay's 7 % for writing at 10 ms instead of 30 ms, and why was not tested.
+
 ### 6.1 Not needed in the first version
 
 - **No DDR-streamed TX:** bursts are made from on-chip data (P3), so continuity is guaranteed by construction; only RX uses S2MM DMA;
-- no DSP in the PL beyond the per-burst chain (P3's FIR, P8, P9);
+- no DSP in the PL beyond the per-burst chain (P3's FIR, P8, P9) and, since 2.5, the steering through FC (P13);
 - no scatter-gather DMA and no interrupts: one simple-mode transfer per window, completion by polling.
 
 ## 7. ARM software modules
@@ -346,7 +359,7 @@ PPS event ──> the second kept: I, Q, beats, peak, PPS_COUNT ──> ARM: τ_
 | `twtt` | pair the two directions by `PPS_COUNT` and slot, compute θ and one-way delay |
 | `link` | decode measurement packets from DDR during acquisition, parse the decoded packets from the queue; Ethernet only for management and logs |
 | `estimator` | Kalman filter with clock offset θ and relative frequency y, with outlier rejection |
-| `fs725` | RS-232 driver: set frequency offset, read status, log every correction |
+| `fs725` | RS-232 driver: set frequency offset, read status, log every correction, through a USB serial adapter or, since 2.5, the PL's serial line (P12) |
 | `calibration` | store Δ, PPS sub-tick phase, RFDC latency, with version and date |
 | `rfdc_mgr` | RFDC initialization, MTS, NCO settings and status readback |
 
@@ -361,6 +374,7 @@ The ARM reads the PL's measurement queue in batches; estimation and steering hap
 - in rf-clock 2 the node steers its own FS725: `rf_clock.checks.m4c_link --steer-target-ns` feeds each second's θ, from B's own measurement queue, to `rf_clock.twtt.steer` and sets SF over B's USB-RS232 adapter;
 - the FS725's frequency follows an SF command through its frequency lock loop, an integrator around the 1 s filter on the crystal's tuning: θ's ramp starts about 1.1-1.3 s after the command at the normal gain GA 7 and 0.5-0.7 s at GA 8 (`results/fs725-fll-20261105/REPORT.md`). So the filter counts a change of SF from 1.9 s after the second whose θ asked for it (1.2 s at GA 8), and widens its outlier gate while the change is new; without that, a large first step of a fast loop (τ = 5 s) made the filter reject ten θ in a row and start again on the bench (2026-11-03). A large error at the start runs SF at the edge of its allowed range rather than stopping the steering; only a steering algorithm that asks beyond it for two minutes stops it. A first-order lag after the delay (`--steer-response-lag`) fits the response better but leaves the same error in the replay. B's FS725 puts about 9 ps/s of θ's 19 ps/s second-to-second rate and A's the rest (inferred), so a faster B can only follow A sooner: at GA 8 the bench left 33.1 and 35.5 ps against 39.6 ps at GA 7 the same night.
 - the predictive steering algorithm (`--steer-mode predictive`, `rf_clock.twtt.steer.PredictiveSteering`) uses that loop as its model: it takes its own corrections out of θ, predicts the clocks' frequency a second or two ahead with an AR(4) model (the 5-9 s variation is that predictable), and plans each second's SF over 4 s; with θ over the last 0.2 s of each second (`--steer-late-slots 100`) it held θ to 27.2-27.9 ps rms at GA 8, and 28.6 ps over an hour (`results/predictive-steering-20261105/REPORT.md`). Its model must be the unit's GA: `m4c_link` reads GA at the start and refuses one it has no model for. GA is not in EEPROM, so a node that steers this way sets GA 8 at its start.
+- Since 2.3.0.2 the predictive steering algorithm can steer through FC (`--steer-actuator fc`). With B's unit at GA 1 it sets FC, the crystal's tuning, every 0.1 s instead of SF, so that the crystal follows each change through its 1 s filter alone, without the frequency lock loop's integrator and dead time. With rf-clock 2.4.0.1 and the cost a change has since 2.4.0.2 it held θ − θ₀ to 1.88 ps rms on the bench in two runs of 20 minutes ([FC response report](../results/fc-response-20261112/REPORT.md) sections 8 and 9). Since 2.5 it can also run in the PL (P13), and P12 then sends each step's FC on the FS725's serial line at a fixed tick after the step.
 
 ## 8. Calibration
 

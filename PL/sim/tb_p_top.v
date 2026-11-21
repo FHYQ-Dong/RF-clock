@@ -39,7 +39,7 @@ module tb_p_top;
     wire              dac_tvalid;
     reg               dac_tready = 1'b1;
     wire [DATA_W-1:0] dac0_tdata;
-    wire              dac0_tvalid, pps_out_invalid, pps_out_led;
+    wire              dac0_tvalid, pps_out_invalid, pps_out_led, fs725_txd_a, fs725_txd_b;
 
     // Digital loopback DAC -> ADC.
     reg [DATA_W-1:0] loop [0:LOOP_D-1];
@@ -88,7 +88,8 @@ module tb_p_top;
         .m_axis_s2mm_tvalid(s2mm_tvalid), .m_axis_s2mm_tready(s2mm_tready),
         .m_axis_s2mm_tlast(s2mm_tlast),
         .m_axis_dac0_tdata(dac0_tdata), .m_axis_dac0_tvalid(dac0_tvalid), .m_axis_dac0_tready(1'b1),
-        .pps_out_invalid(pps_out_invalid), .pps_out_led(pps_out_led)
+        .pps_out_invalid(pps_out_invalid), .pps_out_led(pps_out_led),
+        .fs725_txd_a(fs725_txd_a), .fs725_txd_b(fs725_txd_b), .fs725_rxd_a(1'b1), .fs725_rxd_b(1'b1)
     );
 
     // DMA sink.
@@ -228,7 +229,7 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0002_0004, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0002_0005, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");
@@ -291,6 +292,16 @@ module tb_p_top;
         rd(REG_TX_TARGET_LO, v); check(v == tgt[31:0], "partial write ignored");
         axi_write(REG_ID, 32'h1, 4'hF, resp); check(resp == 2'b10, "RO write SLVERR");
         axi_read(8'hFC, v, resp); check(resp == 2'b10, "unmapped read SLVERR");
+        // P12 and P13 (2.5): P2 forwards 0x400 .. 0x4FF
+        rd(REG_SERIAL_CONFIG, v); check(v == 32'd10417, "SERIAL_CONFIG reset: 9600 baud, not enabled");
+        axi_write(REG_SERIAL_CONFIG, 32'd5, 4'hF, resp); check(resp == 2'b10, "SERIAL_CONFIG below 16 ticks a bit SLVERR");
+        rd(REG_STEER_CONTROL, v); check(v == 32'b1010, "STEER_CONTROL reset: ROLE_B, LOG");
+        wr(REG_STEER_WRITE_DELAY, 32'd777); rd(REG_STEER_WRITE_DELAY, v); check(v == 32'd777, "STEER_WRITE_DELAY readback");
+        rd(REG_STEER_LMAX, v); check(v == 32'd4096, "STEER_LMAX");
+        axi_write(REG_STEER_L, 32'd4095, 4'hF, resp); check(resp == 2'b10, "STEER_L beyond its table SLVERR");
+        axi_read(12'h4FC, v, resp); check(resp == 2'b10, "unmapped forwarded read SLVERR");
+        axi_write(12'h43C, 32'd1, 4'hF, resp); check(resp == 2'b10, "unmapped forwarded write SLVERR");
+        check(fs725_txd_a && fs725_txd_b, "the FS725 line idles high");
 
         // PPS: locked, exact period, timestamp matches the driven edge.
         n = 0;

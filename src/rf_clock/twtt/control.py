@@ -21,7 +21,10 @@ import numpy as np
 
 from rf_clock.fs725 import FC_LOW, FS725, FS725Error, check_config
 from rf_clock.pl.board_config import BoardConfig, BoardConfigError, config_path
+from rf_clock.pl.measurements import SteerStep
+from rf_clock.pl.steering import PLSteering
 
+from ..plmodel import steer as pm
 from . import steer
 
 
@@ -67,19 +70,32 @@ class FrequencyControl:
     undoes the slow loop's pull; the algorithm starts from the FC read (``sf0`` holds 1000 coarse +
     fine steps), its fine DAC first brought back near the middle of its range by a carry to
     the coarse one when less than ``FC_ROOM`` is left, and the algorithm's range is what is left;
-    SF is not touched.  When the steering stops, and at the end, GA goes back."""
+    SF is not touched.  When the steering stops, and at the end, GA goes back.
+
+    ``actuator="pl"`` (since 2.5): the same start, then the PL steers (P13, ``pl_steering``): the
+    algorithm's tables go into the PL, which takes every step itself and has P12 send FC at
+    ``write_delay_ticks`` after each step's end, with the FS725 on the PL's serial line
+    (``FS725.open("pl")``).  ``pl_step`` takes each step's queue entry: logged, and the unit
+    checked through ``FCWatch`` without holding the PL's commands back."""
 
     FC_ROOM = 500  # fine steps the algorithm needs on either side of its start
 
     def __init__(self, port: str, emit: Callable[..., None], *, set_sf: bool,
                  law: Callable[[int, int], Law] | None = None, step_s: float = 1.0, late: bool = False,
-                 keep_sf: bool = False, actuator: str = "sf", say: Callable[[str], None] = print) -> None:
-        if actuator not in ("sf", "fc"):
-            raise ValueError(f"actuator is 'sf' or 'fc': {actuator!r}")
-        if actuator == "fc" and (law is None or step_s >= 1):
-            raise ValueError("the FC actuator is for a steering algorithm on steps below a second")
+                 keep_sf: bool = False, actuator: str = "sf", say: Callable[[str], None] = print,
+                 pl_steering: PLSteering | None = None, step_slots: int = 0, late_slots: int = 0,
+                 write_delay_ticks: int = 20000, table_s: float = 40.0) -> None:
+        if actuator not in ("sf", "fc", "pl"):
+            raise ValueError(f"actuator is 'sf', 'fc' or 'pl': {actuator!r}")
+        if actuator in ("fc", "pl") and (law is None or step_s >= 1):
+            raise ValueError("the FC and PL actuators are for a steering algorithm on steps below a second")
+        if actuator == "pl" and (pl_steering is None or step_slots <= 0 or late_slots <= 0):
+            raise ValueError("the PL actuator needs the PL's steering engine and the step's slots")
         self.emit, self.say = emit, say
-        self.fc = actuator == "fc"
+        self.fc = actuator in ("fc", "pl")
+        self.pl = pl_steering if actuator == "pl" else None
+        self.step_s = step_s
+        self.write_delay_ticks = write_delay_ticks
         self.gain_restore: int | None = None
         self.unit = FS725.open(port, log=lambda e: emit("fs725", **e))
         try:
@@ -98,6 +114,8 @@ class FrequencyControl:
                 room = min(self.sf0 - 1000 * self.fc_high - FC_LOW[0], FC_LOW[1] - (self.sf0 - 1000 * self.fc_high))
                 if self.steering is not None and hasattr(self.steering, "max_offset"):
                     self.steering.max_offset = min(self.steering.max_offset, room)  # type: ignore[attr-defined]
+                if self.pl is not None and self.steering is not None:
+                    self._start_pl(self.steering, step_slots, late_slots, table_s)
             else:
                 self.sf0 = self.sf = self.unit.frequency()
                 if set_sf:
@@ -137,6 +155,59 @@ class FrequencyControl:
         self.fc_high = high
         return 1000 * high + low
 
+    def _start_pl(self, law: Law, step_slots: int, late_slots: int, table_s: float) -> None:
+        """The algorithm's tables into the PL, which starts with the next step that has theta."""
+        assert self.pl is not None
+        steps = None
+        if isinstance(law, steer.FCSteps):  # FC steps in the PL use no table: the smallest ones
+            steps = (law.size, law.hold)
+            t = pm.Tables(L=1, n=1, p=1, h=[0, 0], K=[0, 0], alpha=[0], gamma=[0, 0], ar=[0], mean2=[0, 0], rho=0,
+                          k_inf=0, r0=0, target_q16=0, settle=law.settle, max_step=0, lo=0, hi=4095,
+                          low0=law.sf0 - 1000 * self.fc_high, max_saturated=1)
+        else:
+            lo = max(law.sf0 - law.max_offset, law.limits[0]) - 1000 * self.fc_high  # type: ignore[attr-defined]
+            hi = min(law.sf0 + law.max_offset, law.limits[1]) - 1000 * self.fc_high  # type: ignore[attr-defined]
+            t = pm.tables(law, table_s=table_s, low0=law.sf0 - 1000 * self.fc_high, lo=lo, hi=hi)  # type: ignore[arg-type]
+        self.pl.disable()
+        self.pl.load(t, step_slots=step_slots, late_slots=late_slots, write_delay_ticks=self.write_delay_ticks,
+                     prefix=f"FC{self.fc_high},".encode(), steps=steps)
+        self.pl.enable(role_b=True, steps=steps is not None)
+        self.emit("pl_steering", L=t.L, n=t.n, p=t.p, settle=t.settle, low0=t.low0, lo=t.lo, hi=t.hi,
+                  max_step=t.max_step, step_slots=step_slots, late_slots=late_slots,
+                  write_delay_ticks=self.write_delay_ticks, steps=steps)
+
+    def pl_step(self, entry: SteerStep) -> None:
+        """One step the PL took (its ``SteerStep`` queue entry): logged as the ARM's steps are, and
+        the unit checked one query a step."""
+        if self.pl is None or self.steering is None:
+            return
+        try:
+            new = 1000 * self.fc_high + entry.low
+            self.emit("steer", count=entry.pps_count, step=entry.step, index=entry.index,
+                      theta_ps=None if entry.missing or entry.steps else entry.theta_ps,  # FC steps keep no theta
+                      sf=new if entry.change else None,
+                      pairs=entry.pairs, dF_ps=entry.dF_ps, S=entry.S_q24 / (1 << 24),
+                      missing=entry.missing, settling=entry.settling, saturated=entry.saturated, first=entry.first,
+                      late=entry.late, command_tick=entry.command_tick)
+            at_count = entry.pps_count + (entry.step + 1) * self.step_s + self.write_delay_ticks * 1e-8
+            if entry.change:
+                self.emit("fc_set", fc=new, low=entry.low, at_count=at_count, change=entry.change,
+                          written_count=at_count, late_s=self.write_delay_ticks * 1e-8)
+            self.sf = new
+            if entry.stopped:
+                raise steer.SteeringError("the PL's steering stopped: the wanted FC stayed outside its limits")
+            self.watch.after_write(new)
+            self.steps_taken += 1
+        except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
+            self._stopped(exc)
+
+    def stop_pl(self) -> None:
+        """Stop P13 and give the unit its gain back, for a process that ends without ``close``
+        (m4c_link registers it with atexit); harmless after ``close``."""
+        if self.pl is not None:
+            self.pl.disable()
+            self._restore_gain()
+
     def _restore_gain(self) -> None:
         if self.gain_restore is None:
             return
@@ -155,6 +226,8 @@ class FrequencyControl:
         self.emit("sf", sf=sf, why=why, magnetic_dac=self.unit.magnetic_dac(), at_count=at_count, change=sf - before)
 
     def _stopped(self, exc: Exception) -> None:
+        if self.pl is not None:
+            self.pl.disable()
         self.emit("steer_stopped", reason=str(exc), sf=self.sf)
         self.say(f"steering stopped: {exc}")
         self.steering = None
@@ -210,6 +283,8 @@ class FrequencyControl:
             self._stopped(exc)
 
     def close(self) -> None:
+        if self.pl is not None:
+            self.pl.disable()  # no more commands, before the unit's own loop gets its gain back
         if self.fc:  # FC stays where the algorithm left it; the unit's own loop at its gain takes it back
             self._restore_gain()
         elif not self.keep and self.sf != self.sf0:

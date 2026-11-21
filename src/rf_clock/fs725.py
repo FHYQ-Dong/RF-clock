@@ -92,6 +92,27 @@ class Port(Protocol):
     def close(self) -> None: ...
 
 
+def _open_pl_line() -> Port:
+    """The PL's serial line (P12, since 2.5) for a command that has no PL open of its own, such as
+    ``rf_clock.fs725 gain 8 --port pl`` or ``fs725_loop --port pl``: ``PL.open()`` loads the
+    bitstream, which stops whatever ran in the PL, so never while a link runs on this board."""
+    from rf_clock.pl import PL
+    from rf_clock.pl.serial import PLPort
+
+    return PLPort(PL.open().serial)
+
+
+# Ports that are not ttys, by name (``FS725.open("pl")``): since 2.5 the PL's serial line
+# (rf_clock.pl.serial.PLPort).  A check that opens the PL (``rf_clock.checks.board_common.open_pl``)
+# registers its own; without one, "pl" opens the PL first.
+PORTS: dict[str, Callable[[], Port]] = {"pl": _open_pl_line}
+
+
+def register_port(name: str, make: Callable[[], Port]) -> None:
+    """Let ``FS725.open(name)`` open ``make()`` instead of a tty."""
+    PORTS[name] = make
+
+
 class SerialPort:
     """A tty at 9600 baud, 8N1, raw, with XON/XOFF (the PRS10's serial format)."""
 
@@ -189,7 +210,8 @@ class FS725:
 
     @classmethod
     def open(cls, path: str = DEFAULT_PORT, **kwargs) -> FS725:
-        unit = cls(SerialPort(path), **kwargs)
+        """The unit on the tty ``path``, or on a port registered by name (``register_port``)."""
+        unit = cls(PORTS[path]() if path in PORTS else SerialPort(path), **kwargs)
         unit.port.write(b"VB0\r")  # no prompts (the power-on default)
         return unit
 

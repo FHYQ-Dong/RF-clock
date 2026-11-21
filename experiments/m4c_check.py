@@ -248,7 +248,7 @@ def check_scenario(run: Path) -> int:
             expect(dropped > 0 and gaps == dropped, f"{role}: {dropped} entries dropped, the sequence skips {gaps}")
             expect(result[role]["locked"] and result[role]["lost_after_lock"] == 0 and result[role]["crc_errors"] == 0,
                    f"{role}: the link itself unaffected")
-    if scenario in ("acquire", "free", "sf-step", "steer"):
+    if scenario in ("acquire", "free", "sf-step", "steer", "steer-pl"):
         acquired = events(logs["B"], "acquired")
         first = acquired[0] if acquired else {}
         expect(first.get("offset_ns") is not None,

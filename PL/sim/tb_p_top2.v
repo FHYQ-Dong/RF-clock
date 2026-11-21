@@ -113,7 +113,8 @@ module tb_p_top2;
                 .m_axis_s2mm_tdata (s2mm_tdata), .m_axis_s2mm_tkeep (), .m_axis_s2mm_tvalid (s2mm_tvalid),
                 .m_axis_s2mm_tready (1'b1), .m_axis_s2mm_tlast (s2mm_tlast),
                 .m_axis_dac0_tdata (), .m_axis_dac0_tvalid (), .m_axis_dac0_tready (1'b1),
-                .pps_out_invalid (), .pps_out_led ()
+                .pps_out_invalid (), .pps_out_led (),
+                .fs725_txd_a (), .fs725_txd_b (), .fs725_rxd_a (1'b1), .fs725_rxd_b (1'b1)
             );
         end
     endgenerate

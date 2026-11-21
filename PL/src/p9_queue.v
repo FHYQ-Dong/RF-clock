@@ -3,8 +3,9 @@
 // words in block RAM, read by the ARM through an AXI BRAM Controller (byte
 // address, read latency 1; writes from that side are ignored).
 //
-// Two producers (P8's OWN entries, P9's PEER entries) each hold an entry and
-// a request until acknowledged; the queue takes one at a time, OWN first.  It
+// Three producers (P8's OWN entries, P9's PEER entries and, since 2.5, P13's
+// STEER entries) each hold an entry and a request until acknowledged; the queue
+// takes one at a time, OWN first, then PEER, then STEER.  It
 // puts the entry sequence (mod 2^16, counting dropped entries too) into word
 // 0 [31:16], writes the 16 words at `head`, then advances `head`.  An entry
 // for a full ring (head + 1 == tail) is dropped and counted.
@@ -19,6 +20,9 @@ module p9_queue #(
     input  wire          peer_req,
     input  wire [511:0]  peer_entry,
     output reg           peer_ack,
+    input  wire          steer_req,
+    input  wire [511:0]  steer_entry,
+    output reg           steer_ack,
     input  wire [31:0]   tail,
     output reg  [31:0]   head,
     output reg  [31:0]   dropped_count,
@@ -46,8 +50,9 @@ module p9_queue #(
     end
 
     always @(posedge clk) begin
-        own_ack  <= 1'b0;
-        peer_ack <= 1'b0;
+        own_ack   <= 1'b0;
+        peer_ack  <= 1'b0;
+        steer_ack <= 1'b0;
         if (rst) begin
             busy          <= 1'b0;
             head          <= 32'd0;
@@ -60,14 +65,17 @@ module p9_queue #(
                 busy <= 1'b0;
                 head <= next_head;
             end
-        end else if ((own_req && !own_ack) || (peer_req && !peer_ack)) begin
+        end else if ((own_req && !own_ack) || (peer_req && !peer_ack) || (steer_req && !steer_ack)) begin
             // take one; the producer drops its request in the cycle after the ack
             if (own_req && !own_ack) begin
                 own_ack <= 1'b1;
                 entry   <= {own_entry[511:32], seq, own_entry[15:0]};
-            end else begin
+            end else if (peer_req && !peer_ack) begin
                 peer_ack <= 1'b1;
                 entry    <= {peer_entry[511:32], seq, peer_entry[15:0]};
+            end else begin
+                steer_ack <= 1'b1;
+                entry     <= {steer_entry[511:32], seq, steer_entry[15:0]};
             end
             seq <= seq + 16'd1;
             if (full) dropped_count <= dropped_count + 32'd1;

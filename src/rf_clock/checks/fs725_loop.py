@@ -159,8 +159,10 @@ def main() -> None:
             "rms_steps": round(fit["rms_steps"], 1),
             "steps": [{key: round(f[key], 3) for key in ("sf_change", "k_per_s", "lag_s", "dead_s", "rms_steps")}
                       for f in steps]}}}
-        path = save_board_config(replace(config, fs725={"serial": serial, "identity": identity, "port": args.port,
-                                                        "gain": args.gain, "loops": loops}), args.config)
+        # the same unit keeps the rest of its entry, such as its response to FC (``fc``)
+        path = save_board_config(replace(config, fs725={**entry, "serial": serial, "identity": identity,
+                                                        "port": args.port, "gain": args.gain, "loops": loops}),
+                                 args.config)
         print(f"written to {path}: the link checks this unit and sets GA {args.gain} at its start "
               f"(copy the file to boards/<S/N>/board.json in the repository)")
     t0 = reads[0][0]

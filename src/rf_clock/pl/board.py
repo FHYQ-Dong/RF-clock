@@ -19,6 +19,8 @@ through each block's own methods:
 ``queue``      ``MeasurementQueue``: measurements and the peer's packets (2.0)
 ``pps_out``    ``PPSOut``: the output PPS on DAC_B, P10 (2.1)
 ``ref_phase``  ``RefPhase``: the 10 MHz reference's phase on ADC_D, P11 (2.4)
+``serial``     ``SerialLine``: the FS725's serial line on PMOD1, P12 (2.5)
+``steering``   ``PLSteering``: steering through FC in the PL, P13 (2.5)
 ``clock_gpio`` clock-status GPIO (``pl_clk0``), bit 0 = fabric MMCM locked
 ``overlay``    the PYNQ ``Overlay``
 ``bringup``    ``BringupResult`` (faults found and cleared at power-up)
@@ -50,6 +52,8 @@ from .measurements import MeasurementQueue
 from .mmio import MemoryMMIO, RegisterIO
 from .pps_out import PPSOut
 from .ref_phase import RefPhase
+from .serial import SerialLine
+from .steering import PLSteering
 from .rxdma import RXDMA, pynq_rx_dma
 from .slots import Slots
 from .tracking import Correlator
@@ -344,6 +348,8 @@ class PL:
         self.queue = MeasurementQueue(queue_memory if queue_memory is not None else MemoryMMIO(), ctrl)
         self.pps_out = PPSOut(ctrl)
         self.ref_phase = RefPhase(ctrl)
+        self.serial = SerialLine(ctrl)
+        self.steering = PLSteering(ctrl)
 
     @property
     def clock_gpio(self) -> Any:

@@ -18,6 +18,8 @@ from rf_clock.plmodel import correlator as p8
 from rf_clock.plmodel import fir
 from rf_clock.plmodel import packet as p9
 
+import gen_steer_vectors
+
 W = 47  # correlation width
 SEED = 20261102
 
@@ -304,6 +306,7 @@ def main() -> None:
     search_vectors(rng, out)
     p9_vectors(rng, out)
     relock_vectors(rng, out)
+    gen_steer_vectors.main(out)  # tb_p13_steer (2.5)
 
 
 if __name__ == "__main__":

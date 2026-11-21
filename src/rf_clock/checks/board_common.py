@@ -16,11 +16,13 @@ import datetime
 import json
 from dataclasses import asdict
 
+from rf_clock.fs725 import register_port
 from rf_clock.pl import PL
 from rf_clock.pl.board import ADC_TARGET_LATENCY, DAC_TARGET_LATENCY
 from rf_clock.pl.bringup import BringupError
 from rf_clock.pl.overlay import DEFAULT_BITSTREAM, VersionMismatch, package_version
 from rf_clock.pl.rfdc import RFDCError
+from rf_clock.pl.serial import PLPort
 
 
 def mark(msg: str) -> None:
@@ -87,7 +89,8 @@ def mts_record(result) -> dict:
 
 
 def open_pl(args, log: RunLog) -> PL | None:
-    """``PL.open`` with RFDC MTS (docs/ABI.md 7.1), logged.
+    """``PL.open`` with RFDC MTS (docs/ABI.md 7.1), logged, and the FS725 on this PL's serial
+    line registered as ``FS725.open("pl")`` (P12, since 2.5).
 
     Returns None after printing the failure and appending it to ``log``.
     """
@@ -121,4 +124,5 @@ def open_pl(args, log: RunLog) -> PL | None:
     for kind, settings in mts.mixers.items():
         print(f"{kind} tile 2 block 0 mixer: Freq {settings.get('Freq')} MHz, "
               f"MixerType {settings.get('MixerType')}, MixerMode {settings.get('MixerMode')}")
+    register_port("pl", lambda: PLPort(pl.serial))
     return pl

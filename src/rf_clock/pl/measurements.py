@@ -3,6 +3,7 @@
 The PL writes one ``OwnMeasurement`` for every window (a measurement of the
 peer's burst when locked) and one ``PeerPacket`` for every packet it decoded
 with a good CRC, into a ring the ARM reads from QUEUE_TAIL up to QUEUE_HEAD.
+Since 2.5, while P13 steers through FC, also one ``SteerStep`` for every step.
 """
 
 from __future__ import annotations
@@ -99,11 +100,46 @@ class PeerPacket:
         return self._bit(abi.ABI.PKST.CLOCKS_LOCKED)
 
 
+@dataclass(frozen=True)
+class SteerStep:
+    """QE_TYPE_STEER (since 2.5): one step of P13, the steering through FC in the PL (docs/ABI.md
+    4.16).  ``pps_count`` and ``step`` name the step, ``index`` counts from the first with theta."""
+
+    seq: int
+    pps_count: int
+    step: int
+    pairs: int
+    command_tick: int  # the tick its command was to start
+    index: int
+    theta_q16: int  # 2^-16 fs; the prediction in a step without pairs
+    dF_q16: int  # theta less B's own corrections, its change from the step before, 2^-16 fs
+    S_q24: int  # 2^-24 fine steps of FC
+    low: int  # FC's fine DAC value after the step
+    change: int
+    remainder_q24: int
+    old_changes: int  # the changes older than STEER_L steps, summed
+    missing: bool
+    settling: bool
+    saturated: bool
+    stopped: bool
+    first: bool
+    late: bool  # the command before this one started after its tick
+    steps: bool  # FC steps, not the algorithm
+
+    @property
+    def theta_ps(self) -> float:
+        return self.theta_q16 / 65536 / 1000
+
+    @property
+    def dF_ps(self) -> float:
+        return self.dF_q16 / 65536 / 1000
+
+
 class QueueError(PLClientError):
     pass
 
 
-def decode_entry(words: Sequence[int]) -> OwnMeasurement | PeerPacket:
+def decode_entry(words: Sequence[int]) -> OwnMeasurement | PeerPacket | SteerStep:
     """One 16-word entry (docs/ABI.md 4.12)."""
     if len(words) != abi.ABI.QUEUE_ENTRY_WORDS:
         raise ValueError(f"an entry has {abi.ABI.QUEUE_ENTRY_WORDS} words, got {len(words)}")
@@ -138,6 +174,21 @@ def decode_entry(words: Sequence[int]) -> OwnMeasurement | PeerPacket:
             t_rx_fs=_s64(w[QE.P_TRX_LO], w[QE.P_TRX_HI]),
             phase=_s32(w[QE.P_PHASE]),
         )
+    if kind == QE.TYPE_STEER:
+        f = abi.ABI.QESF
+        fc = w[QE.S_FC]
+        change = fc >> 16
+        return SteerStep(
+            seq=seq, pps_count=w[QE.PPS_COUNT], step=w[QE.S_STEP] & 0x1FF, pairs=(w[QE.S_STEP] >> 16) & 0x3FF,
+            command_tick=(w[QE.S_CMD_HI] << 32) | w[QE.S_CMD_LO], index=w[QE.S_INDEX],
+            theta_q16=_s64(w[QE.S_THETA_LO], w[QE.S_THETA_HI]), dF_q16=_s64(w[QE.S_DF_LO], w[QE.S_DF_HI]),
+            S_q24=_s64(w[QE.S_S_LO], w[QE.S_S_HI]), low=fc & 0xFFF,
+            change=change - 0x10000 if change & 0x8000 else change,
+            remainder_q24=_s32(w[QE.S_REM]), old_changes=_s32(w[QE.S_OLD]),
+            missing=bool(flags >> f.MISSING & 1), settling=bool(flags >> f.SETTLING & 1),
+            saturated=bool(flags >> f.SATURATED & 1), stopped=bool(flags >> f.STOPPED & 1),
+            first=bool(flags >> f.FIRST & 1), late=bool(flags >> f.LATE & 1), steps=bool(flags >> f.STEPS & 1),
+        )
     raise QueueError(f"unknown entry type {kind}")
 
 
@@ -165,7 +216,7 @@ class MeasurementQueue:
         base = index * 4 * abi.ABI.QUEUE_ENTRY_WORDS
         return [int(self.memory.read(base + 4 * k)) for k in range(abi.ABI.QUEUE_ENTRY_WORDS)]
 
-    def read(self, max_entries: int | None = None) -> list[OwnMeasurement | PeerPacket]:
+    def read(self, max_entries: int | None = None) -> list[OwnMeasurement | PeerPacket | SteerStep]:
         """The entries from QUEUE_TAIL up to QUEUE_HEAD (at most ``max_entries``),
         then QUEUE_TAIL past them."""
         size = self.entries
@@ -174,7 +225,7 @@ class MeasurementQueue:
         count = (head - tail) % size
         if max_entries is not None:
             count = min(count, int(max_entries))
-        out: list[OwnMeasurement | PeerPacket] = []
+        out: list[OwnMeasurement | PeerPacket | SteerStep] = []
         self.client.require_fabric_clock()
         for k in range(count):
             out.append(decode_entry(self._entry_words((tail + k) % size)))

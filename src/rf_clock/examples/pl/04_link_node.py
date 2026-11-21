@@ -25,6 +25,7 @@ import time
 
 from rf_clock.pl import PL
 from rf_clock.pl.abi import ABI
+from rf_clock.pl.measurements import SteerStep
 from rf_clock.pl.slots import rx_offset_for
 from rf_clock.pl.tracking import quality_offset
 from rf_clock.pl.waveform import (DEFAULT_BETA, DEFAULT_SAMPLES_PER_SYMBOL, DEFAULT_SPAN_CHIPS, generate_test_chips,
@@ -72,6 +73,8 @@ def main() -> None:
     end = time.monotonic() + args.seconds
     while time.monotonic() < end:
         for entry in pl.queue.read():  # this node's measurements and the peer's packets, oldest first
+            if isinstance(entry, SteerStep):  # only while the PL steers through FC (P13), not here
+                continue
             record = seconds.add(entry)
             if record is not None:
                 print(f"second {record['count']}: {record['pairs']} pairs, theta {record['theta_ns'] * 1000:+.1f} ps, "

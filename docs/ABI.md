@@ -32,7 +32,7 @@ The base addresses are fixed in `PL/bd/create_rf_clock_bd.tcl`. Software reads t
 
 | Address space      | HWH name                       | Base        | Size                                          | Clock domain |
 | ------------------ | ------------------------------ | ----------- | --------------------------------------------- | ------------ |
-| P2 registers       | `p_top_0`                      | 0xA000_0000 | 4 KiB (first 1 KiB used)                      | fabric       |
+| P2 registers       | `p_top_0`                      | 0xA000_0000 | 4 KiB (first 1.25 KiB used since 2.5)         | fabric       |
 | AXI DMA registers  | `rx_dma`                       | 0xA001_0000 | 64 KiB                                        | pl_clk0      |
 | Clock-status GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                                         | pl_clk0      |
 | RFDC registers     | `rfdc`                         | 0xA004_0000 | 256 KiB                                       | pl_clk0      |
@@ -111,13 +111,13 @@ Confirms that the RF-clock bitstream is loaded. On any other value, stop and do 
 
 | Address | Access | Format | Reset |
 | ------- | ------ | ------ | ----- |
-| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00020004 (2.4) |
+| 0x04    | RO     | [31:16] major, [15:0] minor | 0x00020005 (2.5) |
 
 ```text
-R32 0x04  → 0x00020004
+R32 0x04  → 0x00020005
 ```
 
-Refuse to run when major differs from the one the software supports. In 1.x, `PPS_INPUTS` and `PPS_CONFIG` came with minor 1, `BUILD_VERSION` with 2 and `TX_REPEAT` with 3; 2.0 keeps all of them and adds the slot engine, bursts from chips, the correlator, the packet and the queue (§4.8–§4.12, §14); 2.1 adds the output PPS (§4.13), 2.2 its idle level `PPS_OUT_IDLE`, 2.3 its fractional edge delay `PPS_OUT_FRAC`, 2.4 the phase of the 10 MHz reference (§4.14). Python: `PLClient.validate()`, `DeviceInfo.version`.
+Refuse to run when major differs from the one the software supports. In 1.x, `PPS_INPUTS` and `PPS_CONFIG` came with minor 1, `BUILD_VERSION` with 2 and `TX_REPEAT` with 3; 2.0 keeps all of them and adds the slot engine, bursts from chips, the correlator, the packet and the queue (§4.8–§4.12, §14); 2.1 adds the output PPS (§4.13), 2.2 its idle level `PPS_OUT_IDLE`, 2.3 its fractional edge delay `PPS_OUT_FRAC`, 2.4 the phase of the 10 MHz reference (§4.14), 2.5 the FS725's serial line and the steering through FC in the PL (§4.15, §4.16). Python: `PLClient.validate()`, `DeviceInfo.version`.
 
 #### 4.1.3 `CONTROL` — command pulses
 
@@ -693,7 +693,7 @@ The queue window (0xA081_0000) holds a ring of `QUEUE_ENTRIES` (1024) entries of
 | 14 | the window's Σ(I² + Q²), HI | 0 |
 | 15 | 0 | 0 |
 
-The word indices are `QE_*` in `p_defs.vh`. An entry of either type is written only after all its words. Python: `pl.queue.read()` (§11.14).
+Since 2.5, while P13 steers through FC with `STEER_CONTROL.LOG`, a third type, `QE_TYPE_STEER`, logs each of its steps (§4.16). The word indices are `QE_*` in `p_defs.vh`. An entry of any type is written only after all its words. Python: `pl.queue.read()` (§11.14).
 
 | Address | Name | Access | Reset | Meaning |
 | ------- | ---- | ------ | ----- | ------- |
@@ -790,6 +790,148 @@ For a reference x = A cos(2π × 10 MHz × (t − τ)), with t the sample's plac
 - Nothing in the PL or the link uses τ_ref yet; `m4c_link` logs each second it keeps (`ref_phase` lines, §13).
 
 Python: `pl.ref_phase` (§11.17).
+
+### 4.15 The FS725's serial line, P12 (since 2.5)
+
+Up to 2.4 the ARM sent every FC command to node B's FS725 through a USB serial adapter. The command left 22-151 ms after the end of its step with 2.4.0.0 and 22-58 ms from 2.4.0.1 on, at a time that varied from step to step, and the steering's model of the FS725 had to allow for it ([FC response report](../results/fc-response-20261112/REPORT.md) section 1). Since 2.5 the PL can drive the FS725's RS-232 line itself, so that P13 can start each command at a tick it chooses. A TTL-to-RS-232 module (MAX3232, DB-9 male, the same pin-out as a PC's port) plugs into J1, and its DB-9 plugs straight into the FS725's port in place of the USB serial adapter. The USB serial adapter and `--steer-actuator fc` keep working as before, so the module is needed only for the steering in the PL. `PL/sim/tb_p12_serial.v` checks P12 in simulation. On the bench (8873292600AB, 2026-11-16), in the four runs with P13's commands ([results/pl-steering-20261116](../results/pl-steering-20261116/REPORT.md)), P12 sent 38 542 FC commands and 38 614 messages of the ARM and received 270 114 bytes of replies, with no framing error and no byte lost. In this section the serial line is the wire pair to the FS725, and an ARM message is the up to 32 bytes the ARM hands P12 in one go.
+
+J1 is the board's 2 × 15 right-angle header. It holds two Pmod connectors side by side, PMOD0 and PMOD1, and the silkscreen marks the PMOD1 end "PMODB". Every Pmod line passes the board's NVT2008 level translators, between the FPGA's 1.8 V bank and the 3.3 V header, with 1.15 kΩ pull-ups to 3.3 V on the header side, so an empty hole reads as a high level.
+
+```text
+P13's FC command (start tick) ─┐
+                               ├─► P12 transmitter ─► PMOD1_6 and PMOD1_2 ─► NVT2008 ─► module RXD ─► MAX3232 ─► DB-9 pin 3 ─► FS725
+the ARM's message (32 B) ───────┘
+the ARM ◄─ 256-byte FIFO ◄─ P12 receiver ◄─ AND of PMOD1_7 and PMOD1_3 ◄─ NVT2008 ◄─ module TXD ◄─ MAX3232 ◄─ DB-9 pin 2 ◄─ FS725
+```
+
+**Which pins.** On 8873292600AB the module sits on the lower row of J1, the one nearer the board, at the PMODB end. Its VCC is in the hole at the very end, its GND next to it, and a meter read 3.3 V between those two holes (2026-11-16). The schematic (page 5, "PMOD HEADERS") puts PMOD1 on J1 pins 10-15 and 16-21, with 3.3 V on pin 16 and GND on pin 17. That the lower row is pins 16-21 was inferred from the order of the symbol's pins and then confirmed on the bench, where the FS725's replies came in on PMOD1_7 and none on PMOD1_3 (2026-11-16). The module's pins land as the table shows.
+
+| Module pin | J1 pin | Line | FPGA pin | In P12 |
+| ---------- | ------ | ---- | -------- | ------ |
+| VCC | 16 | 3.3 V | | |
+| GND | 17 | GND | | |
+| TXD, the FS725's replies | 18 | PMOD1_7 | AU14 | receive pin A |
+| RXD, to the FS725 | 19 | PMOD1_6 | AT15 | transmit |
+| CTS | 20 | PMOD1_5 | AP14 | not used |
+| RTS | 21 | PMOD1_4 | AU15 | not used |
+
+If the lower row is pins 10-15 instead, TXD and RXD are on PMOD1_3 (AV13, receive pin B) and PMOD1_2 (AU13). So that either works, P12 sends on both PMOD1_6 and PMOD1_2, receives the AND of PMOD1_7 and PMOD1_3, and counts the falling edges on each (`SERIAL_RX_EDGES`). The empty pin's count stays 0, because its pull-up gives no edges, and the pin whose count is not 0 is the one the module is on. The counts wrap at 256, so their values say nothing more than that. If both stay 0 while the FS725 should answer, nothing came from it. `m4c_link --fs725 pl` logs both counts at its start and end, and also when the FS725 does not answer at the start (`serial` log lines, §13). Driving the other row does no harm, since its holes are empty. RTS and CTS stay unconnected in the PL, because the FS725 uses no handshake lines (PRS10 manual p. 20).
+
+**The frame.** Each byte goes out as a start bit, 8 data bits from the least significant, no parity and one stop bit, each bit `SERIAL_CONFIG.BIT_TICKS` ticks long. The reset value 10417 gives $100\ \mathrm{MHz} / 10417 = 9599.7$ baud, 0.003 % slower than the FS725's fixed 9600 baud, far inside what a UART tolerates. A 12-byte command such as `FC1675,2048\r` takes 12.5 ms on the line. The FS725 sends XON/XOFF characters for flow control, and P12 does not act on them. One short command a step and the ARM's queries between them keep the FS725's input buffer far from full (inferred).
+
+**P13's commands.** P13 hands over each command with its bytes and its start tick T. If the transmitter is idle at T, the start bit begins in the tick after T, and `STEER_CMD_TICK` (§4.16) reads T. If a frame is still on the line at T, the command starts as soon as the line is free, and it is counted as late (`STEER_LATE_CNT` and `STEER_STATUS.LATE` in §4.16).
+
+**The ARM's messages.** The ARM writes up to 32 bytes into `SERIAL_LINE` and then `SERIAL_CONTROL.SEND`. P12 starts the message only while no P13 command waits and, while P13 runs, only if the message ends at least one bit time before P13's next command. So a message never delays a command. A message of up to 32 bytes takes at most 33 ms, so with steps of 0.1 s it waits at most one step. While a message waits or is being sent, a write to `SERIAL_LINE` is refused (SLVERR), and so is a 33rd byte.
+
+**Receiving.** Each byte with a good stop bit goes into a FIFO of 256 bytes. A read of `SERIAL_RX` takes the oldest byte out in the cycle after the read. A byte with a bad stop bit, or one that finds the FIFO full, is counted and dropped.
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x400 | `SERIAL_CONTROL` | WO | — | write-1 pulses, bit 0 `SEND` sends the ARM's message, bit 1 `CLEAR` drops the bytes written for a message not yet sent, bit 2 `RX_FLUSH` drops the received bytes |
+| 0x404 | `SERIAL_CONFIG` | RW | 10417 | [15:0] `BIT_TICKS`, at least 16, [16] `ENABLE`. Without it the serial line idles high, a pending command is dropped and nothing is received |
+| 0x408 | `SERIAL_STATUS` | RO | — | bit 0 `LINE_QUEUED` (an ARM message waits or is being sent), bit 1 `TX_ACTIVE`, bit 2 `CMD_PENDING`, [13:8] bytes written for the ARM's message, bit 16 level on PMOD1_7, bit 17 on PMOD1_3, [28:20] bytes in the FIFO |
+| 0x40C | `SERIAL_LINE` | WO | — | [7:0] a byte appended to the ARM's message |
+| 0x410 | `SERIAL_RX` | RO | — | [7:0] the oldest byte, bit 8 `VALID`, [24:16] bytes after it. A read takes it out |
+| 0x414 | `SERIAL_LINES_CNT` | RO | 0 | the ARM's messages sent |
+| 0x418 | `SERIAL_CMDS_CNT` | RO | 0 | P13's commands sent |
+| 0x41C | `SERIAL_RX_CNT` | RO | 0 | bytes received |
+| 0x420 | `SERIAL_ERR_CNT` | RO | 0 | [15:0] bytes with a bad stop bit, [31:16] bytes lost to a full FIFO |
+| 0x424 | `SERIAL_RX_EDGES` | RO | 0 | [7:0] falling edges on PMOD1_7 (receive pin A), [15:8] on PMOD1_3 (receive pin B), both wrapping at 256 |
+| 0x428 / 0x42C | `SERIAL_LINE_TICK_LO` / `_HI` | RO | 0 | the tick the last ARM message started. Reading LO latches HI |
+
+In Python, `pl.serial` and `PLPort` (§11.18) drive P12, and every `FS725` method works on the PL's line through `FS725.open("pl")` (§11.13).
+
+### 4.16 Steering through FC in the PL, P13 (since 2.5)
+
+P13 can run the predictive steering algorithm through FC (`PredictiveSteering` built by `predictive_fc`, §11.12) in the PL, one step at a time, and P12 then sends each step's FC to the FS725 at a fixed tick after the step's end. The ARM computes the algorithm's coefficients and loads them once, starts and stops P13, reads one queue entry for each step and checks the FS725 between the PL's commands. `rf_clock.plmodel.steer` defines every step to the bit, and `PL/sim/tb_p13_steer.v` compares the RTL with it step by step. Steering through FC on the ARM (`--steer-actuator fc`) stays as it was. On the bench (2026-11-16, [results/pl-steering-20261116](../results/pl-steering-20261116/REPORT.md)) its θ and number of pairs equalled what the ARM computed from the same queue entries in all 2923 steps checked, and its FC equalled that of `rf_clock.plmodel.steer` fed with P13's θ in all 26 689 steps of the three steering runs in the PL. No command of P13 was late.
+
+```text
+P8 OWN entry (T_rx) ─┐  a pair's 2θ, fs
+P9 PEER entry ───────┴─► summed over the step's last STEER_STEP.LATE slots ─► at the step's end tick, θ_k (2^-16 fs)
+                                                                                │
+coefficient tables (the ARM loads them) ─► one 48 × 48 multiplier, 104-bit sum ─► S_k ─► round, clip ─► FC_k
+                                                                                                          │
+           ┌──────────────────────────────────────────────────────────────────────────────────────────────┤
+           ▼                                                                                              ▼
+"FC<high>,<low>\r" at the step's end + STEER_WRITE_DELAY ─► P12 ─► FS725              QE_TYPE_STEER entry ─► queue ─► ARM
+```
+
+**Pairs and steps.** A locked OWN entry and the PEER entry of the same window (its `PPS_COUNT` and slot) whose packet carries a measurement make a pair, as `rf_clock.twtt.pairs.pair` forms it, with $2\theta = (T_\mathrm{rx} - T_\mathrm{tx}^\mathrm{peer}) - (T_\mathrm{rx}^\mathrm{peer} - T_\mathrm{tx}^\mathrm{own})$ on node B (`STEER_CONTROL.ROLE_B`) and the opposite sign on A, in fs. $T_\mathrm{tx}^\mathrm{own}$ is this node's burst in the slot before, from `SLOT_TX_OFFSET`. The second is cut into steps of `STEER_STEP.SLOTS` slots from this node's PPS edge (50 slots for 0.1 s), and a step's θ is the mean of the pairs whose slot lies in its last `STEER_STEP.LATE` slots, rounded to $2^{-16}$ fs. A step without such a pair has no θ. Node B has a window only in A's slots, the even ones (§4.8), and a step of 50 slots starts on an even slot, so with the reset values the last 25 slots of a step hold at most 12 pairs. P13 takes each step at its end tick. A window ends `SLOT_RX_OFFSET` + `RX_SPAN_BEATS` ticks after its slot starts (one beat a tick), about 0.25 ms plus the one-way delay, so even a pair from the step's last slot has reached the queue well before the step ends. A pair whose entries came after its step's end tick is dropped, since that step's θ has been taken and the next step's sum starts from zero.
+
+**The algorithm.** With its settings fixed, the predictive steering algorithm is one linear filter followed by a rounding and two clips. Let $U_k$ be the change of FC decided in step $k$, in fine steps (one unit of FC's fine DAC), $g(d)$ the algorithm's model of θ's response to one change $d$ steps later, $h(d) = g(d) - g(d-1)$, and $\Delta F_k$ the change from step $k-1$ to step $k$ of θ less B's own corrections. Then
+
+$$\Delta F_k = \theta_k - \theta_{k-1} - \sum_{d \ge 1} h(d)\, U_{k-d}$$
+
+$$S_k = R_0 (\theta_k - \theta_0) + \sum_{j=0}^{p-1} \alpha_j \Delta F_{k-j} + \frac{\gamma}{n_e} W_k + \sum_{d \ge 1} K(d)\, U_{k-d}$$
+
+where $p$ is the AR model's order (`STEER_P`), $W_k$ is the sum of the last $n_e = \min(n, k)$ values of $\Delta F$, and $n$ (`STEER_N`, 600 steps or 60 s at 0.1 s steps) is the number of steps over which the algorithm takes the mean that its AR model predicts deviations from. The new FC is $\mathrm{FC}_k = \mathrm{FC}_{k-1} + U_k$, where $U_k$ is $-S_k$ plus the remainder carried from the step before, rounded half up, held to `STEER_MAX_STEP` and to `STEER_FC_LIMITS`. $R_0$, $\alpha_j$, $\gamma$ and $K(d)$ follow from the first row of the algorithm's least-squares solution, its AR model and $g$ (`rf_clock.plmodel.steer.tables`). Apart from $R_0 (\theta_k - \theta_0)$, which the loop holds near zero, only differences of θ and of θ less B's own corrections enter, so no quantity grows with the clocks' drift. Beyond the tables ($d >$ `STEER_L`) $h$ and $K$ are constant, so older changes enter through their sum alone. A step without θ changes nothing and takes the algorithm's own prediction one step ahead,
+
+$$\Delta F_k = \sum_{i=0}^{p-1} \mathrm{ar}_i\, \Delta F_{k-1-i} + \frac{1 - \sum_i \mathrm{ar}_i}{n_e} W_{k-1}$$
+
+with $\mathrm{ar}_i$ the AR coefficients (tables `AR` and `MEAN2`). The algorithm waits `STEER_SETTLE` steps before its first change, and stops when the wanted FC has lain outside the limits for `STEER_MAX_SATURATED` steps in a row (`STOPPED`, no more commands). This computes what `PredictiveSteering` computes, in fixed point. In closed-loop simulations on synthetic clocks (four runs of 6000 steps), $S_k$ agreed with the float algorithm's within $2.4 \times 10^{-6}$ fine steps, the rounded changes were the same except, rarely, by one fine step where $S_k$ lay that close to a rounding boundary, and the rms of θ − θ₀ agreed within 0.1 %.
+
+**The command.** From the first step with θ on, every step sends `STEER_PREFIX` (the ARM writes `FC<high>,`), FC's fine DAC value in four digits and a carriage return, starting `STEER_WRITE_DELAY` ticks after the step's end. It does so also in steps that change nothing, while the algorithm settles and in steps without θ. At GA 1 the FS725's own frequency lock loop still integrates and slowly pulls FC away from the value written, and the next write puts it back (§11.12). The ARM builds the algorithm's model with each command leaving `STEER_WRITE_DELAY` after its step's end. The 12.5 ms the command takes on the line and the FS725's own 11 ms need no allowance of their own, because the dead time measured from the command's start (23.5 ms) already holds both. A step takes about $2L + 2p + 150$ clock cycles of 10 ns to compute, about 10 µs with the tables for 0.1 s steps (inferred from the RTL). A `STEER_WRITE_DELAY` shorter than that makes the command late, and the default 20000 ticks (0.2 ms) leaves ample room.
+
+**FC steps.** With `STEER_CONTROL.STEPS` P13 runs FC steps (`rf_clock.twtt.steer.FCSteps`, §13 under `m4c_link`) instead of the algorithm, through the same path, to measure the FS725's response with each command on its tick. They too start at the first step with θ, after which θ is ignored. After `STEER_SETTLE` steps, FC goes up by `STEER_STEPS.SIZE` fine steps, back, down by as much and back, holding each level for `STEER_STEPS.HOLD` steps of `STEER_STEP.SLOTS` slots, and the cycle repeats until P13 is stopped. `STEER_STEPS`, the FC steps, and `STEER_STEP`, the length of a step, differ by one letter.
+
+**Starting and stopping.** Writing `ENABLE` from 0 to 1 starts afresh, with FC from `STEER_FC_START` and from the next step with θ, which becomes step 0. Writing 0 stops at once. Load the tables and settings while `ENABLE` is 0. P13 runs on by itself when the program that started it ends without stopping it. While the link runs it keeps steering on its own pairs, and without θ it keeps writing the same FC. Besides its own stop (`STOPPED`), only `ENABLE` 0 or a new `PL.open()`, which loads the bitstream again, stops it. `m4c_link` writes `ENABLE` 0 at its end, also after an error, Ctrl-C or SIGTERM, but not when it is killed outright (§13).
+
+| Address | Name | Access | Reset | Meaning |
+| ------- | ---- | ------ | ----- | ------- |
+| 0x440 | `STEER_CONTROL` | RW | 0xA | bit 0 `ENABLE`, bit 1 `ROLE_B`, bit 2 `STEPS`, bit 3 `LOG` (a queue entry each step) |
+| 0x444 | `STEER_STATUS` | RO | 0 | bit 0 `ENABLED` (`ENABLE` read back), bit 1 `STARTED` (a step with θ came since `ENABLE`), bit 2 `STOPPED`, bit 3 `SETTLING`, bit 4 `LATE` (the last command started after its tick, not to be confused with `STEER_STEP.LATE`), bit 5 `BUSY` (a step is being computed) |
+| 0x448 | `STEER_STEP` | RW | 0x190032 | [8:0] `SLOTS`, slots a step, dividing `SLOTS_PER_SECOND`, [24:16] `LATE`, the last slots of a step that θ comes from. The reset value is 50 and 25, for steps of 0.1 s |
+| 0x44C | `STEER_WRITE_DELAY` | RW | 20000 | ticks from a step's end to its command, 0.2 ms by default |
+| 0x450 … 0x458 | `STEER_L`, `STEER_N`, `STEER_P` | RW | 400, 600, 40 | L, n and p, the change tables' length, the mean's window and the AR order, at most `STEER_LMAX` − 2, `STEER_NMAX` − 2, `STEER_PMAX` |
+| 0x45C | `STEER_SETTLE` | RW | 300 | steps before the first change |
+| 0x460 | `STEER_MAX_STEP` | RW | 1000 | fine steps a change at most |
+| 0x464 | `STEER_FC_LIMITS` | RW | 0x0C000400 | [11:0] lowest, [27:16] highest fine DAC value. The reset value is 1024 and 3072 |
+| 0x468 | `STEER_FC_START` | RW | 2048 | [11:0] the fine DAC value at the start |
+| 0x46C | `STEER_MAX_SATURATED` | RW | 1200 | steps in a row outside the limits before P13 stops |
+| 0x470 | `STEER_STEPS` | RW | 0x10000 | FC steps, [15:0] `SIZE` in fine steps, [31:16] `HOLD`, steps a level |
+| 0x474 / 0x478 / 0x47C | `STEER_PREFIX_LO`, `_HI`, `_LEN` | RW | 0 | the command's first bytes, byte 0 in [7:0] of LO, and how many (0-8) |
+| 0x480 | `STEER_COEF_ADDR` | RW | 0 | [15:13] the table, [12:0] the entry index of the next write |
+| 0x484 | `STEER_COEF_HI` | RW | 0 | [15:0] bits 47:32 of the entries written next. It holds until written again |
+| 0x488 | `STEER_COEF_LO` | WO | — | bits 31:0. A write stores `STEER_COEF_HI` and these bits as the entry and moves to the next index |
+| 0x490 | `STEER_INDEX` | RO | 0 | steps since the first with θ |
+| 0x494 | `STEER_FC` | RO | 0 | [11:0] FC's fine DAC value, [31:16] the last change, i16 |
+| 0x498 / 0x49C | `STEER_THETA_LO` / `_HI` | RO | 0 | the last step's θ in $2^{-16}$ fs (its prediction without pairs). Reading LO latches HI |
+| 0x4A0 | `STEER_MISSING_CNT` | RO | 0 | steps without θ |
+| 0x4A4 | `STEER_LATE_CNT` | RO | 0 | commands that started after their tick |
+| 0x4A8 / 0x4AC | `STEER_CMD_TICK_LO` / `_HI` | RO | 0 | the tick the last command was to start, T of §4.15. Reading LO latches HI |
+| 0x4B0 | `STEER_PAIRS_CNT` | RO | 0 | pairs formed |
+| 0x4B4 | `STEER_SATURATED_CNT` | RO | 0 | steps whose wanted FC lay outside the limits |
+| 0x4B8 … 0x4C0 | `STEER_LMAX`, `_NMAX`, `_PMAX` | RO | 4096, 4096, 64 | the tables' entries in this build |
+
+Each entry of the coefficient tables is a signed 48-bit number, written at the index the table lists.
+
+| Table | Entries | Value |
+| ----- | ------- | ----- |
+| 0 `H` | 1 … L | $h(d)$, fs per fine step, times $2^{32}$ |
+| 1 `K` | 1 … L | $K(d)$, fine steps per fine step, times $2^{40}$ |
+| 2 `ALPHA` | 0 … p − 1 | $\alpha_j$, fine steps per fs, times $2^{40}$ |
+| 3 `AR` | 0 … p − 1 | $\mathrm{ar}_i$, times $2^{40}$ |
+| 4 `GAMMA` | 1 … n | $\gamma / n_e$ for $n_e = 1, \dots, n$, fine steps per fs, times $2^{40}$ |
+| 5 `MEAN2` | 1 … n | $(1 - \sum_i \mathrm{ar}_i) / n_e$, times $2^{40}$ |
+| 6 `SCALAR` | 0 … 3 | ρ ($h$ beyond the table, as table 0), $K_\infty$ (as table 1), $R_0$ (as table 2), θ₀ in $2^{-16}$ fs |
+
+With `LOG`, each step from the first with θ on writes a `QE_TYPE_STEER` entry into the queue after its command. P13 computes $S$ and the remainder in $2^{-56}$ fine steps, and the entry carries them shifted right by 32 bits, which floors them to $2^{-24}$ fine steps.
+
+| Word | `QE_TYPE_STEER` |
+| ---- | --------------- |
+| 0 | [7:0] type 3, [15:8] flags, [31:16] entry sequence. Flag i is word bit 8 + i, with `QESF_MISSING` = 0 (no θ), `QESF_SETTLING` = 1, `QESF_SATURATED` = 2 (the wanted FC lay outside the limits), `QESF_STOPPED` = 3, `QESF_FIRST` = 4 (the first step with θ), `QESF_LATE` = 5 (the command of the step before started after its tick) and `QESF_STEPS` = 6 (FC steps) |
+| 1 | the step's `PPS_COUNT` |
+| 2 | [8:0] the step in its second, [25:16] its pairs |
+| 3, 4 | the tick its command was to start, LO, HI. A late command's actual start is not recorded anywhere |
+| 5 | the step's index since the first with θ |
+| 6, 7 | θ, i64, $2^{-16}$ fs (the prediction in a step without pairs, and in FC steps the first step's θ throughout, since FC steps do not use θ) |
+| 8, 9 | $\Delta F$, i64, $2^{-16}$ fs |
+| 10, 11 | $S$, i64, $2^{-24}$ fine steps (0 while settling, without θ and in FC steps) |
+| 12 | [11:0] FC's fine DAC value after the step, [31:16] the change, i16 |
+| 13 | the remainder, i32, $2^{-24}$ fine steps |
+| 14 | the changes older than `STEER_L` steps, summed, i32 |
+
+In Python, `pl.steering` (§11.19) and `rf_clock.plmodel.steer` (§11.12) drive and model P13, and `m4c_link --steer-actuator pl` (§13) runs it.
 
 ## 5. Status and error reporting
 
@@ -994,7 +1136,7 @@ Offsets from the P2 base.
 | Offset | Name              | Access | Reset      | Meaning | See |
 | ------ | ----------------- | ------ | ---------- | ------- | --- |
 | 0x00   | `ID`              | RO     | 0x52434C4B | design identifier "RCLK" | §4.1.1 |
-| 0x04   | `VERSION`         | RO     | 0x00020004 | [31:16] major, [15:0] minor | §4.1.2 |
+| 0x04   | `VERSION`         | RO     | 0x00020005 | [31:16] major, [15:0] minor | §4.1.2 |
 | 0x08   | `CONTROL`         | WO     | —          | command pulses | §4.1.3 |
 | 0x0C   | `STATUS`          | RO     | —          | status word | §4.2.1 |
 | 0x10   | `TIME_EPOCH`      | RO     | 0          | number of clock relocks | §4.1.4 |
@@ -1038,6 +1180,8 @@ Offsets from the P2 base.
 | 0x240 … 0x284 | `SR_*` | RO | 0 | search report (2.0) | §4.10 |
 | 0x300 … 0x310 | `PACKET_*` | | | measurement packet (2.0) | §4.11 |
 | 0x380 … 0x38C | `QUEUE_*` | | | measurement queue (2.0) | §4.12 |
+| 0x400 … 0x42C | `SERIAL_*` | | | the FS725's serial line (2.5) | §4.15 |
+| 0x440 … 0x4C0 | `STEER_*` | | | steering through FC in the PL (2.5) | §4.16 |
 
 ---
 
@@ -1151,6 +1295,8 @@ client.validate()
 | `bringup`    | `BringupResult`      | faults found and cleared at power-up (`initial_fault_bits`, `initial_fault_info`) |
 | `pps_out`    | `PPSOut` (§11.16)    | P10: the output PPS on DAC_B and its validity line (2.1) |
 | `ref_phase`  | `RefPhase` (§11.17)  | P11: the phase of the 10 MHz reference on ADC_D (2.4) |
+| `serial`     | `SerialLine` (§11.18) | P12, the FS725's serial line on PMOD1 (2.5) |
+| `steering`   | `PLSteering` (§11.19) | P13, steering through FC in the PL (2.5) |
 | `board`      | `BoardSetup`         | `serial`: the board's AT24MAC402 serial number; `config`: its board config or `None`; `lmx_vco`: per `"adc"`/`"dac"` the LMX2594's VCO read back (`band`, `forced`, `locked`, `capctrl`, `vco_sel`, `daciset`, `ld_vtune`), empty after `write_clocks=False` |
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, board_config=None, progress=None)`
@@ -1421,7 +1567,7 @@ rf-clock 2's side of it, which `rf_clock.checks.m4c_link` runs (in modules of th
 | Module | Content |
 | ------ | ------- |
 | `pairs` | the two-way equations of one window from one node's queue (plan section 4.2): `SlotTiming` (`slots_per_second`, `slot_ticks`, `tx_offset`; `tx_fs(slot)`), `pair()` and `Pair` (`m_ab_ns`, `m_ba_ns`, `theta_ns`, `delay_ns`), `Pairer` (a window's OWN entry with the peer packet of the same `PPS_COUNT` and slot, from queue entries or log lines), `SecondTheta` (the node's `second` lines), `StepTheta` (theta per step of an algorithm faster than a second) |
-| `control` | `configure_fs725(config, port, emit)`: the node's FS725 checked against the board config and its GA set (on the config's port when `port` is None; `BoardConfigError`, `FS725Error`); `FrequencyControl`: the unit for a run (the 1 pps PLL off, SF handed over from the pot, each second's or step's theta into the algorithm, SF back at the end; with `actuator="fc"`, since 2.3.0.2, the algorithm sets FC instead: the unit at GA 1 for the run, where it stays locked and keeps its 1PPS (GA 0 and LO 0 stop it), FC written every step, its fine DAC brought near the middle by a carry first when short of room, SF untouched, GA back when the steering stops and at the end); `SyncedRule`: when SYNCED is set |
+| `control` | `configure_fs725(config, port, emit)`: the node's FS725 checked against the board config and its GA set (on the config's port when `port` is None; `BoardConfigError`, `FS725Error`); `FrequencyControl`: the unit for a run (the 1 pps PLL off, SF handed over from the pot, each second's or step's theta into the algorithm, SF back at the end; with `actuator="fc"`, since 2.3.0.2, the algorithm sets FC instead: the unit at GA 1 for the run, where it stays locked and keeps its 1PPS (GA 0 and LO 0 stop it), FC written every step, its fine DAC brought near the middle by a carry first when short of room, SF untouched, GA back when the steering stops and at the end; with `actuator="pl"`, since 2.5.0.0, the PL takes the steps, below); `SyncedRule`: when SYNCED is set |
 | `logs` | an `m4c_link` log read back: `read(path, types)`, `pairs(path)` (line by line, for logs of queue entries), `seconds`, `fc`, and `steering_error(entries, settle_s=300)`, theta less the target from `settle_s` on, by which the reports compare steering runs |
 
 `steer` (below) serves both. θ₀, the steering target, is the shared-reference theta of a pair of boards and a wiring (Δ/2 and the two PPS paths of that reference): it lives in `links/<A's S/N>_<B's S/N>.json`, one entry per wiring with how and when it was measured (links/README.md), and is given as `--steer-target-ns` (`experiments/m4c_v2_link.py` reads it). Examples: `rf_clock.examples.twtt` (development machine) and `rf_clock.examples.pl.04_link_node` (board).
@@ -1454,13 +1600,17 @@ Each paired second's θ updates a Kalman filter for θ and the two clocks' relat
 
 `PredictiveSteering` (since 2.2.0.2; `predictive_for(target_ps, sf0, loop, late_s=…, step_s=…)`, `m4c_link --steer-mode predictive`) is the other steering algorithm, with the same `step(count, theta_ps)` interface and SF limits. It models the FS725's answer to SF by its frequency lock loop (`loop`: the integrator's gain, the crystal's lag and the dead time of the unit at its GA, from the board config's `fs725` since 2.2.0.8, before that `LOOPS[ga]`, B's unit; `loop_response`, `LoopModel`) and takes its own corrections out of each θ, which leaves θ less B's own corrections (`free_ps` in the steering log). It predicts their frequency about its 60 s mean with an AR model (`AR4`, fitted on a free record; `fit_frequency_ar`), and each second plans the next `moves` changes of SF (default 2) by least squares, holding the predicted θ on the target over `horizon` seconds (default 4) at a cost `lam` (0.05 ps² per unit²) per change. It sends the first change. `m4c_link` refuses to steer when the board config has no loop of the unit at its GA: a model for another gain makes the loop oscillate. With θ over the last 100 slots of each second (`m4c_link --steer-late-slots 100`, `theta_late_ns` on the second lines) it held θ to 27.2-27.9 ps rms on the bench at GA 8, against 33-36 ps for `Steering` at τ 5 s, every 2 s ([predictive steering report](../results/predictive-steering-20261105/REPORT.md)). Since 2.2.0.6 the algorithm and `LoopModel` take a step shorter than a second (`step_s`; `STEP_SETTINGS` holds each step's AR model, horizon, moves, cost and command time: at 0.2 s `AR20_STEP_02`, 20 steps, 2, 0.2, 0.03 s), and `m4c_link --steer-step 0.2` forms θ over the last N slots of each 100-slot step (`StepTheta`, `step` lines), writes SF without a read-back (`FS725.write_frequency`) and checks the unit once a second; `LoopModel` interpolates the loop's phase (rounding to its 20 ms grid made the table jagged, which the 0.2 s algorithm followed) ([two-loops report](../results/two-loops-20261105/REPORT.md)). The loop of another unit differs (A's integrator gain at GA 7 is 1.7 times B's), so each unit's is measured and kept in its board's config: `rf_clock.checks.fs725_loop` (§13) fits it from FC's answer to SF steps (`fit_loop`; FC alone fixes it, without the other board). Since 2.3.0.2 the algorithm can set FC, the crystal's tuning, instead of SF (`predictive_fc(target_ps, fc0, plant, late_s=…, step_s=0.1)`, `LoopModel.crystal`, `lag_response`): with the unit at GA 1 the crystal follows FC through a 1 s RC alone, without the loop's integrator and dead time, so the algorithm has to predict the clocks over about a second less. `FC_STEP_SETTINGS` holds its settings at 0.1 s steps (`AR40_STEP_01`, fitted on B's record at GA 1; 30 steps, 4 changes, cost 0.08 per (ps/s)², scaled by the FS725's gain squared; changes of up to 1000 fine steps), its model is slower than the FS725's response measured (lag × `FC_MODEL_LAG` 1.25, dead time + `FC_MODEL_DEAD_S` 0.1 s: in replay it oscillates once the FS725's dead time exceeds the model's by 0.1 s) ([precision report](../results/precision-20261105/REPORT.md) section 8). Up to 2.4.0.0 `check_fc` checked the unit once a second and waited for each reply, which held the next step's write back by about 100 ms and the one after by about 35 ms. Since 2.4.0.1 `FCWatch` sends one of the same queries right after each step's write and reads its reply right after the next write, without waiting. The node also reads its tick right after each write, and the algorithm counts each change from the moment it left rather than from the model's `command_s` (`PredictiveSteering.written`, `LoopModel.answer_late`, [FC steering report](../results/fc-steering-20261112/REPORT.md)). Since 2.4.0.1 B's board config holds the FS725's answer to FC as measured again on 1183 steps with θ pair by pair, a lag of 0.994 s after a dead time of 23.5 ms from the write, and `FC_STEP_SETTINGS` plans 3 changes at a cost of 0.01 per (ps/s)² with the model's lag 1.1 times the measured one (`FC_MODEL_LAG`) and its dead time 0.02 s longer (`FC_MODEL_DEAD_S`). In replay that holds θ − θ₀ to 2.73 ps rms and to 3.53 ps with the FS725 30 ms later, 10 % faster or slower or 15 % harder or softer, and on the bench to 2.77-2.88 ps against 4.44-4.94 ps for the settings before ([FC response report](../results/fc-response-20261112/REPORT.md)). Since 2.4.0.2 `FC_STEP_SETTINGS` sets the cost of a change to 0.0003 ps² per (ps/s)² instead of 0.01, where ps/s is the change of θ's rate that a change of FC finally gives (0.849 ps/s per fine step on B's unit). `FrequencyControl` keeps FC within the fine DAC's room on either side of FC's start, at least 500 fine steps. With FC kept in that room, the replays on B's GA 1 record neither oscillated nor ran away at any cost down to 0.00001, with the FS725's answer as measured and in each of the six departures from it (dead time, lag and gain changed, some together). At 0.0003, θ − θ₀ over the record's second half was 1.93 ps rms, and 2.50 ps in the worst departure, against 2.73 and 3.53 ps at 0.01. Lower costs gained little more and pushed FC to the edges of its room. On the bench, in six alternating runs of 20 minutes with rf-clock 2.4.0.1 and the cost passed as `--steer-lambda`, θ − θ₀ was 1.88 ps rms in both runs at 0.0003, 1.73-1.84 ps in the two at 0.0001 and 2.81-2.92 ps in the two at 0.01. From 300 s on, FC stayed within −442 and +493 fine steps of its start at 0.0003, but needed up to 686 at 0.0001, more than the 500 the package guarantees, so 0.0003 was chosen (the same report, sections 8 and 9).
 
+Since 2.5.0.0 the predictive steering algorithm through FC can also run in the PL (P13, §4.16), with the FS725's serial line driven from the PL too (P12, §4.15). With `actuator="pl"` (`m4c_link --steer-actuator pl --fs725 pl`) `FrequencyControl` starts as it does for `"fc"`, with the unit at GA 1 and FC read, and its fine DAC brought near the middle first when fewer than 500 fine steps of room are left. It then computes the coefficient tables from the algorithm, loads them into P13 with the step's slots, the late slots, `STEER_WRITE_DELAY` and the prefix `FC<high>,`, and enables P13. From then on the PL takes every step and sends every command itself. The ARM takes each step's `SteerStep` queue entry in `pl_step(entry)`, writes from it the `steer` and `fc_set` lines that its own steps write, and sends one `FCWatch` query a step through P12 in the gaps between commands. If that check finds the unit changed, or P13 reports `STOPPED`, `FrequencyControl` disables P13, writes `steer_stopped` and puts GA back, and the link runs on, as with `"fc"`. In this mode the `fc_set` lines' `written_count` and `late_s` are not read after a write but follow from the PL's fixed timing, the step's end plus `STEER_WRITE_DELAY`. A command that started later than that is flagged `late` in the next step's `steer` line, and its actual start is not logged. `predictive_fc(..., command_s=S)` builds the algorithm's model with each command leaving S seconds after its step's end, which for P13 is `STEER_WRITE_DELAY` rather than the 0.03 s of `FC_STEP_SETTINGS`. On the ARM the command left 22-58 ms after its step's end (2.4.0.1), at a time that varied from step to step. In the PL it leaves on its tick, so the model needs no margin for that variation. On the bench (2026-11-16, [results/pl-steering-20261116](../results/pl-steering-20261116/REPORT.md)) two runs of 20 minutes with the steering in the PL alternated with two of the same algorithm on the ARM, each with the write time it has, the ARM's 18-57 ms after the step's end (1st to 99th percentile) and the PL's 0.2 ms. B's FS725 was on P12 in all four, so the ARM wrote through P12 too. θ − θ₀, over each second's mean θ from 300 s on, was 1.69 and 1.63 ps rms in the PL against 1.94 and 2.05 ps on the ARM. On 2026-11-13 the ARM's steering through the USB serial adapter had left 1.88 ps in both of two runs at the same cost, so the day's clocks may differ as well, which these runs do not separate. Steps shorter than 0.1 s would need settings of their own in `FC_STEP_SETTINGS`, which so far holds 0.1 s only (plan §6, P13).
+
+`rf_clock.plmodel.steer` is the model of P13 that defines every step to the bit. `pair_2theta_fs(role_b, slot, t_rx_fs, peer_t_tx_fs, peer_t_rx_fs, *, slot_ticks, slots, tx_offset)` gives a pair's 2θ in fs as P13 forms it, and `step_theta_q16(sum, pairs)` a step's θ in $2^{-16}$ fs, rounded half up. `tables(law, *, table_s=40.0, low0, lo, hi)` turns a `PredictiveSteering` from `predictive_fc` into a `Tables` of P13's coefficients and settings in the PL's fixed point, with change tables of `table_s` seconds (`STEER_L`), and refuses a law whose numbers do not fit 48 bits. `Engine(tables, steps=None).step(theta_q16)` takes one step as P13 does, with `None` for a step without θ, and returns its numbers (`low`, `change`, `S_q56` and `rem_q56` in $2^{-56}$ fine steps, of which the queue entry carries the top bits in $2^{-24}$, `dF_q16` and the flags). `PL/sim/gen_steer_vectors.py` drives `tb_p13_steer.v` with it.
+
 ### 11.13 `rf_clock.fs725` (the FS725 rubidium standard)
 
-The FS725 passes every command on its rear DB9 (DCE, a straight-through cable; 9600 baud, 8N1, XON/XOFF, no handshake lines) to the PRS10 inside it and returns its replies; the commands are the PRS10 manual's "RS-232 Instruction Set". The module uses the standard library's `termios`, so it needs no package beyond PYNQ's environment.
+The FS725 passes every command on its rear DB9 (DCE, a straight-through cable; 9600 baud, 8N1, XON/XOFF, no handshake lines) to the PRS10 inside it and returns its replies; the commands are the PRS10 manual's "RS-232 Instruction Set". The module uses the standard library's `termios`, so it needs no package beyond PYNQ's environment. Since 2.5 the unit can also be connected to the PL's own serial line (P12, §4.15), through the TTL-to-RS-232 module on PMOD1. Then `FS725.open("pl")` opens it through `rf_clock.pl.serial.PLPort`, and every method below works the same (on the bench since 2026-11-16). Every check that opens the PL through `rf_clock.checks.board_common.open_pl`, such as `m4c_link` and `pps_pp_scan`, registers its own PL's line under that name. A command without a PL of its own, such as `rf_clock.fs725 ... --port pl` or `fs725_loop --port pl`, opens the PL first. Either way the bitstream is loaded, which stops whatever ran in the PL, P13 included, so none of them may run while a link runs on the board. Opening the PL needs the environment of §9.1 (`BOARD`, `XILINX_XRT`).
 
 | Method of `FS725` | Command | Meaning |
 | ----------------- | ------- | ------- |
-| `FS725.open(port)` | `VB0` | open the serial device (default `/dev/ttyUSB0`); `log` receives every setting written |
+| `FS725.open(port)` | `VB0` | open the serial device (default `/dev/ttyUSB0`), or a port registered under that name (`register_port(name, make)`, since 2.5, such as `"pl"`); `log` receives every setting written |
 | `query(cmd)` | any `…?` | the reply of one query; anything else is refused |
 | `identify()` | `ID?` | model, firmware and serial number |
 | `serial()` | `ID?` | the PRS10's serial number (since 2.2.0.8) |
@@ -1485,6 +1635,8 @@ $run -m rf_clock.fs725 status --port /dev/ttyUSB0   # identity, status, SF, PLL,
 $run -m rf_clock.fs725 align --port /dev/ttyUSB0    # the other node's PPS on the rear 1 pps input
 $run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # set SF (read back), e.g. to where steering started
 $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # the frequency lock loop's gain until the next restart
+sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.fs725 gain 8 --port pl
+                                                    # the same on the PL's serial line (2.5), loading the bitstream first
 ```
 
 `align` turns the 1 pps PLL off, takes ten time tags and moves the 1 pps output onto the input by `PP` (PP only moves earlier: later by d is earlier by one second minus d), to a few ns, so that the two-way time transfer's RX windows (1.25 µs before the slot) catch the other node's bursts. It moves the PPS against the 10 MHz: check the board's PPS capture margin afterwards (M1), and the margin of the EPG1, which retimes this PPS with a clock locked to the same 10 MHz (everything fed from the EPG1 moves too). The PLL stays off only until the unit restarts: take the other PPS off the rear input once aligned, or a restart locks the unit to it. Settings go to `fs725.jsonl` (`--log`).
@@ -1531,7 +1683,7 @@ $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # the frequency lock loop's 
 
 | Method / property | Protocol | Returns |
 | ----------------- | -------- | ------- |
-| `read(max_entries=None)` | R32 `QUEUE_HEAD`, `QUEUE_TAIL`, the entries, W32 `QUEUE_TAIL` | list of `OwnMeasurement` and `PeerPacket`, oldest first |
+| `read(max_entries=None)` | R32 `QUEUE_HEAD`, `QUEUE_TAIL`, the entries, W32 `QUEUE_TAIL` | list of `OwnMeasurement`, `PeerPacket` and, while P13 steers (2.5), `SteerStep`, oldest first |
 | `pending()`, `dropped()`, `clear()` | head and tail, `QUEUE_DROPPED_CNT`, W32 `QUEUE_TAIL` = head | int |
 | `entries` | R32 `QUEUE_ENTRIES` | int |
 
@@ -1539,6 +1691,7 @@ $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # the frequency lock loop's 
 | ----- | ------ |
 | `OwnMeasurement` | `seq`, `pps_count`, `slot`, `tick`, `locked`, `window_bad`, `searched`, `lag`, `fraction`, `phase`, `magnitude`, `t_rx_fs`, `quality` (`quality_db`), `window_power` |
 | `PeerPacket` | `seq`, `pps_count`, `slot`, `tick`, `version`, `time_epoch`, `quality`, `status` (`peer_locked`, `measurement`, `window_valid`, `overflow`, `pps_locked`, `clocks_locked`), `config_id`, `peer_pps_count`, `peer_slot`, `t_tx_fs`, `t_rx_fs`, `phase` |
+| `SteerStep` | `seq`, `pps_count`, `step`, `pairs`, `command_tick`, `index`, `theta_q16` (`theta_ps`), `dF_q16` (`dF_ps`), `S_q24`, `low`, `change`, `remainder_q24`, `old_changes`, `missing`, `settling`, `saturated`, `stopped`, `first`, `late`, `steps` (2.5, §4.16) |
 
 `decode_entry(words)` decodes one 16-word entry. Bringing up the link (§7, the first slots):
 
@@ -1605,6 +1758,66 @@ if second is not None and second.beats == 100_000_000:
     print(second.pps_count, second.delay_ns, second.amplitude, second.peak)
 ```
 
+### 11.18 `rf_clock.pl.serial` (the FS725's serial line, since 2.5.0.0)
+
+`pl.serial` is a `SerialLine` on the registers of §4.15.
+
+| Method | Does |
+| ------ | ---- |
+| `configure(*, enable=True, bit_ticks=10417)` | writes `SERIAL_CONFIG`. The default is 9600 baud, and `bit_ticks` below 16 gives `ValueError` |
+| `enabled` | whether the serial line is on |
+| `status()` | `SerialStatus` with the transmitter's state (`line_queued`, `tx_active`, `cmd_pending`, `line_len`), the levels on the two receive pins (`rxd_a` on PMOD1_7, `rxd_b` on PMOD1_3), `rx_level`, the counters (`lines`, `commands`, `received`, `framing_errors`, `overruns`) and the falling edges on each receive pin (`rxd_a_edges`, `rxd_b_edges`, of which the one not 0 belongs to the pin the module is on) |
+| `busy()` | whether an ARM message still waits or is being sent |
+| `send(data, timeout=2.0)` | sends `data` as ARM messages of up to 32 bytes, each once the one before has left, and gives `TimeoutError` when a message has not left after `timeout` seconds |
+| `receive()` | the bytes waiting in the FIFO, which reading takes out |
+| `flush()` | drops the received bytes |
+| `last_line_tick()` | the tick the last ARM message started |
+
+`PLPort(pl.serial)` is the `rf_clock.fs725.Port` on this line, so `FS725(PLPort(pl.serial))` is the FS725 on the PL's line. It switches the line on and drops old received bytes when it opens. `read_line(timeout)` returns the bytes up to the next carriage return, or None when none came within `timeout`.
+
+```python
+from rf_clock.fs725 import FS725
+from rf_clock.pl.serial import PLPort
+
+unit = FS725(PLPort(pl.serial))
+print(unit.identify(), unit.frequency_control())
+print(pl.serial.status().rxd_a_edges, pl.serial.status().rxd_b_edges)  # the module's pin counts, the empty one stays 0
+```
+
+### 11.19 `rf_clock.pl.steering` (steering through FC in the PL, since 2.5.0.0)
+
+`pl.steering` is a `PLSteering` on the registers of §4.16.
+
+| Method | Does |
+| ------ | ---- |
+| `sizes` | `(STEER_LMAX, STEER_NMAX, STEER_PMAX)`, the table entries of this build |
+| `load(t, *, step_slots, late_slots, write_delay_ticks, prefix, steps=None)` | writes the settings and the coefficient tables of `t` (`rf_clock.plmodel.steer.tables`, §11.12) and the command's prefix (`FC<high>,`, 1 to 8 bytes, where the register would also take an empty one). With `steps=(size, hold)` it also writes `STEER_STEPS` for FC steps. `ValueError` when the tables do not fit this build or a coefficient does not fit 48 bits, `RuntimeError` while P13 runs |
+| `enable(*, role_b=True, steps=False, log=True)` | starts afresh, from the next step with θ and FC from `STEER_FC_START`. `steps` runs FC steps instead of the algorithm, and `log` writes a `QE_TYPE_STEER` entry each step |
+| `disable()` | stops at once, so no further command leaves |
+| `status()` | `SteeringStatus` with the flags of `STEER_STATUS`, `index`, `low`, `last_change`, `theta_ps`, `missing`, `late_commands`, `last_command_tick`, `pairs` and `saturated` |
+
+`rf_clock.twtt.control.FrequencyControl(actuator="pl")` (§11.12) calls these, so a run needs no direct call.
+
+By hand, with the link running and B's FS725 on the PL's line, it goes as below. `FrequencyControl` also brings the fine DAC near the middle first and puts GA back at the end.
+
+```python
+from rf_clock.fs725 import FS725
+from rf_clock.pl.serial import PLPort
+from rf_clock.plmodel import steer as pm
+from rf_clock.twtt import steer
+
+unit = FS725(PLPort(pl.serial))         # switches the serial line on (SERIAL_CONFIG.ENABLE)
+unit.set_gain(1)                        # at GA 1 the FS725's own loop barely moves FC
+high, low = unit.frequency_control()    # FC's coarse and fine DAC values
+plant = pl.board.config.fs725["fc"]     # the FS725's response to FC, from the board config
+law = steer.predictive_fc(-21.5, 1000 * high + low, plant, late_s=0.05, step_s=0.1,  # theta0 -21.5 ps
+                          command_s=20000e-8)
+t = pm.tables(law, low0=low, lo=max(low - 500, 1024), hi=min(low + 500, 3072))  # limits in fine DAC values
+pl.steering.load(t, step_slots=50, late_slots=25, write_delay_ticks=20000, prefix=f"FC{high},".encode())
+pl.steering.enable(role_b=True)
+for entry in pl.queue.read(): ...       # SteerStep entries, one a step
+```
+
 ## 12. Exceptions and result codes
 
 | Exception | Base | Raised by |
@@ -1624,7 +1837,7 @@ if second is not None and second.beats == 100_000_000:
 | `RFDCError` | `RuntimeError` | a tile did not start, or an MTS status is not OK |
 | `VersionMismatch` | `RuntimeError` | overlay or `BUILD_VERSION` A.B.C differs from the installed rf-clock, or a file does not match the manifest (§14.1) |
 | `FS725Error` | `RuntimeError` | `rf_clock.fs725`: no reply, a malformed reply, or a setting that did not take (§11.13) |
-| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`: the corrections asked for SF beyond its allowed offset for `max_saturated_s` in a row, or the FS725 no longer holds the setting the steering made (§11.12) |
+| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`: the corrections asked for SF beyond its allowed offset for `max_saturated_s` in a row, or the FS725 no longer holds the setting the steering made (§11.12). Since 2.5 also when P13 stopped because the wanted FC lay outside its limits too long (§4.16). With P13, `FrequencyControl.pl_step` raises it and catches it at once, and writes `steer_stopped` |
 
 | Result code (§5.2) | In Python |
 | ------------------ | --------- |
@@ -1645,7 +1858,7 @@ Installed with the package; run on the board as root: `sudo env BOARD=RFSoC4x2 X
 | `mts_dtc`      | board config (§11.1) | `record [--write] [--runs N]` powers up N times (default 6) without the recorded codes and, per converter, clock and tile, takes the window picked most often, and per tile the MTS offset seen most often; `--write` stores both in the board config. `check [--runs N]` powers up with them and reports how far each picked code lies from its record and how many power-ups had other offsets. Run it after `vco_bands scan --write`, which drops the codes (they depend on the bands) |
 | `vco_bands`    | board config (§11.1) | `scan [--write] [--label S/N] [--calibrations N]` writes the clocks N times (default 20) and suggests the band each LMX2594's calibration picks most often, so that the chip stays at the calibration's own operating point; it then forces the bands below and above it until one does not lock, to show the margin; `--write` saves the suggestion, the counts, the bands that lock and this board's serial number in the board config. `delays [--write] [--span N] [--runs N] [--captures N]`, with the loopback cable DAC_A → ADC_B: the loopback delay of each band within N (default 2) of the configured one from the carrier phase, over power-ups in separate processes; `--write` saves the band table; records go to `vco_bands_runs.jsonl` |
 | `fs725_loop`   | board config (§11.1) | `[--port PORT] --gain GA [--step 200] [--steps 4] [--hold 40] [--write]`: this board's FS725 (on the port the board config records, without `--port`) and its frequency lock loop at gain GA, from FC's answer to steps of SF, alternately up and back, one loop fitted to all steps together (`rf_clock.twtt.steer.fit_loop`; FC alone fixes the loop, so neither the other board nor the link is needed, but no link may use this board's clock meanwhile); `--write` records the unit, its port, GA and the loop in the board config (`fs725`); records go to `fs725_loop_runs.jsonl` (since 2.2.0.8) |
-| `m4c_link`     | M4b, M5: the rf-clock 2 link | `--role A\|B [--start-at T --stop-at T \| --start-file PATH [--start-timeout S]]`: one node of the link (`--start-file`, since 2.3.0.3: once its PL is open and its FS725 checked it prints `ready: waiting for the start time in PATH` and takes both times from PATH, `{"start_at": T, "stop_at": T}`, when it appears; it refuses a start time already past; `experiments/m4c_v2_link.py` writes it 2-3 s ahead as soon as both nodes are ready, and stops both when one is not ready within 120 s); the queue entries and one `second` line per second (theta, one-way delay, their scatter) go to `--out` (`--no-entries`: the second lines only), and, since 2.4.0.0, one `ref_phase` line per second P11 keeps (§4.14); protocol tests (`--copy-every`, `--search-every`, `--silent-at`, `--refusal-checks`, `--pause-reads-at`); `--fs725 [PORT]` names this node's FS725, on the port the board config records without PORT (since 2.2.0.9), checked at the start against the board config (`rf_clock.twtt.control.configure_fs725`: the unit it names, GA set to its gain; refused otherwise, since 2.2.0.8); `--acquire [--fs725 PORT]` acquires the peer's PPS first (§11.15) and moves this node's PPS onto it; on B with `--fs725`, `--sf-step N` (each step fitted at the end: the FS725's rate change per SF unit and its delay, `sf_response` lines) and `--steer-target-ns T` (`rf_clock.twtt.steer` on the second lines; SF back to its start at the end unless `--keep-sf`), `--fc-every S` (the FS725's FC read every S seconds, `fc` lines with the time on this node's PPS count, since 2.2.0.1; on either node with `--fs725` since 2.2.0.4, as is `--sf-step`); `--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]` (`PredictiveSteering` with the unit's loop at its GA from the board config, since 2.2.0.2; `--steer-step 0.2` since 2.2.0.6; `--steer-actuator fc [--fc-model-lag S --fc-model-dead S]` with `--steer-step 0.1` since 2.3.0.2: FC instead of SF, the unit at GA 1, the board config's `fs725.fc` made slower for the model, `fc_set` lines, since 2.4.0.1 with the count read right after the write, `written_count`, and how long after its step's end the change left, `late_s`); `--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` turns on the output PPS (§4.13, since 2.1.0.0; left on at the end) and, since 2.2.0.4, sets SYNCED by `SyncedRule` (A: link locked and B's packets coming in; B: also steering, with the 60 s rms of θ − θ₀ below `--synced-rms` (100 ps) and mean below `--synced-mean` (30 ps), cleared above `--synced-clear-rms` (200 ps) over 10 s), cleared at the end. `--pps-out-comp` (node B, with `--steer-target-ns`; since 2.3.0.0): the theta-compensated output PPS (`rf_clock.twtt.control.EdgeCompensation`): at `--pps-out-comp-at` of each second (0.94) theta of the newest pairs (`--pps-out-comp-window`, 0.02 s), carried to the next edge by its rate over the last second, sets `PPS_OUT_FRAC` to `--pps-out-base-frac` (32768) plus theta − target over `--pps-out-ps-per-frac` (the scope's calibration; 0.0275 ps by default since 2.3.0.1, board 8873292600AB's, §4.13); `pps_comp` lines; `FRAC` cleared at the end. Since 2.4.0.1 `--steer-mode steps --fc-step-size N --fc-step-hold S` with `--steer-actuator fc` steers nothing but steps FC by N fine steps up, back, down and back, each level held S seconds, through the same path as the steering (`steer.FCSteps`, `experiments/m5_fc_response.py`). `experiments/m4c_v2_link.py` runs both nodes |
+| `m4c_link`     | M4b, M5: the rf-clock 2 link | `--role A\|B [--start-at T --stop-at T \| --start-file PATH [--start-timeout S]]`: one node of the link (`--start-file`, since 2.3.0.3: once its PL is open and its FS725 checked it prints `ready: waiting for the start time in PATH` and takes both times from PATH, `{"start_at": T, "stop_at": T}`, when it appears; it refuses a start time already past; `experiments/m4c_v2_link.py` writes it 2-3 s ahead as soon as both nodes are ready, and stops both when one is not ready within 120 s); the queue entries and one `second` line per second (theta, one-way delay, their scatter) go to `--out` (`--no-entries`: the second lines only), and, since 2.4.0.0, one `ref_phase` line per second P11 keeps (§4.14); protocol tests (`--copy-every`, `--search-every`, `--silent-at`, `--refusal-checks`, `--pause-reads-at`); `--fs725 [PORT]` names this node's FS725, on the port the board config records without PORT (since 2.2.0.9), checked at the start against the board config (`rf_clock.twtt.control.configure_fs725`: the unit it names, GA set to its gain; refused otherwise, since 2.2.0.8); `--acquire [--fs725 PORT]` acquires the peer's PPS first (§11.15) and moves this node's PPS onto it; on B with `--fs725`, `--sf-step N` (each step fitted at the end: the FS725's rate change per SF unit and its delay, `sf_response` lines) and `--steer-target-ns T` (`rf_clock.twtt.steer` on the second lines; SF back to its start at the end unless `--keep-sf`), `--fc-every S` (the FS725's FC read every S seconds, `fc` lines with the time on this node's PPS count, since 2.2.0.1; on either node with `--fs725` since 2.2.0.4, as is `--sf-step`); `--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]` (`PredictiveSteering` with the unit's loop at its GA from the board config, since 2.2.0.2; `--steer-step 0.2` since 2.2.0.6; `--steer-actuator fc [--fc-model-lag S --fc-model-dead S]` with `--steer-step 0.1` since 2.3.0.2: FC instead of SF, the unit at GA 1, the board config's `fs725.fc` made slower for the model, `fc_set` lines, since 2.4.0.1 with the count read right after the write, `written_count`, and how long after its step's end the change left, `late_s`); `--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` turns on the output PPS (§4.13, since 2.1.0.0; left on at the end) and, since 2.2.0.4, sets SYNCED by `SyncedRule` (A: link locked and B's packets coming in; B: also steering, with the 60 s rms of θ − θ₀ below `--synced-rms` (100 ps) and mean below `--synced-mean` (30 ps), cleared above `--synced-clear-rms` (200 ps) over 10 s), cleared at the end. `--pps-out-comp` (node B, with `--steer-target-ns`; since 2.3.0.0): the theta-compensated output PPS (`rf_clock.twtt.control.EdgeCompensation`): at `--pps-out-comp-at` of each second (0.94) theta of the newest pairs (`--pps-out-comp-window`, 0.02 s), carried to the next edge by its rate over the last second, sets `PPS_OUT_FRAC` to `--pps-out-base-frac` (32768) plus theta − target over `--pps-out-ps-per-frac` (the scope's calibration; 0.0275 ps by default since 2.3.0.1, board 8873292600AB's, §4.13); `pps_comp` lines; `FRAC` cleared at the end. Since 2.4.0.1 `--steer-mode steps --fc-step-size N --fc-step-hold S` with `--steer-actuator fc` steers nothing but steps FC by N fine steps up, back, down and back, each level held S seconds, through the same path as the steering (`steer.FCSteps`, `experiments/m5_fc_response.py`). Since 2.5.0.0 `--steer-actuator pl --fs725 pl [--steer-write-delay TICKS --steer-table-s S]` runs the same steering, or the FC steps, in the PL (P13, §4.16), with the FS725 on the PL's serial line (P12, §4.15). It needs the options that `fc` needs as well, which are `--steer-target-ns`, `--steer-mode predictive` or `steps`, `--steer-step 0.1`, and `--steer-late-slots` above 0. The PL takes every step and sends each command `--steer-write-delay` ticks after its step's end (default 20000, 0.2 ms), the change tables cover `--steer-table-s` seconds (default 40), and the `steer` and `fc_set` lines come from P13's queue entries, with the write times the PL's timing fixes (§11.12). Two `serial` log lines, at the start and at the end, and one when the FS725 does not answer at the start, give P12's counters, among them the falling edges on each receive pin, which show the row of PMOD1 the module is on (§4.15). In this mode `m4c_link` stops P13 and puts GA back also when it ends by an error, Ctrl-C or SIGTERM (`FrequencyControl.stop_pl`), which is how `experiments/m4c_v2_link.py` stops its nodes. A node killed outright leaves P13 steering, until the next `PL.open()`. `experiments/m4c_v2_link.py` runs both nodes |
 | `pps_out`      | output PPS (2.1) | `[seconds] [--offset N] [--sample S] [--width W] [--amplitude A] [--idle I] [--synced] [--keep]`: the output PPS on DAC_B (§4.13) and one line per second (where the pulse was presented against its PPS_TICK, the pulse and flywheel counts, the validity line, the die temperature); PASS when every second from the first pulse on has its pulse at PPS_TICK + offset and none came from the flywheel (with `--synced`, the validity line low too); records to `pps_out_runs.jsonl`. The edge itself is measured on the scope |
 | `ref_phase`    | 10 MHz phase (2.4) | `[seconds] [--min-amplitude A]`: P11 on ADC_D (§4.14), one `second` line per second kept (PPS_COUNT, PPS_TICK mod 10, beats, peak, amplitude, tau_ref, die temperature) and the run's `record` (MTS, VCO bands, tau_ref's mean, scatter and slope over the whole seconds). PASS when every second after the first is whole and the input is there without clipping. `experiments/m5_ref_phase_restarts.py` runs it on both boards, restart after restart (since 2.4.0.0) |
 | `pps_pp_scan`  | PPS sub-tick phase | `--fs725 PORT [--steps 22] [--edges 8] [--no-center]`: PP in 1 ns steps until PPS_TICK moves, which gives where the PPS edge lies before its sampling edge; then PP to the middle of the tick; records to `pps_pp_scan_runs.jsonl` |
@@ -1675,6 +1888,7 @@ For a scope without the bandwidth for the RF, use `m2_tx_timing --scope-nco`: th
 | 2.2     | added `PPS_OUT_IDLE` (0x168), the output PPS's level between pulses |
 | 2.3     | added `PPS_OUT_FRAC` (0x16C) and `PPS_OUT_CONTROL.FRAC`: the output PPS's edge delayed by a fraction of a sample |
 | 2.4     | added `REF_PHASE_*` (0x1C0, P11): the phase of a copy of the 10 MHz reference on ADC_D (ADC tile 0 block 0, whose I stream now goes into the PL) against the tick |
+| 2.5     | added `SERIAL_*` (0x400, P12), the FS725's serial line driven from the PL through a module on PMOD1, and `STEER_*` (0x440, P13), the predictive steering algorithm through FC run in the PL, with the queue entry `QE_TYPE_STEER` |
 
 ### 14.1 Package and overlay
 

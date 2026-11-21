@@ -19,6 +19,9 @@
 // fraction of a sample (PPS_OUT_FRAC with PPS_OUT_CONTROL.FRAC).
 // Since 2.4 P11 measures the phase of a copy of the node's 10 MHz on ADC_D (ADC
 // tile 0 block 0, whose I stream comes in as s_axis_adc0) against the tick.
+// Since 2.5 P13 runs the predictive steering algorithm through FC on the pairs
+// P8 and P9 hand to the queue, and P12 sends its FC commands, and the ARM's
+// lines, to the FS725 over a TTL-to-RS-232 module on PMOD1.
 // The X_INTERFACE_* attributes let the block design (module reference) see
 // the clock/reset associations and the BRAM port as interfaces.
 module p_top #(
@@ -151,7 +154,15 @@ module p_top #(
 
     // The output PPS's validity line (Pmod, high = not valid) and LED (2.1).
     output wire                      pps_out_invalid,
-    output wire                      pps_out_led
+    output wire                      pps_out_led,
+
+    // The FS725's serial line (2.5), on PMOD1 through a TTL-to-RS-232 module.
+    // Which half of the Pmod the module sits on is not known yet: both halves
+    // carry the transmit line, and the receiver takes the AND of both inputs.
+    output wire                      fs725_txd_a,   // PMOD1_6
+    output wire                      fs725_txd_b,   // PMOD1_2
+    input  wire                      fs725_rxd_a,   // PMOD1_7
+    input  wire                      fs725_rxd_b    // PMOD1_3
 );
     `include "src/p_defs.vh"
     `include "src/p_regs.vh"
@@ -319,6 +330,18 @@ module p_top #(
     wire [15:0] fault_count;
     wire        any_fault;
 
+    // P2's forwarded range: 0x400 .. 0x43F to P12, 0x440 .. 0x4FF to P13
+    wire [11:0] ext_waddr_live, ext_waddr, ext_raddr, ext_rd_addr;
+    wire [31:0] ext_wdata_live, ext_wdata, ext_rdata;
+    wire        ext_wr_ok, ext_wr, ext_rd_ok, ext_rd;
+    wire        ser_wr_ok, ser_rd_ok, steer_wr_ok, steer_rd_ok;
+    wire [31:0] ser_rdata, steer_rdata;
+    wire        w_ser = (ext_waddr_live[7:6] == 2'b00);
+    wire        r_ser = (ext_raddr[7:6] == 2'b00);
+    assign ext_wr_ok = w_ser ? ser_wr_ok : steer_wr_ok;
+    assign ext_rd_ok = r_ser ? ser_rd_ok : steer_rd_ok;
+    assign ext_rdata = r_ser ? ser_rdata : steer_rdata;
+
     p2_control_regs #(
         .TX_DEPTH_BEATS (TX_DEPTH),
         .RX_MAX_BEATS   (RX_MAX_BEATS),
@@ -462,7 +485,18 @@ module p_top #(
         .ref_phase_beats    (ref_phase_beats),
         .ref_phase_peak     (ref_phase_peak),
         .ref_phase_i        (ref_phase_i),
-        .ref_phase_q        (ref_phase_q)
+        .ref_phase_q        (ref_phase_q),
+        .ext_waddr_live     (ext_waddr_live),
+        .ext_wdata_live     (ext_wdata_live),
+        .ext_wr_ok          (ext_wr_ok),
+        .ext_wr             (ext_wr),
+        .ext_waddr          (ext_waddr),
+        .ext_wdata          (ext_wdata),
+        .ext_raddr          (ext_raddr),
+        .ext_rdata          (ext_rdata),
+        .ext_rd_ok          (ext_rd_ok),
+        .ext_rd             (ext_rd),
+        .ext_rd_addr        (ext_rd_addr)
     );
 
     // ---------------- P3 ----------------
@@ -659,6 +693,8 @@ module p_top #(
     );
 
     // ---------------- P9 and the queue ----------------
+    wire               steer_req, steer_ack;
+    wire [511:0]       steer_entry;
     p9_packet #(.AW(CHIP_AW), .SPREAD(SPREAD), .PBITS(PBITS)) u_p9 (
         .clk (clk), .rst (rst),
         .tx_arm (tx_arm), .ev_tick (ev_tick), .ev_slot (ev_slot), .sec_count (sec_count), .sec_tick (sec_tick),
@@ -679,8 +715,46 @@ module p_top #(
         .clk (clk), .rst (rst),
         .own_req (own_req), .own_entry (own_entry), .own_ack (own_ack),
         .peer_req (peer_req), .peer_entry (peer_entry), .peer_ack (peer_ack),
+        .steer_req (steer_req), .steer_entry (steer_entry), .steer_ack (steer_ack),
         .tail (queue_tail), .head (queue_head), .dropped_count (queue_dropped_count),
         .bram_en (queue_en), .bram_addr (queue_addr), .bram_rddata (queue_rddata)
+    );
+
+    // ---------------- P12 the FS725's serial line, P13 steering (2.5) ----------------
+    wire               cmd_valid, reserve_valid, cmd_pending, cmd_started, cmd_late;
+    wire [63:0]        cmd_tick, reserve_tick, cmd_start_tick;
+    wire [4:0]         cmd_len;
+    wire [127:0]       cmd_bytes;
+    wire               fs725_txd;
+    assign fs725_txd_a = fs725_txd;
+    assign fs725_txd_b = fs725_txd;
+
+    p12_regs u_p12 (
+        .clk (clk), .rst (rst), .raw_tick (raw_tick),
+        .reg_wr (ext_wr && ext_waddr[7:6] == 2'b00), .reg_waddr (ext_waddr), .reg_wdata (ext_wdata),
+        .reg_waddr_live (ext_waddr_live), .reg_wdata_live (ext_wdata_live), .reg_wr_ok (ser_wr_ok),
+        .reg_raddr (ext_raddr), .reg_rdata (ser_rdata), .reg_rd_ok (ser_rd_ok),
+        .reg_rd (ext_rd && ext_rd_addr[7:6] == 2'b00), .reg_rd_addr (ext_rd_addr),
+        .cmd_valid (cmd_valid), .cmd_tick (cmd_tick), .cmd_len (cmd_len), .cmd_bytes (cmd_bytes),
+        .reserve_valid (reserve_valid), .reserve_tick (reserve_tick),
+        .cmd_pending (cmd_pending), .cmd_started (cmd_started), .cmd_late (cmd_late),
+        .cmd_start_tick (cmd_start_tick),
+        .txd (fs725_txd), .rxd_a (fs725_rxd_a), .rxd_b (fs725_rxd_b)
+    );
+
+    p13_steer #(.SLOT_TICKS (SLOT_TICKS), .SLOTS (SLOTS)) u_p13 (
+        .clk (clk), .rst (rst), .raw_tick (raw_tick),
+        .pps_event (pps_event), .pps_tick (pps_tick), .pps_count (pps_count), .pps_locked (pps_locked),
+        .tx_offset (slot_tx_offset),
+        .own_take (own_ack), .own_entry (own_entry), .peer_take (peer_ack), .peer_entry (peer_entry),
+        .steer_req (steer_req), .steer_entry (steer_entry), .steer_ack (steer_ack),
+        .cmd_valid (cmd_valid), .cmd_tick (cmd_tick), .cmd_len (cmd_len), .cmd_bytes (cmd_bytes),
+        .reserve_valid (reserve_valid), .reserve_tick (reserve_tick),
+        .cmd_started (cmd_started), .cmd_late (cmd_late), .cmd_start_tick (cmd_start_tick),
+        .reg_wr (ext_wr && ext_waddr[7:6] != 2'b00), .reg_waddr (ext_waddr), .reg_wdata (ext_wdata),
+        .reg_waddr_live (ext_waddr_live), .reg_wdata_live (ext_wdata_live), .reg_wr_ok (steer_wr_ok),
+        .reg_raddr (ext_raddr), .reg_rdata (steer_rdata), .reg_rd_ok (steer_rd_ok),
+        .reg_rd (ext_rd && ext_rd_addr[7:6] != 2'b00), .reg_rd_addr (ext_rd_addr)
     );
 
     // ---------------- P10 output PPS (2.1) ----------------

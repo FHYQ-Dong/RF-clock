@@ -155,6 +155,54 @@ localparam [11:0] REG_QUEUE_TAIL        = 12'h384;  // RW, the entry the ARM rea
 localparam [11:0] REG_QUEUE_ENTRIES     = 12'h388;  // RO
 localparam [11:0] REG_QUEUE_DROPPED_CNT = 12'h38C;  // RO, entries lost to a full queue
 
+// ---- P12 the FS725's serial line (since 2.5): P2 forwards 0x400 .. 0x43F ----
+localparam [11:0] REG_SERIAL_CONTROL      = 12'h400;  // WO, write-1 pulses
+localparam [11:0] REG_SERIAL_CONFIG       = 12'h404;  // RW
+localparam [11:0] REG_SERIAL_STATUS       = 12'h408;  // RO
+localparam [11:0] REG_SERIAL_LINE         = 12'h40C;  // WO, [7:0]: a byte appended to the line
+localparam [11:0] REG_SERIAL_RX           = 12'h410;  // RO, a read takes the byte out
+localparam [11:0] REG_SERIAL_LINES_CNT    = 12'h414;  // RO, the ARM's lines sent
+localparam [11:0] REG_SERIAL_CMDS_CNT     = 12'h418;  // RO, P13's commands sent
+localparam [11:0] REG_SERIAL_RX_CNT       = 12'h41C;  // RO, bytes received
+localparam [11:0] REG_SERIAL_ERR_CNT      = 12'h420;  // RO, [15:0] framing errors, [31:16] bytes lost to a full FIFO
+localparam [11:0] REG_SERIAL_RX_EDGES     = 12'h424;  // RO, falling edges on each receive pin
+localparam [11:0] REG_SERIAL_LINE_TICK_LO = 12'h428;  // RO, when the last ARM line started; read latches HI
+localparam [11:0] REG_SERIAL_LINE_TICK_HI = 12'h42C;  // RO
+
+// ---- P13 steering through FC in the PL (since 2.5): P2 forwards 0x440 .. 0x4FF ----
+localparam [11:0] REG_STEER_CONTROL       = 12'h440;  // RW
+localparam [11:0] REG_STEER_STATUS        = 12'h444;  // RO
+localparam [11:0] REG_STEER_STEP          = 12'h448;  // RW, [8:0] slots a step, [24:16] the last slots theta comes from
+localparam [11:0] REG_STEER_WRITE_DELAY   = 12'h44C;  // RW, ticks from a step's end to its command
+localparam [11:0] REG_STEER_L             = 12'h450;  // RW, steps in the change tables
+localparam [11:0] REG_STEER_N             = 12'h454;  // RW, steps in the mean's window
+localparam [11:0] REG_STEER_P             = 12'h458;  // RW, the AR order
+localparam [11:0] REG_STEER_SETTLE        = 12'h45C;  // RW, steps before the first change
+localparam [11:0] REG_STEER_MAX_STEP      = 12'h460;  // RW, fine steps a change at most
+localparam [11:0] REG_STEER_FC_LIMITS     = 12'h464;  // RW, [11:0] lowest, [27:16] highest fine DAC value
+localparam [11:0] REG_STEER_FC_START      = 12'h468;  // RW, [11:0] the fine DAC value at the start
+localparam [11:0] REG_STEER_MAX_SATURATED = 12'h46C;  // RW, steps outside the limits before steering stops
+localparam [11:0] REG_STEER_STEPS         = 12'h470;  // RW, FC steps: [15:0] size, [31:16] steps a level
+localparam [11:0] REG_STEER_PREFIX_LO     = 12'h474;  // RW, the command's first bytes, byte 0 in [7:0]
+localparam [11:0] REG_STEER_PREFIX_HI     = 12'h478;  // RW
+localparam [11:0] REG_STEER_PREFIX_LEN    = 12'h47C;  // RW, 0 .. 8
+localparam [11:0] REG_STEER_COEF_ADDR     = 12'h480;  // RW, [15:13] table, [12:0] entry
+localparam [11:0] REG_STEER_COEF_HI       = 12'h484;  // RW, [15:0]: bits 47:32 of the next entry
+localparam [11:0] REG_STEER_COEF_LO       = 12'h488;  // WO, bits 31:0; writes the entry and moves to the next
+localparam [11:0] REG_STEER_INDEX         = 12'h490;  // RO, steps taken since the first with theta
+localparam [11:0] REG_STEER_FC            = 12'h494;  // RO, [11:0] fine DAC value, [31:16] the last change
+localparam [11:0] REG_STEER_THETA_LO      = 12'h498;  // RO, i48 in 2^-16 fs; read latches HI
+localparam [11:0] REG_STEER_THETA_HI      = 12'h49C;  // RO
+localparam [11:0] REG_STEER_MISSING_CNT   = 12'h4A0;  // RO, steps without theta
+localparam [11:0] REG_STEER_LATE_CNT      = 12'h4A4;  // RO, commands that started late
+localparam [11:0] REG_STEER_CMD_TICK_LO   = 12'h4A8;  // RO, when the last command started; read latches HI
+localparam [11:0] REG_STEER_CMD_TICK_HI   = 12'h4AC;  // RO
+localparam [11:0] REG_STEER_PAIRS_CNT     = 12'h4B0;  // RO, pairs formed
+localparam [11:0] REG_STEER_SATURATED_CNT = 12'h4B4;  // RO, steps whose wanted FC lay outside the limits
+localparam [11:0] REG_STEER_LMAX          = 12'h4B8;  // RO, entries of the change tables
+localparam [11:0] REG_STEER_NMAX          = 12'h4BC;  // RO, entries of the mean's tables
+localparam [11:0] REG_STEER_PMAX          = 12'h4C0;  // RO, entries of the AR tables
+
 // ---- CONTROL bits (write 1 to pulse; several bits may be set at once) ----
 localparam integer CTRL_TX_DOORBELL = 0;
 localparam integer CTRL_TX_CANCEL   = 1;
@@ -243,5 +291,51 @@ localparam [31:0] BMEM_TAP_COUNT     = 32'd81;
 localparam integer RX_RESULT_FLAGS_LSB   = 8;   // RX_RESULT [11:8]
 localparam integer FAULT_INFO_COUNT_LSB  = 16;  // FAULT_INFO [31:16]
 
+// ---- SERIAL_CONTROL bits (write 1 to pulse) ----
+localparam integer SERCTL_SEND     = 0;  // send the line
+localparam integer SERCTL_CLEAR    = 1;  // empty the line
+localparam integer SERCTL_RX_FLUSH = 2;  // drop the bytes received
+
+// ---- SERIAL_CONFIG fields (reset 10417 ticks a bit, 9600 baud, not enabled) ----
+localparam integer SERCFG_BIT_TICKS_LSB = 0;   // [15:0] ticks a bit, at least SERIAL_BIT_TICKS_MIN
+localparam integer SERCFG_ENABLE        = 16;  // drive the line and receive
+localparam [15:0]  SERIAL_BIT_TICKS_MIN = 16'd16;
+
+// ---- SERIAL_STATUS fields ----
+localparam integer SERST_LINE_QUEUED  = 0;   // a line waits or is being sent
+localparam integer SERST_TX_ACTIVE    = 1;
+localparam integer SERST_CMD_PENDING  = 2;   // a P13 command waits for its tick
+localparam integer SERST_LINE_LEN_LSB = 8;   // [13:8] bytes in the line
+localparam integer SERST_RXD_A        = 16;  // the level on receive pin A (PMOD1_7)
+localparam integer SERST_RXD_B        = 17;  // the level on receive pin B (PMOD1_3)
+localparam integer SERST_RX_LEVEL_LSB = 20;  // [28:20] bytes waiting in the receive FIFO
+
+// ---- SERIAL_RX fields ----
+localparam integer SERRX_VALID    = 8;    // [7:0] holds a byte
+localparam integer SERRX_LEFT_LSB = 16;   // [24:16] bytes left after it
+
+// ---- STEER_CONTROL bits (reset ROLE_B and LOG) ----
+localparam integer STEERCTL_ENABLE = 0;  // steer from the next step with theta; 0 -> 1 starts afresh
+localparam integer STEERCTL_ROLE_B = 1;  // the sign of theta: this node is B
+localparam integer STEERCTL_STEPS  = 2;  // FC steps on a schedule instead of the algorithm
+localparam integer STEERCTL_LOG    = 3;  // a QE_TYPE_STEER entry each step
+
+// ---- STEER_STATUS bits ----
+localparam integer STEERST_ENABLED  = 0;
+localparam integer STEERST_STARTED  = 1;  // a step with theta came since ENABLE
+localparam integer STEERST_STOPPED  = 2;  // the wanted FC lay outside the limits too long
+localparam integer STEERST_SETTLING = 3;
+localparam integer STEERST_LATE     = 4;  // the last command started after its tick
+localparam integer STEERST_BUSY     = 5;  // a step is being computed
+
+// ---- STEER_COEF_ADDR tables ----
+localparam [2:0] COEF_TABLE_H      = 3'd0;  // h(d), d = 1 .. L, Q32 fs per fine step
+localparam [2:0] COEF_TABLE_K      = 3'd1;  // K(d), d = 1 .. L, Q40
+localparam [2:0] COEF_TABLE_ALPHA  = 3'd2;  // alpha_j, j = 0 .. p - 1, Q40 fine steps per fs
+localparam [2:0] COEF_TABLE_AR     = 3'd3;  // ar_i, i = 0 .. p - 1, Q40
+localparam [2:0] COEF_TABLE_GAMMA  = 3'd4;  // gamma / n_e, n_e = 1 .. n, Q40 fine steps per fs
+localparam [2:0] COEF_TABLE_MEAN2  = 3'd5;  // (1 - sum ar) / n_e, n_e = 1 .. n, Q40
+localparam [2:0] COEF_TABLE_SCALAR = 3'd6;  // 0 rho (Q32), 1 K_inf (Q40), 2 R0 (Q40), 3 target (Q16 fs)
+
 localparam [31:0] P_DESIGN_ID = 32'h5243_4C4B;  // "RCLK"
-localparam [31:0] P_VERSION   = 32'h0002_0004;  // major.minor = 2.4
+localparam [31:0] P_VERSION   = 32'h0002_0005;  // major.minor = 2.5

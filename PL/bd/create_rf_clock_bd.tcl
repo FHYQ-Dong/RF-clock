@@ -177,6 +177,11 @@ set failed [catch {
     # 2.1: the output PPS's validity line (Pmod J1 pin 1) and its LED.
     create_bd_port -dir O pps_out_invalid
     create_bd_port -dir O pps_out_led
+    # 2.5: the FS725's serial line on PMOD1 (both halves, docs/ABI.md 4.15)
+    create_bd_port -dir O fs725_txd_a
+    create_bd_port -dir O fs725_txd_b
+    create_bd_port -dir I fs725_rxd_a
+    create_bd_port -dir I fs725_rxd_b
 
     foreach name {pl_clk_ibufds pl_sysref_ibufds} {
         set c [create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 $name]
@@ -363,6 +368,10 @@ set failed [catch {
     connect_bd_intf_net [intf p_top_0/m_axis_dac0] [intf rfdc/s00_axis]
     connect_bd_net [pin p_top_0/pps_out_invalid] [get_bd_ports pps_out_invalid]
     connect_bd_net [pin p_top_0/pps_out_led] [get_bd_ports pps_out_led]
+    connect_bd_net [pin p_top_0/fs725_txd_a] [get_bd_ports fs725_txd_a]
+    connect_bd_net [pin p_top_0/fs725_txd_b] [get_bd_ports fs725_txd_b]
+    connect_bd_net [get_bd_ports fs725_rxd_a] [pin p_top_0/fs725_rxd_a]
+    connect_bd_net [get_bd_ports fs725_rxd_b] [pin p_top_0/fs725_rxd_b]
     connect_bd_intf_net [intf adc_iq_combiner/M_AXIS] [intf p_top_0/s_axis_adc]
     connect_bd_intf_net [intf rfdc/m00_axis] [intf p_top_0/s_axis_adc0]
     set ovr [get_bd_pins rfdc/adc2_01_over_range -quiet]

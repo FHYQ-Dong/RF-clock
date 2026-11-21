@@ -47,6 +47,7 @@ localparam integer FB_TX             = 3;
 localparam [31:0] QUEUE_ENTRY_WORDS = 32'd16;
 localparam [7:0]  QE_TYPE_OWN  = 8'd1;  // this node's tracker result of a peer burst
 localparam [7:0]  QE_TYPE_PEER = 8'd2;  // a peer packet decoded with a good CRC
+localparam [7:0]  QE_TYPE_STEER = 8'd3; // one step of P13 (since 2.5)
 // Words of both types.
 localparam integer QE_HEADER    = 0;   // [7:0] type, [15:8] flags, [31:16] entry sequence
 localparam integer QE_PPS_COUNT = 1;   // the window's second (this node's PPS_COUNT)
@@ -74,6 +75,28 @@ localparam integer QE_P_TTX_HI    = 10;
 localparam integer QE_P_TRX_LO    = 11;  // T_rx of this node's previous burst, i64 fs after the peer's PPS
 localparam integer QE_P_TRX_HI    = 12;
 localparam integer QE_P_PHASE     = 13;  // i32, 2^-32 turn
+// QE_TYPE_STEER (since 2.5): one step of P13.  Word 1 is the step's PPS_COUNT.
+localparam integer QE_S_STEP     = 2;   // [8:0] the step in its second, [25:16] its pairs
+localparam integer QE_S_CMD_LO   = 3;   // the tick its command was to start
+localparam integer QE_S_CMD_HI   = 4;
+localparam integer QE_S_INDEX    = 5;   // steps since the first with theta
+localparam integer QE_S_THETA_LO = 6;   // theta, i64, 2^-16 fs (the prediction without pairs)
+localparam integer QE_S_THETA_HI = 7;
+localparam integer QE_S_DF_LO    = 8;   // the change of theta less B's own corrections, i64, 2^-16 fs
+localparam integer QE_S_DF_HI    = 9;
+localparam integer QE_S_S_LO     = 10;  // S, i64, 2^-24 fine steps
+localparam integer QE_S_S_HI     = 11;
+localparam integer QE_S_FC       = 12;  // [11:0] FC's fine DAC value after the step, [31:16] the change, i16
+localparam integer QE_S_REM      = 13;  // the remainder, i32, 2^-24 fine steps
+localparam integer QE_S_OLD      = 14;  // s0: the changes older than L steps, summed, i32
+// QE_HEADER flags of QE_TYPE_STEER.
+localparam integer QESF_MISSING   = 0;  // no pair in the step's last slots
+localparam integer QESF_SETTLING  = 1;
+localparam integer QESF_SATURATED = 2;  // the wanted FC lay outside the limits
+localparam integer QESF_STOPPED   = 3;  // and long enough: steering stopped, no command
+localparam integer QESF_FIRST     = 4;  // the first step with theta
+localparam integer QESF_LATE      = 5;  // the last command before this one started late
+localparam integer QESF_STEPS     = 6;  // FC steps, not the algorithm
 // QE_HEADER flags of QE_TYPE_OWN.
 localparam integer QEF_LOCKED     = 0;  // the tracker was locked: the fields are a measurement
 localparam integer QEF_WINDOW_BAD = 1;  // the window has RX flags

@@ -32,7 +32,7 @@
 
 | 地址空间       | HWH 名称                         | 基地址      | 大小                  | 时钟域  |
 | -------------- | -------------------------------- | ----------- | --------------------- | ------- |
-| P2 寄存器      | `p_top_0`                      | 0xA000_0000 | 4 KiB（只用前 1 KiB） | fabric  |
+| P2 寄存器      | `p_top_0`                      | 0xA000_0000 | 4 KiB（2.5 起用前 1.25 KiB） | fabric  |
 | AXI DMA 寄存器 | `rx_dma`                       | 0xA001_0000 | 64 KiB                | pl_clk0 |
 | 时钟状态 GPIO  | `clk_status_gpio`              | 0xA002_0000 | 4 KiB                 | pl_clk0 |
 | RFDC 寄存器    | `rfdc`                         | 0xA004_0000 | 256 KiB               | pl_clk0 |
@@ -108,13 +108,13 @@ R32 0x00  → 0x52434C4B
 
 | 地址 | 访问 | 格式                        | 复位值            |
 | ---- | ---- | --------------------------- | ----------------- |
-| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00020004（2.4） |
+| 0x04 | RO   | [31:16] major，[15:0] minor | 0x00020005（2.5） |
 
 ```text
-R32 0x04  → 0x00020004
+R32 0x04  → 0x00020005
 ```
 
-major 不等于软件支持的值就拒绝运行。1.x 里 `PPS_INPUTS`、`PPS_CONFIG` 随 minor 1 加入，`BUILD_VERSION` 随 2，`TX_REPEAT` 随 3；2.0 全部保留，并新增时隙引擎、由码片生成的突发、相关器、测量包和测量队列（§4.8–§4.12，§14）；2.1 新增输出 PPS（§4.13），2.2 新增它的空闲电平 `PPS_OUT_IDLE`，2.3 新增它的边沿分数延迟 `PPS_OUT_FRAC`，2.4 新增 10 MHz 参考的相位（§4.14）。Python：`PLClient.validate()`、`DeviceInfo.version`。
+major 不等于软件支持的值就拒绝运行。1.x 里 `PPS_INPUTS`、`PPS_CONFIG` 随 minor 1 加入，`BUILD_VERSION` 随 2，`TX_REPEAT` 随 3；2.0 全部保留，并新增时隙引擎、由码片生成的突发、相关器、测量包和测量队列（§4.8–§4.12，§14）；2.1 新增输出 PPS（§4.13），2.2 新增它的空闲电平 `PPS_OUT_IDLE`，2.3 新增它的边沿分数延迟 `PPS_OUT_FRAC`，2.4 新增 10 MHz 参考的相位（§4.14），2.5 新增 FS725 的串口线和在 PL 里改写 FC 来修正（§4.15、§4.16）。Python：`PLClient.validate()`、`DeviceInfo.version`。
 
 #### 4.1.3 `CONTROL` — 命令脉冲
 
@@ -688,7 +688,7 @@ Python：`pl.correlator`（§11.14）。
 | 14 | 窗口的 Σ(I² + Q²)，HI | 0 |
 | 15 | 0 | 0 |
 
-字的下标就是 `p_defs.vh` 里的 `QE_*`。两类条目都在所有字写完之后才算写入。Python：`pl.queue.read()`（§11.14）。
+2.5 起，P13 改写 FC 来修正并置位 `STEER_CONTROL.LOG` 时，还有第三类条目 `QE_TYPE_STEER`，每一步一条（§4.16）。字的下标就是 `p_defs.vh` 里的 `QE_*`。每类条目都在所有字写完之后才算写入。Python：`pl.queue.read()`（§11.14）。
 
 | 地址 | 名称 | 访问 | 复位值 | 含义 |
 | ---- | ---- | ---- | ------ | ---- |
@@ -785,6 +785,148 @@ I         = Σ x × round(32767 cos(2π k / 80))，  Q = Σ x × round(32767 sin
 - PL 和链路目前都还不用 τ_ref；`m4c_link` 把保存的每一秒记下来（`ref_phase` 行，§13）。
 
 Python：`pl.ref_phase`（§11.17）。
+
+### 4.15 FS725 的串口线，P12（2.5 起）
+
+到 2.4 为止，ARM 经一根 USB 转串口线把每条 FC 命令发给节点 B 的 FS725。2.4.0.0 时命令在它那一步结束后 22-151 ms 才发出，2.4.0.1 起是 22-58 ms，而且每一步都不一样，修正算法对 FS725 的模型必须为此留出余量（[FC 响应报告](../results/fc-response-20261112/REPORT_zh.md)第 1 节）。2.5 起 PL 可以自己驱动 FS725 的 RS-232 线，这样 P13 就能在它选定的 tick 开始发送每条命令。一块 TTL 转 RS-232 模块（MAX3232，DB-9 公头，引脚和 PC 的串口一样）插在 J1 上，它的 DB-9 直接插进 FS725 的串口，替下 USB 转串口线。USB 转串口线和 `--steer-actuator fc` 照旧可用，只有在 PL 里修正时才需要这块模块。`PL/sim/tb_p12_serial.v` 在仿真中检查 P12。台架上（8873292600AB，2026-11-16），在有 P13 命令的四次运行里（[results/pl-steering-20261116](../results/pl-steering-20261116/REPORT_zh.md)），P12 发出 38 542 条 FC 命令和 38 614 条 ARM 的消息，收回 270 114 个字节，没有一个帧错误，也没有丢一个字节。本节说的串口线是通往 FS725 的那对线，ARM 的消息是 ARM 一次交给 P12 的最多 32 个字节。
+
+J1 是板上 2 × 15 的弯针排母，上面并排放着两个 Pmod 接口 PMOD0 和 PMOD1，丝印在 PMOD1 那一端标着 "PMODB"。每根 Pmod 线都经过板上的 NVT2008 电平转换器，一边是 FPGA 的 1.8 V bank，一边是 3.3 V 的排母，排母一侧有 1.15 kΩ 上拉到 3.3 V，所以空着的孔读出来是高电平。
+
+```text
+P13 的 FC 命令（开始 tick）─┐
+                            ├─► P12 发送器 ─► PMOD1_6 和 PMOD1_2 ─► NVT2008 ─► 模块 RXD ─► MAX3232 ─► DB-9 第 3 脚 ─► FS725
+ARM 的消息（32 字节）───────┘
+ARM ◄─ 256 字节 FIFO ◄─ P12 接收器 ◄─ PMOD1_7 与 PMOD1_3 相与 ◄─ NVT2008 ◄─ 模块 TXD ◄─ MAX3232 ◄─ DB-9 第 2 脚 ◄─ FS725
+```
+
+**用哪几个脚。** 在 8873292600AB 上，模块插在 J1 靠近电路板的下排、PMODB 那一端。它的 VCC 插在最端头的孔里，GND 在旁边，用万用表量过这两个孔之间是 3.3 V（2026-11-16）。原理图（第 5 页 "PMOD HEADERS"）把 PMOD1 放在 J1 的 10-15 脚和 16-21 脚，16 脚是 3.3 V，17 脚是 GND。下排是 16-21 脚。这一点先是按原理图符号的引脚顺序推断的，后来在台架上得到证实，FS725 的回复全都从 PMOD1_7 进来，PMOD1_3 上一个也没有（2026-11-16）。模块各脚的位置如下表。
+
+| 模块引脚 | J1 脚 | 线 | FPGA 引脚 | 在 P12 里 |
+| -------- | ----- | -- | --------- | --------- |
+| VCC | 16 | 3.3 V | | |
+| GND | 17 | GND | | |
+| TXD，FS725 的回复 | 18 | PMOD1_7 | AU14 | 接收脚 A |
+| RXD，发往 FS725 | 19 | PMOD1_6 | AT15 | 发送 |
+| CTS | 20 | PMOD1_5 | AP14 | 不用 |
+| RTS | 21 | PMOD1_4 | AU15 | 不用 |
+
+如果下排其实是 10-15 脚，TXD 和 RXD 就在 PMOD1_3（AV13，接收脚 B）和 PMOD1_2（AU13）上。为了两种情况都能用，P12 同时在 PMOD1_6 和 PMOD1_2 上发送，接收取 PMOD1_7 和 PMOD1_3 相与的结果，并分别数两个脚上的下降沿（`SERIAL_RX_EDGES`）。空着的那个脚有上拉、没有边沿，计数一直是 0，计数不为 0 的那个脚就是模块所在的脚。计数在 256 处回绕，所以除此之外，计数的值说明不了什么。FS725 本该回复时两个计数都是 0，就是 FS725 什么也没发回来。`m4c_link --fs725 pl` 在开始和结束时把两个计数记进日志，开始时 FS725 不应答也会记一次（日志里的 `serial` 行，§13）。另一排的孔是空的，在那里发送没有害处。RTS 和 CTS 在 PL 里不接，因为 FS725 不用握手线（PRS10 手册第 20 页）。
+
+**帧格式。** 每个字节依次发出一个起始位、从最低位起的 8 个数据位、不带校验、一个停止位，每一位 `SERIAL_CONFIG.BIT_TICKS` 个 tick。复位值 10417 给出 $100\ \mathrm{MHz} / 10417 = 9599.7$ 波特，比 FS725 固定的 9600 波特慢 0.003 %，远在 UART 能容忍的范围之内。像 `FC1675,2048\r` 这样 12 个字节的命令在线上要 12.5 ms。FS725 会发 XON/XOFF 字符做流控，P12 不理会它们。每一步只有一条短命令，加上 ARM 在命令之间的查询，FS725 的输入缓冲远不会满（推断）。
+
+**P13 的命令。** P13 交给 P12 的每条命令都带着它的字节和开始 tick T。如果 T 时发送器空闲，起始位从 T 的下一个 tick 开始，`STEER_CMD_TICK`（§4.16）读出的是 T。如果 T 时线上还有一帧没发完，命令等线路一空就开始，并记为迟到（§4.16 的 `STEER_LATE_CNT` 和 `STEER_STATUS.LATE`）。
+
+**ARM 的消息。** ARM 往 `SERIAL_LINE` 写最多 32 个字节，然后写 `SERIAL_CONTROL.SEND`。只有没有 P13 的命令在等时 P12 才开始发这条消息，而且 P13 运行时，这条消息还必须在 P13 下一条命令之前至少一个位时间发完。所以 ARM 的消息永远不会推迟命令。32 字节的消息最多 33 ms，步长 0.1 s 时它最多等一步。消息在等待或正在发送时，写 `SERIAL_LINE` 会被拒绝（SLVERR），第 33 个字节也会被拒绝。
+
+**接收。** 停止位正确的字节进入一个 256 字节的 FIFO。读一次 `SERIAL_RX`，就在读之后的那个时钟周期取走最早的字节。停止位错误的字节，以及遇到 FIFO 已满的字节，都会计数并丢掉。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x400 | `SERIAL_CONTROL` | 只写 | — | 写 1 产生脉冲，bit 0 `SEND` 发出 ARM 的消息，bit 1 `CLEAR` 丢掉还没发出的消息里已写入的字节，bit 2 `RX_FLUSH` 丢掉收到的字节 |
+| 0x404 | `SERIAL_CONFIG` | 读写 | 10417 | [15:0] `BIT_TICKS`，至少 16，[16] `ENABLE`。不置位时串口线保持高电平，等待中的命令被丢掉，也不接收 |
+| 0x408 | `SERIAL_STATUS` | 只读 | — | bit 0 `LINE_QUEUED`（ARM 的消息在等待或正在发送），bit 1 `TX_ACTIVE`，bit 2 `CMD_PENDING`，[13:8] ARM 的消息里已写入的字节数，bit 16 PMOD1_7 上的电平，bit 17 PMOD1_3 上的电平，[28:20] FIFO 里的字节数 |
+| 0x40C | `SERIAL_LINE` | 只写 | — | [7:0] 追加到 ARM 的消息里的一个字节 |
+| 0x410 | `SERIAL_RX` | 只读 | — | [7:0] 最早的字节，bit 8 `VALID`，[24:16] 它后面还有的字节数。读一次就取走它 |
+| 0x414 | `SERIAL_LINES_CNT` | 只读 | 0 | ARM 发出的消息数 |
+| 0x418 | `SERIAL_CMDS_CNT` | 只读 | 0 | P13 发出的命令数 |
+| 0x41C | `SERIAL_RX_CNT` | 只读 | 0 | 收到的字节数 |
+| 0x420 | `SERIAL_ERR_CNT` | 只读 | 0 | [15:0] 停止位错误的字节数，[31:16] 因 FIFO 满而丢掉的字节数 |
+| 0x424 | `SERIAL_RX_EDGES` | 只读 | 0 | [7:0] PMOD1_7（接收脚 A）上的下降沿数，[15:8] PMOD1_3（接收脚 B）上的，都在 256 处回绕 |
+| 0x428 / 0x42C | `SERIAL_LINE_TICK_LO` / `_HI` | 只读 | 0 | ARM 最近一条消息开始发送的 tick。读 LO 时锁存 HI |
+
+Python 里用 `pl.serial` 和 `PLPort`（§11.18）驱动 P12，`FS725` 的每个方法都能经 `FS725.open("pl")` 在 PL 的串口线上使用（§11.13）。
+
+### 4.16 在 PL 里改写 FC 来修正，P13（2.5 起）
+
+P13 可以在 PL 里逐步运行改写 FC 来修正时用的预测修正算法（由 `predictive_fc` 生成的 `PredictiveSteering`，§11.12），这时 P12 在每一步结束后固定的 tick 把这一步的 FC 发给 FS725。ARM 算出算法的系数并装入一次，负责启停 P13，为每一步读一条队列条目，并在 PL 的命令之间检查 FS725。`rf_clock.plmodel.steer` 逐位定义了每一步的运算，`PL/sim/tb_p13_steer.v` 逐步把 RTL 和它比较。在 ARM 上改写 FC 来修正（`--steer-actuator fc`）保持不变。台架上（2026-11-16，[results/pl-steering-20261116](../results/pl-steering-20261116/REPORT_zh.md)），在核对的全部 2923 步里，它的 θ 和配对数都和 ARM 用同一批队列条目算出的相同。在 PL 里修正的三次运行共 26 689 步里，它写出的 FC 都和用 P13 的 θ 驱动的 `rf_clock.plmodel.steer` 相同。P13 没有一条命令迟到。
+
+```text
+P8 的 OWN 条目（T_rx）─┐  一个配对的 2θ，单位 fs
+P9 的 PEER 条目 ───────┴─► 这一步最后 STEER_STEP.LATE 个时隙里的 2θ 求和 ─► 在这一步结束的 tick 得到 θ_k（2^-16 fs）
+                                                                                  │
+系数表（由 ARM 装入）─► 一个 48 × 48 乘法器，104 位累加 ─► S_k ─► 取整、限幅 ─► FC_k
+                                                                                    │
+          ┌─────────────────────────────────────────────────────────────────────────┤
+          ▼                                                                         ▼
+在这一步结束 + STEER_WRITE_DELAY 时发 "FC<高位>,<低位>\r" ─► P12 ─► FS725      QE_TYPE_STEER 条目 ─► 队列 ─► ARM
+```
+
+**配对和步。** 一个锁定的 OWN 条目，和同一个窗口（`PPS_COUNT` 和时隙都相同）里带测量值的 PEER 条目，构成一个配对，算法和 `rf_clock.twtt.pairs.pair` 相同。在节点 B 上（`STEER_CONTROL.ROLE_B`）$2\theta = (T_\mathrm{rx} - T_\mathrm{tx}^\mathrm{peer}) - (T_\mathrm{rx}^\mathrm{peer} - T_\mathrm{tx}^\mathrm{own})$，在 A 上符号相反，单位 fs。$T_\mathrm{tx}^\mathrm{own}$ 是本节点在上一个时隙的突发，由 `SLOT_TX_OFFSET` 算出。从本节点的 PPS 边沿起，每 `STEER_STEP.SLOTS` 个时隙算一步（0.1 s 是 50 个时隙）。一步的 θ 是时隙落在这一步最后 `STEER_STEP.LATE` 个时隙里的那些配对的平均，取整到 $2^{-16}$ fs。没有这样的配对的步就没有 θ。节点 B 只在 A 的时隙里有窗口，也就是偶数时隙（§4.8），而 50 个时隙的一步总是从偶数时隙开始，所以按复位值，一步最后 25 个时隙里最多有 12 个配对。P13 在每一步结束的 tick 处理这一步。窗口在它的时隙开始后 `SLOT_RX_OFFSET` + `RX_SPAN_BEATS` 个 tick 结束（每个 tick 一个 beat），约 0.25 ms 再加上单程延时，所以即使是这一步最后一个时隙的配对，也早在这一步结束之前就进了队列。如果一个配对的条目在它那一步结束的 tick 之后才到，它就被丢掉，因为那一步的 θ 已经取走，下一步的和又从零开始。
+
+**算法。** 设置固定以后，预测修正算法就是一个线性滤波器，后面跟一次取整和两次限幅。记 $U_k$ 为第 $k$ 步决定的 FC 改动，单位是细步（FC 细调 DAC 的一个单位），$g(d)$ 为算法对一次改动在 $d$ 步之后 θ 的响应的模型，$h(d) = g(d) - g(d-1)$，$\Delta F_k$ 为扣掉修正量后的 θ 从第 $k-1$ 步到第 $k$ 步的变化。那么
+
+$$\Delta F_k = \theta_k - \theta_{k-1} - \sum_{d \ge 1} h(d)\, U_{k-d}$$
+
+$$S_k = R_0 (\theta_k - \theta_0) + \sum_{j=0}^{p-1} \alpha_j \Delta F_{k-j} + \frac{\gamma}{n_e} W_k + \sum_{d \ge 1} K(d)\, U_{k-d}$$
+
+其中 $p$ 是 AR 模型的阶数（`STEER_P`），$W_k$ 是最近 $n_e = \min(n, k)$ 个 $\Delta F$ 之和，AR 模型预测的是相对于最近 $n$ 步均值的偏离，$n$ 即 `STEER_N`（0.1 s 一步时为 600 步，即 60 s）。新的 FC 为 $\mathrm{FC}_k = \mathrm{FC}_{k-1} + U_k$，$U_k$ 是 $-S_k$ 加上上一步带过来的余数，四舍五入取整，再限制在 `STEER_MAX_STEP` 以内和 `STEER_FC_LIMITS` 之内。$R_0$、$\alpha_j$、$\gamma$ 和 $K(d)$ 由算法最小二乘解的第一行、它的 AR 模型和 $g$ 算出（`rf_clock.plmodel.steer.tables`）。除了环路使之保持在零附近的 $R_0 (\theta_k - \theta_0)$，参与运算的只有 θ 的差和扣掉修正量后的 θ 的差，所以没有哪个量会随两台钟的漂移而增长。表之外（$d >$ `STEER_L`）$h$ 和 $K$ 是常数，所以更早的改动只以它们的总和进入。没有 θ 的步不改 FC，而是用算法自己往前一步的预测
+
+$$\Delta F_k = \sum_{i=0}^{p-1} \mathrm{ar}_i\, \Delta F_{k-1-i} + \frac{1 - \sum_i \mathrm{ar}_i}{n_e} W_{k-1}$$
+
+其中 $\mathrm{ar}_i$ 是 AR 系数（`AR` 表和 `MEAN2` 表）。算法在第一次改动之前先等 `STEER_SETTLE` 步，当它想要的 FC 连续 `STEER_MAX_SATURATED` 步落在限幅之外时停下（`STOPPED`，不再发命令）。它用定点数算出的就是 `PredictiveSteering` 算的东西。在合成的钟上做闭环仿真（四次，各 6000 步），$S_k$ 与浮点算法的相差不到 $2.4 \times 10^{-6}$ 个细步，取整后的改动除极少数步外都相同，那几步里 $S_k$ 离取整边界只有这么近，差了一个细步，θ − θ₀ 的 rms 相差不到 0.1 %。
+
+**命令。** 从第一个有 θ 的步起，每一步都在这一步结束后 `STEER_WRITE_DELAY` 个 tick 开始发送 `STEER_PREFIX`（ARM 写入 `FC<高位>,`）、FC 细调 DAC 的四位数值和一个回车。不改 FC 的步也照样发，包括算法等待的步和没有 θ 的步。在 GA 1 下，FS725 自己的锁频环仍在积分，会慢慢把 FC 从写入的值拉开，下一次写入又把它拉回来（§11.12）。ARM 生成算法的模型时，假定每条命令在它那一步结束后 `STEER_WRITE_DELAY` 发出。命令在线上的 12.5 ms 和 FS725 自己的 11 ms 不需要另外留余量，因为从命令开始算起实测的死区（23.5 ms）已经包含了这两段。算一步大约要 $2L + 2p + 150$ 个 10 ns 的时钟周期，按 0.1 s 步长的表约 10 µs（由 RTL 推断）。`STEER_WRITE_DELAY` 比这还短时命令会迟到，默认的 20000 个 tick（0.2 ms）绰绰有余。
+
+**FC 阶跃。** 置位 `STEER_CONTROL.STEPS` 时，P13 走同一条路径做 FC 阶跃（`rf_clock.twtt.steer.FCSteps`，见 §13 的 `m4c_link`）而不是运行算法，用来在每条命令都准时的情况下测 FS725 的响应。它也从第一个有 θ 的步开始，此后不再看 θ。等 `STEER_SETTLE` 步之后，FC 先升高 `STEER_STEPS.SIZE` 个细步，回到原值，再降低同样多，再回到原值，每个值保持 `STEER_STEPS.HOLD` 步（每步 `STEER_STEP.SLOTS` 个时隙），如此循环，直到 P13 停下。注意 `STEER_STEPS`（FC 阶跃）和 `STEER_STEP`（一步的长度）只差一个字母。
+
+**启动和停止。** 把 `ENABLE` 从 0 写成 1 就从头开始，FC 从 `STEER_FC_START` 开始，下一个有 θ 的步成为第 0 步。写 0 立即停止。系数表和设置要在 `ENABLE` 为 0 时装入。启动 P13 的程序没有停掉它就退出时，P13 会自己运行下去。链路还在时，它继续用自己的配对修正，没有 θ 时就一直写同一个 FC。除了它自己的停止（`STOPPED`），只有写 `ENABLE` 0，或者重新 `PL.open()`（重新加载 bitstream），才会让它停下。`m4c_link` 结束时会写 `ENABLE` 0，出错、Ctrl-C 或收到 SIGTERM 时也会，只有进程被直接杀掉时不会（§13）。
+
+| 地址 | 名称 | 访问 | 复位值 | 含义 |
+| ---- | ---- | ---- | ------ | ---- |
+| 0x440 | `STEER_CONTROL` | 读写 | 0xA | bit 0 `ENABLE`，bit 1 `ROLE_B`，bit 2 `STEPS`，bit 3 `LOG`（每步一条队列条目） |
+| 0x444 | `STEER_STATUS` | 只读 | 0 | bit 0 `ENABLED`（读回的 `ENABLE`），bit 1 `STARTED`（`ENABLE` 之后来过有 θ 的步），bit 2 `STOPPED`，bit 3 `SETTLING`，bit 4 `LATE`（上一条命令在它的 tick 之后才开始，和 `STEER_STEP.LATE` 不是一回事），bit 5 `BUSY`（正在算一步） |
+| 0x448 | `STEER_STEP` | 读写 | 0x190032 | [8:0] `SLOTS`，一步的时隙数，须整除 `SLOTS_PER_SECOND`，[24:16] `LATE`，θ 取自一步的最后几个时隙。复位值是 50 和 25，对应 0.1 s 的步 |
+| 0x44C | `STEER_WRITE_DELAY` | 读写 | 20000 | 从一步结束到它的命令的 tick 数，默认 0.2 ms |
+| 0x450 … 0x458 | `STEER_L`、`STEER_N`、`STEER_P` | 读写 | 400、600、40 | L、n 和 p，即改动表的长度、均值的窗口和 AR 阶数，分别不超过 `STEER_LMAX` − 2、`STEER_NMAX` − 2、`STEER_PMAX` |
+| 0x45C | `STEER_SETTLE` | 读写 | 300 | 第一次改动之前的步数 |
+| 0x460 | `STEER_MAX_STEP` | 读写 | 1000 | 一次改动最多的细步数 |
+| 0x464 | `STEER_FC_LIMITS` | 读写 | 0x0C000400 | [11:0] 细调 DAC 的最小值，[27:16] 最大值。复位值是 1024 和 3072 |
+| 0x468 | `STEER_FC_START` | 读写 | 2048 | [11:0] 开始时细调 DAC 的值 |
+| 0x46C | `STEER_MAX_SATURATED` | 读写 | 1200 | 连续落在限幅之外多少步后 P13 停下 |
+| 0x470 | `STEER_STEPS` | 读写 | 0x10000 | FC 阶跃，[15:0] `SIZE`，细步数，[31:16] `HOLD`，每个值保持的步数 |
+| 0x474 / 0x478 / 0x47C | `STEER_PREFIX_LO`、`_HI`、`_LEN` | 读写 | 0 | 命令开头的字节，第 0 个字节在 LO 的 [7:0]，以及字节数（0-8） |
+| 0x480 | `STEER_COEF_ADDR` | 读写 | 0 | [15:13] 表号，[12:0] 下一次写入的条目下标 |
+| 0x484 | `STEER_COEF_HI` | 读写 | 0 | [15:0] 接下来写入的条目的 47:32 位，在再次写入之前保持不变 |
+| 0x488 | `STEER_COEF_LO` | 只写 | — | 31:0 位。写一次就把 `STEER_COEF_HI` 和这些位存为一个条目，并移到下一个下标 |
+| 0x490 | `STEER_INDEX` | 只读 | 0 | 从第一个有 θ 的步起的步数 |
+| 0x494 | `STEER_FC` | 只读 | 0 | [11:0] FC 细调 DAC 的值，[31:16] 最近一次改动，i16 |
+| 0x498 / 0x49C | `STEER_THETA_LO` / `_HI` | 只读 | 0 | 上一步的 θ，单位 $2^{-16}$ fs（没有配对时是预测值）。读 LO 时锁存 HI |
+| 0x4A0 | `STEER_MISSING_CNT` | 只读 | 0 | 没有 θ 的步数 |
+| 0x4A4 | `STEER_LATE_CNT` | 只读 | 0 | 在它的 tick 之后才开始的命令数 |
+| 0x4A8 / 0x4AC | `STEER_CMD_TICK_LO` / `_HI` | 只读 | 0 | 上一条命令预定开始的 tick，即 §4.15 的 T。读 LO 时锁存 HI |
+| 0x4B0 | `STEER_PAIRS_CNT` | 只读 | 0 | 形成的配对数 |
+| 0x4B4 | `STEER_SATURATED_CNT` | 只读 | 0 | 想要的 FC 落在限幅之外的步数 |
+| 0x4B8 … 0x4C0 | `STEER_LMAX`、`_NMAX`、`_PMAX` | 只读 | 4096、4096、64 | 这个 bitstream 里各表的条目数 |
+
+系数表的每个条目都是一个 48 位有符号数，按表中列出的下标写入。
+
+| 表 | 条目 | 值 |
+| -- | ---- | -- |
+| 0 `H` | 1 … L | $h(d)$，fs 每细步，乘以 $2^{32}$ |
+| 1 `K` | 1 … L | $K(d)$，细步每细步，乘以 $2^{40}$ |
+| 2 `ALPHA` | 0 … p − 1 | $\alpha_j$，细步每 fs，乘以 $2^{40}$ |
+| 3 `AR` | 0 … p − 1 | $\mathrm{ar}_i$，乘以 $2^{40}$ |
+| 4 `GAMMA` | 1 … n | $n_e = 1, \dots, n$ 时的 $\gamma / n_e$，细步每 fs，乘以 $2^{40}$ |
+| 5 `MEAN2` | 1 … n | $(1 - \sum_i \mathrm{ar}_i) / n_e$，乘以 $2^{40}$ |
+| 6 `SCALAR` | 0 … 3 | ρ（表之外的 $h$，格式同表 0），$K_\infty$（同表 1），$R_0$（同表 2），θ₀，单位 $2^{-16}$ fs |
+
+置位 `LOG` 时，从第一个有 θ 的步起，每一步在发出命令之后往队列里写一条 `QE_TYPE_STEER` 条目。P13 内部以 $2^{-56}$ 细步为单位计算 $S$ 和余数，条目里放的是右移 32 位、向下取整到 $2^{-24}$ 细步的值。
+
+| 字 | `QE_TYPE_STEER` |
+| -- | --------------- |
+| 0 | [7:0] 类型 3，[15:8] 标志，[31:16] 条目序号。第 i 个标志在字的 bit 8 + i，`QESF_MISSING` = 0（没有 θ），`QESF_SETTLING` = 1，`QESF_SATURATED` = 2（想要的 FC 落在限幅之外），`QESF_STOPPED` = 3，`QESF_FIRST` = 4（第一个有 θ 的步），`QESF_LATE` = 5（上一步的命令在它的 tick 之后才开始），`QESF_STEPS` = 6（FC 阶跃） |
+| 1 | 这一步的 `PPS_COUNT` |
+| 2 | [8:0] 这一步在它那一秒里的序号，[25:16] 它的配对数 |
+| 3、4 | 它的命令预定开始的 tick，LO、HI。迟到命令实际开始的 tick 哪里都没有记录 |
+| 5 | 从第一个有 θ 的步起这一步的序号 |
+| 6、7 | θ，i64，$2^{-16}$ fs（没有配对的步里是预测值，FC 阶跃时一直是第一步的 θ，因为 FC 阶跃不用 θ） |
+| 8、9 | $\Delta F$，i64，$2^{-16}$ fs |
+| 10、11 | $S$，i64，$2^{-24}$ 细步（算法等待、没有 θ 和 FC 阶跃时为 0） |
+| 12 | [11:0] 这一步之后 FC 细调 DAC 的值，[31:16] 这次改动，i16 |
+| 13 | 余数，i32，$2^{-24}$ 细步 |
+| 14 | 早于 `STEER_L` 步的改动之和，i32 |
+
+Python 里用 `pl.steering`（§11.19）和 `rf_clock.plmodel.steer`（§11.12）驱动和模拟 P13，用 `m4c_link --steer-actuator pl`（§13）运行它。
 
 ## 5. 状态与错误报告
 
@@ -977,7 +1119,7 @@ PL
 | 偏移 | 名称                | 访问 | 复位值     | 含义                                                | 详见    |
 | ---- | ------------------- | ---- | ---------- | --------------------------------------------------- | ------- |
 | 0x00 | `ID`              | RO   | 0x52434C4B | 设计标识 "RCLK"                                     | §4.1.1 |
-| 0x04 | `VERSION`         | RO   | 0x00020004 | [31:16] major，[15:0] minor                         | §4.1.2 |
+| 0x04 | `VERSION`         | RO   | 0x00020005 | [31:16] major，[15:0] minor                         | §4.1.2 |
 | 0x08 | `CONTROL`         | WO   | —         | 命令脉冲                                            | §4.1.3 |
 | 0x0C | `STATUS`          | RO   | —         | 状态字                                              | §4.2.1 |
 | 0x10 | `TIME_EPOCH`      | RO   | 0          | 时钟重新锁定次数                                    | §4.1.4 |
@@ -1021,6 +1163,8 @@ PL
 | 0x240 … 0x284 | `SR_*` | RO | 0 | 搜索报告（2.0） | §4.10 |
 | 0x300 … 0x310 | `PACKET_*` | | | 测量包（2.0） | §4.11 |
 | 0x380 … 0x38C | `QUEUE_*` | | | 测量队列（2.0） | §4.12 |
+| 0x400 … 0x42C | `SERIAL_*` | | | FS725 的串口线（2.5） | §4.15 |
+| 0x440 … 0x4C0 | `STEER_*` | | | 在 PL 里改写 FC 来修正（2.5） | §4.16 |
 
 ---
 
@@ -1132,6 +1276,8 @@ client.validate()
 | `bringup`    | `BringupResult`       | 上电时发现并清除的故障（`initial_fault_bits`、`initial_fault_info`）                                                           |
 | `pps_out`    | `PPSOut`（§11.16）    | P10：DAC_B 上的输出 PPS 和它的有效状态线（2.1） |
 | `ref_phase`  | `RefPhase`（§11.17）  | P11：ADC_D 上 10 MHz 参考的相位（2.4） |
+| `serial`     | `SerialLine`（§11.18） | P12，PMOD1 上 FS725 的串口线（2.5） |
+| `steering`   | `PLSteering`（§11.19） | P13，在 PL 里改写 FC 来修正（2.5） |
 | `board`      | `BoardSetup`          | `serial`：本板 AT24MAC402 的序列号；`config`：板级配置，没有时为 `None`；`lmx_vco`：按 `"adc"`/`"dac"` 给出回读的 LMX2594 VCO（`band`、`forced`、`locked`、`capctrl`、`vco_sel`、`daciset`、`ld_vtune`），`write_clocks=False` 时为空 |
 
 #### `PL.open(bitstream=DEFAULT_BITSTREAM, *, write_clocks=True, mts=True, pps_source_trig=False, pps_invert=False, ref_tile=0, dac_target_latency=DAC_TARGET_LATENCY, adc_target_latency=ADC_TARGET_LATENCY, check_version=True, board_config=None, progress=None)`
@@ -1401,7 +1547,7 @@ rf-clock 2 这一侧，由 `rf_clock.checks.m4c_link` 运行（2.2.0.9 起放在
 | 模块 | 内容 |
 | ------ | ------- |
 | `pairs` | 从一个节点的队列求一个窗口的双向方程（plan 第 4.2 节）：`SlotTiming`（`slots_per_second`、`slot_ticks`、`tx_offset`；`tx_fs(slot)`），`pair()` 和 `Pair`（`m_ab_ns`、`m_ba_ns`、`theta_ns`、`delay_ns`），`Pairer`（把一个窗口的 OWN 条目和同一 `PPS_COUNT`、时隙的对端测量包配成一对，输入可以是队列条目或日志行），`SecondTheta`（节点的 `second` 行），`StepTheta`（快于每秒一次的修正算法每一步的 θ） |
-| `control` | `configure_fs725(config, port, emit)`：按板级配置核对节点的 FS725 并设定其 GA（`port` 为 None 时用配置里的端口；抛 `BoardConfigError`、`FS725Error`）；`FrequencyControl`：一次运行中的设备（关 1 pps 锁相、从电位器接管 SF、把每秒或每步的 θ 交给修正算法、结束时恢复 SF；2.3.0.2 起 `actuator="fc"` 时修正算法改写 FC：运行期间设备处于 GA 1，此时它保持锁定、1PPS 照常输出（GA 0 和 LO 0 会让 1PPS 停掉），每一步都写 FC，细调 DAC 余量不够时先进位到粗调 DAC、回到中间附近，不动 SF，修正停止时和结束时恢复 GA）；`SyncedRule`：何时置位 SYNCED |
+| `control` | `configure_fs725(config, port, emit)`：按板级配置核对节点的 FS725 并设定其 GA（`port` 为 None 时用配置里的端口；抛 `BoardConfigError`、`FS725Error`）；`FrequencyControl`：一次运行中的设备（关 1 pps 锁相、从电位器接管 SF、把每秒或每步的 θ 交给修正算法、结束时恢复 SF；2.3.0.2 起 `actuator="fc"` 时修正算法改写 FC：运行期间设备处于 GA 1，此时它保持锁定、1PPS 照常输出（GA 0 和 LO 0 会让 1PPS 停掉），每一步都写 FC，细调 DAC 余量不够时先进位到粗调 DAC、回到中间附近，不动 SF，修正停止时和结束时恢复 GA；2.5.0.0 起 `actuator="pl"` 时由 PL 走每一步，见下文）；`SyncedRule`：何时置位 SYNCED |
 | `logs` | 读回 `m4c_link` 的日志：`read(path, types)`、`pairs(path)`（逐行读，用于含队列条目的日志）、`seconds`、`fc`，以及 `steering_error(entries, settle_s=300)`，即从 `settle_s` 起 θ 减去目标值，各报告用它比较修正运行 |
 
 `steer`（见下）两边共用。修正目标 θ₀ 是一对板加一套接线下共用参考时的 θ（Δ/2 加那个参考里两路 PPS 之差）：它存在 `links/<A 的 S/N>_<B 的 S/N>.json`，每套接线一条，记着何时、如何测得（links/README_zh.md），运行时作为 `--steer-target-ns` 传入（`experiments/m4c_v2_link.py` 自动读取）。示例：`rf_clock.examples.twtt`（开发机）和 `rf_clock.examples.pl.04_link_node`（板上）。
@@ -1434,13 +1580,17 @@ $run -m rf_clock.twtt.steer --target-ns T --log twtt_B.jsonl --port /dev/ttyUSB0
 
 `PredictiveSteering`（2.2.0.2 起；`predictive_for(target_ps, sf0, loop, late_s=…, step_s=…)`，`m4c_link --steer-mode predictive`）是另一种修正算法，接口 `step(count, theta_ps)` 和 SF 限制与前者相同。它按 FS725 的锁频环对 SF 的响应建模（`loop`：该设备在其 GA 下的积分器增益、晶振的滞后和死区时间，2.2.0.8 起取自板级配置的 `fs725`，之前是 `LOOPS[ga]`，即 B 那台；`loop_response`、`LoopModel`），从每个 θ 里减去自己修正的作用，得到自由运行时钟的 θ（修正日志里的 `free_ps`）。它用 AR 模型预测时钟频率相对其 60 s 均值的偏离（`AR4`，用一份自由运行记录拟合；`fit_frequency_ar`），每秒用最小二乘规划接下来 `moves` 次 SF 改变（默认 2），在 `horizon` 秒内（默认 4）让预测的 θ 保持在目标上，每次改变的代价为 `lam`（每单位² 0.05 ps²）；只发出第一次改变。板级配置里没有该设备在其 GA 下的环路时，`m4c_link` 拒绝修正：用别的增益的模型会让环路振荡。θ 取每秒最后 100 个时隙时（`m4c_link --steer-late-slots 100`，每秒行里的 `theta_late_ns`），台架上 GA 8 下把 θ 保持在 27.2-27.9 ps rms，`Steering`（τ 5 s，每 2 s）为 33-36 ps（[预测修正报告](../results/predictive-steering-20261105/REPORT_zh.md)）。2.2.0.6 起，修正算法和 `LoopModel` 可以用短于一秒的步长（`step_s`；`STEP_SETTINGS` 存放每种步长的 AR 模型、预测时域、规划次数、代价和命令延迟：0.2 s 时为 `AR20_STEP_02`、20 步、2、0.2、0.03 s），`m4c_link --steer-step 0.2` 在每个 100 时隙的步里取最后 N 个时隙的 θ（`StepTheta`，`step` 行），写 SF 时不回读（`FS725.write_frequency`），每秒核对一次设备；`LoopModel` 对环路的相位做插值（取整到 20 ms 网格会让表呈锯齿状，0.2 s 的修正算法会跟着锯齿走）（[双环报告](../results/two-loops-20261105/REPORT_zh.md)）。别的设备的环路不一样（A 在 GA 7 时的积分增益是 B 的 1.7 倍），所以每台设备的环路单独测量，存进它所在板的板级配置：`rf_clock.checks.fs725_loop`（§13）按 FC 对 SF 阶跃的响应拟合出环路（`fit_loop`；只用 FC 就能定出，不需要另一块板）。2.3.0.2 起修正算法可以改写晶振的调谐量 FC 而不是 SF（`predictive_fc(target_ps, fc0, plant, late_s=…, step_s=0.1)`、`LoopModel.crystal`、`lag_response`）：设备处于 GA 1 时，晶振只经过一个 1 s 的 RC 跟随 FC，没有环路的积分器和死区，所以修正算法需要预测的时间少了大约一秒。`FC_STEP_SETTINGS` 存放 0.1 s 步长下的设置（`AR40_STEP_01`，在 B 处于 GA 1 的记录上拟合；30 步、4 次修改、每 (ps/s)² 代价 0.08，按 FS725 的增益的平方换算；每次最多改 1000 个细步），它的模型比实测的 FS725 的响应慢（滞后 × `FC_MODEL_LAG` 1.25，死区 + `FC_MODEL_DEAD_S` 0.1 s：重放中 FS725 的死区比模型多 0.1 s 时就会振荡）（[精度报告](../results/precision-20261105/REPORT_zh.md)第 8 节）。到 2.4.0.0 为止，`check_fc` 每秒检查一次设备，每条查询都等回答，这让紧接着那一步的写入推迟约 100 ms，再下一步推迟约 35 ms。2.4.0.1 起，`FCWatch` 在每一步写完后发出同样的一条查询，到下一步写完后再读回答，不等待。节点还在每次写入后立即读一次 tick，修正算法按每次改动实际发出的时刻计算它的影响，而不是按模型的 `command_s`（`PredictiveSteering.written`、`LoopModel.answer_late`，[FC 修正报告](../results/fc-steering-20261112/REPORT_zh.md)）。2.4.0.1 起，B 的板级配置里存的是用 1183 次阶跃、逐对的 θ 重新测出的 FS725 对 FC 的响应，写入后 23.5 ms 的死区加 0.994 s 的滞后。`FC_STEP_SETTINGS` 规划 3 次改动，每 (ps/s)² 代价 0.01，模型的滞后是实测的 1.1 倍（`FC_MODEL_LAG`），死区比实测长 0.02 s（`FC_MODEL_DEAD_S`）。回放中这让 θ − θ₀ 为 2.73 ps rms，FS725 晚 30 ms、快或慢 10 %、强或弱 15 % 时最多 3.53 ps，台架上为 2.77-2.88 ps，原来的设置是 4.44-4.94 ps（[FC 响应报告](../results/fc-response-20261112/REPORT_zh.md)）。2.4.0.2 起，`FC_STEP_SETTINGS` 把每次改动的代价从 0.01 改为 0.0003，单位是 ps² 每 (ps/s)²，这里的 ps/s 指一次 FC 改动最终让 θ 的变化率改变的量（B 那台每个细步 0.849 ps/s）。`FrequencyControl` 把 FC 限在细调 DAC 在 FC 起点两侧的余量以内，这个余量至少 500 个细步。在 B 的 GA 1 记录上回放，只要 FC 不出这个余量，代价一直降到 0.00001，无论 FS725 的响应按实测还是取六种偏离中的任何一种（死区、滞后和增益的改变，有的几项同时改），环路都不振荡，也不跑飞。代价取 0.0003 时，记录后一半的 θ − θ₀ 为 1.93 ps rms，最坏的偏离下为 2.50 ps，代价取 0.01 时分别是 2.73 和 3.53 ps。代价再低，收益很小，FC 却会顶到余量的边上。台架上用 rf-clock 2.4.0.1 交替跑了六次，每次 20 分钟，代价由 `--steer-lambda` 传入。θ − θ₀ 在两次 0.0003 的运行中都是 1.88 ps rms，在两次 0.0001 的运行中是 1.73-1.84 ps，在两次 0.01 的运行中是 2.81-2.92 ps。从 300 s 起，0.0003 时 FC 离起点在 −442 到 +493 个细步之间，0.0001 时却要到 686 个细步，超出了包保证的 500，所以选了 0.0003（同一报告第 8、9 节）。
 
+2.5.0.0 起，改写 FC 来修正时用的预测修正算法也可以在 PL 里运行（P13，§4.16），FS725 的串口线也可以由 PL 驱动（P12，§4.15）。`actuator="pl"` 时（`m4c_link --steer-actuator pl --fs725 pl`），`FrequencyControl` 开始时和 `"fc"` 一样，把设备设在 GA 1，读出 FC，细调 DAC 两侧剩下不到 500 个细步时先把它移回中间附近。然后它由算法算出系数表，连同一步的时隙数、取 θ 的最后几个时隙、`STEER_WRITE_DELAY` 和前缀 `FC<高位>,` 一起装进 P13，再打开 P13。此后每一步都由 PL 自己走，每条命令都由 PL 自己发。ARM 在 `pl_step(entry)` 里读每一步的 `SteerStep` 队列条目，据此写出 ARM 自己走步时写的 `steer` 和 `fc_set` 行，并在命令之间的空档经 P12 每步发一条 `FCWatch` 查询。如果检查发现设备的状态变了，或者 P13 报告 `STOPPED`，`FrequencyControl` 就关掉 P13，写一行 `steer_stopped`，恢复 GA，链路照常运行，和 `"fc"` 时一样。这种方式下 `fc_set` 行里的 `written_count` 和 `late_s` 不是写入后读出来的，而是由 PL 固定的时序算出的，即这一步的结束加上 `STEER_WRITE_DELAY`。比这更晚才开始的命令，会在下一步的 `steer` 行里标记为 `late`，它实际开始的时间不记录。`predictive_fc(..., command_s=S)` 生成算法模型时，按每条命令在它那一步结束后 S 秒发出来算，对 P13 来说 S 就是 `STEER_WRITE_DELAY`，而不是 `FC_STEP_SETTINGS` 里的 0.03 s。在 ARM 上（2.4.0.1），命令在它那一步结束后 22-58 ms 才发出，而且每一步都不一样。在 PL 里它在它的 tick 发出，模型就不必为这种变化留余量。台架上（2026-11-16，[results/pl-steering-20261116](../results/pl-steering-20261116/REPORT_zh.md)），在 PL 里修正的两次 20 分钟运行，和同样的算法在 ARM 上修正的两次交替进行，各自按各自的写入时间，ARM 在一步结束后 18-57 ms（1 % 到 99 % 分位），PL 在 0.2 ms。四次运行里 B 的 FS725 都接在 P12 上，所以 ARM 也是经 P12 写入的。按每秒 θ 的平均、从 300 s 起算，θ − θ₀ 在 PL 里为 1.69 和 1.63 ps rms，在 ARM 上为 1.94 和 2.05 ps。2026-11-13 ARM 经 USB 转串口线、用同样的代价修正，两次都是 1.88 ps，所以当天两台钟的状态也可能不同，这几次运行没有把它分开。比 0.1 s 更短的步长要在 `FC_STEP_SETTINGS` 里另配设置，目前那里只有 0.1 s（plan §6 的 P13）。
+
+`rf_clock.plmodel.steer` 是 P13 的模型，逐位定义了每一步。`pair_2theta_fs(role_b, slot, t_rx_fs, peer_t_tx_fs, peer_t_rx_fs, *, slot_ticks, slots, tx_offset)` 按 P13 的算法给出一个配对的 2θ，单位 fs，`step_theta_q16(sum, pairs)` 给出一步的 θ，单位 $2^{-16}$ fs，四舍五入。`tables(law, *, table_s=40.0, low0, lo, hi)` 把 `predictive_fc` 生成的 `PredictiveSteering` 换成 P13 定点格式的系数和设置 `Tables`，改动表覆盖 `table_s` 秒（`STEER_L`），数值放不进 48 位的算法会被拒绝。`Engine(tables, steps=None).step(theta_q16)` 按 P13 的做法走一步，没有 θ 的步传 `None`，返回这一步的各个数（`low`、`change`、以 $2^{-56}$ 细步为单位的 `S_q56` 和 `rem_q56`，队列条目里放的是它们以 $2^{-24}$ 为单位的高位，以及 `dF_q16` 和各标志）。`PL/sim/gen_steer_vectors.py` 用它驱动 `tb_p13_steer.v`。
+
 ### 11.13 `rf_clock.fs725`（FS725 铷钟）
 
-FS725 把后面板 DB9（DCE，用直通线；9600 波特，8N1，XON/XOFF，不用握手线）上的每条命令原样转给内部的 PRS10，回复也原样返回；命令集就是 PRS10 手册的 "RS-232 Instruction Set"。本模块用标准库的 `termios`，除 PYNQ 环境外不需要别的包。
+FS725 把后面板 DB9（DCE，用直通线；9600 波特，8N1，XON/XOFF，不用握手线）上的每条命令原样转给内部的 PRS10，回复也原样返回；命令集就是 PRS10 手册的 "RS-232 Instruction Set"。本模块用标准库的 `termios`，除 PYNQ 环境外不需要别的包。2.5 起设备也可以接在 PL 自己的串口线上（P12，§4.15），中间经过 PMOD1 上的 TTL 转 RS-232 模块。这时用 `FS725.open("pl")` 经 `rf_clock.pl.serial.PLPort` 打开它，下面每个方法用法都一样（2026-11-16 起在台架上使用）。凡是经 `rf_clock.checks.board_common.open_pl` 打开 PL 的检查，比如 `m4c_link` 和 `pps_pp_scan`，都以这个名字登记自己那个 PL 的串口线。自己不打开 PL 的命令，例如 `rf_clock.fs725 ... --port pl` 或 `fs725_loop --port pl`，会先打开 PL。两种情况都会加载 bitstream，停掉 PL 里正在运行的一切，包括 P13，所以板上有链路在运行时都不能用。打开 PL 需要 §9.1 的环境变量（`BOARD`、`XILINX_XRT`）。
 
 | `FS725` 的方法 | 命令 | 含义 |
 | -------------- | ---- | ---- |
-| `FS725.open(port)` | `VB0` | 打开串口设备（默认 `/dev/ttyUSB0`）；写入的每个设置都交给 `log` |
+| `FS725.open(port)` | `VB0` | 打开串口设备（默认 `/dev/ttyUSB0`），或以这个名字登记的端口（`register_port(name, make)`，2.5 起，例如 `"pl"`）；写入的每个设置都交给 `log` |
 | `query(cmd)` | 任意 `…?` | 一条查询的回复；其他命令一律拒绝 |
 | `identify()` | `ID?` | 型号、固件版本和序列号 |
 | `serial()` | `ID?` | PRS10 的序列号（2.2.0.8 起） |
@@ -1465,6 +1615,8 @@ $run -m rf_clock.fs725 status --port /dev/ttyUSB0   # 型号、状态、SF、锁
 $run -m rf_clock.fs725 align --port /dev/ttyUSB0    # 另一个节点的 PPS 接在后面板 1 pps 输入上
 $run -m rf_clock.fs725 sf 37 --port /dev/ttyUSB0    # 设 SF（并回读），例如设回驾驭开始时的值
 $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # 锁频环的增益，保持到下次重启
+sudo env BOARD=RFSoC4x2 XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python -m rf_clock.fs725 gain 8 --port pl
+                                                    # 在 PL 的串口线上做同样的事（2.5），会先加载 bitstream
 ```
 
 `align` 关掉 1 pps 锁相，取十个时间标签，用 `PP` 把 1 pps 输出移到输入上（PP 只能往前移：推后 d 等于提前一秒减 d），误差几 ns，这样双向时间比对的 RX 窗口（比时隙早 1.25 µs 打开）才能接到另一个节点的 burst。它让 PPS 相对 10 MHz 移动了：之后要检查板子捕获 PPS 的余量（M1），以及 EPG1 的余量：EPG1 用锁在同一个 10 MHz 上的时钟对这个 PPS 重新定时（EPG1 的各路输出也都跟着移动）。锁相只关到设备下次重启为止：对准之后把另一个 PPS 从后面板输入上拔掉，否则一次重启就会让设备锁到它上面。设置写进 `fs725.jsonl`（`--log`）。
@@ -1511,7 +1663,7 @@ $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # 锁频环的增益，保�
 
 | 方法 / 属性 | 协议 | 返回 |
 | ----------- | ---- | ---- |
-| `read(max_entries=None)` | R32 `QUEUE_HEAD`、`QUEUE_TAIL`，读条目，W32 `QUEUE_TAIL` | `OwnMeasurement` 和 `PeerPacket` 的列表，先旧后新 |
+| `read(max_entries=None)` | R32 `QUEUE_HEAD`、`QUEUE_TAIL`，读条目，W32 `QUEUE_TAIL` | `OwnMeasurement`、`PeerPacket`，以及 P13 修正时（2.5）`SteerStep` 的列表，先旧后新 |
 | `pending()`、`dropped()`、`clear()` | 头尾指针，`QUEUE_DROPPED_CNT`，W32 `QUEUE_TAIL` = 头指针 | int |
 | `entries` | R32 `QUEUE_ENTRIES` | int |
 
@@ -1519,6 +1671,7 @@ $run -m rf_clock.fs725 gain 8 --port /dev/ttyUSB0   # 锁频环的增益，保�
 | -- | ---- |
 | `OwnMeasurement` | `seq`、`pps_count`、`slot`、`tick`、`locked`、`window_bad`、`searched`、`lag`、`fraction`、`phase`、`magnitude`、`t_rx_fs`、`quality`（`quality_db`）、`window_power` |
 | `PeerPacket` | `seq`、`pps_count`、`slot`、`tick`、`version`、`time_epoch`、`quality`、`status`（`peer_locked`、`measurement`、`window_valid`、`overflow`、`pps_locked`、`clocks_locked`）、`config_id`、`peer_pps_count`、`peer_slot`、`t_tx_fs`、`t_rx_fs`、`phase` |
+| `SteerStep` | `seq`、`pps_count`、`step`、`pairs`、`command_tick`、`index`、`theta_q16`（`theta_ps`）、`dF_q16`（`dF_ps`）、`S_q24`、`low`、`change`、`remainder_q24`、`old_changes`、`missing`、`settling`、`saturated`、`stopped`、`first`、`late`、`steps`（2.5，§4.16） |
 
 `decode_entry(words)` 解码一个 16 字的条目。建立链路（§7，最初的几个时隙）：
 
@@ -1585,6 +1738,66 @@ if second is not None and second.beats == 100_000_000:
     print(second.pps_count, second.delay_ns, second.amplitude, second.peak)
 ```
 
+### 11.18 `rf_clock.pl.serial`（FS725 的串口线，2.5.0.0 起）
+
+`pl.serial` 是 §4.15 那组寄存器上的 `SerialLine`。
+
+| 方法 | 作用 |
+| ---- | ---- |
+| `configure(*, enable=True, bit_ticks=10417)` | 写 `SERIAL_CONFIG`。默认 9600 波特，`bit_ticks` 小于 16 时抛 `ValueError` |
+| `enabled` | 串口线是否打开 |
+| `status()` | `SerialStatus`，包括发送器的状态（`line_queued`、`tx_active`、`cmd_pending`、`line_len`）、两个接收脚上的电平（`rxd_a` 在 PMOD1_7，`rxd_b` 在 PMOD1_3）、`rx_level`、各计数（`lines`、`commands`、`received`、`framing_errors`、`overruns`），以及每个接收脚上的下降沿数（`rxd_a_edges`、`rxd_b_edges`，不为 0 的那个就是模块所在的脚） |
+| `busy()` | ARM 的消息是否还在等待或正在发送 |
+| `send(data, timeout=2.0)` | 把 `data` 分成每条最多 32 字节的 ARM 消息发出，每条等前一条发完再发，某一条 `timeout` 秒后还没发出就抛 `TimeoutError` |
+| `receive()` | FIFO 里等着的字节，读出即取走 |
+| `flush()` | 丢掉收到的字节 |
+| `last_line_tick()` | ARM 最近一条消息开始发送时的 tick |
+
+`PLPort(pl.serial)` 是这条线上的 `rf_clock.fs725.Port`，所以 `FS725(PLPort(pl.serial))` 就是接在 PL 串口线上的 FS725。创建它时会使能串口线，并丢掉以前收到的字节。`read_line(timeout)` 返回到下一个回车为止的字节，`timeout` 内没有收到就返回 None。
+
+```python
+from rf_clock.fs725 import FS725
+from rf_clock.pl.serial import PLPort
+
+unit = FS725(PLPort(pl.serial))
+print(unit.identify(), unit.frequency_control())
+print(pl.serial.status().rxd_a_edges, pl.serial.status().rxd_b_edges)  # the module's pin counts, the empty one stays 0
+```
+
+### 11.19 `rf_clock.pl.steering`（在 PL 里改写 FC 来修正，2.5.0.0 起）
+
+`pl.steering` 是 §4.16 那组寄存器上的 `PLSteering`。
+
+| 方法 | 作用 |
+| ---- | ---- |
+| `sizes` | `(STEER_LMAX, STEER_NMAX, STEER_PMAX)`，这个 bitstream 里各表的条目数 |
+| `load(t, *, step_slots, late_slots, write_delay_ticks, prefix, steps=None)` | 写入设置、`t` 的系数表（`rf_clock.plmodel.steer.tables`，§11.12）和命令的前缀（`FC<高位>,`，1 到 8 字节，寄存器本身也接受空前缀）。给了 `steps=(size, hold)` 时还为 FC 阶跃写 `STEER_STEPS`。表放不进这个 bitstream 或某个系数超出 48 位时抛 `ValueError`，P13 正在运行时调用它会抛 `RuntimeError` |
+| `enable(*, role_b=True, steps=False, log=True)` | 重新开始，从下一个有 θ 的步起，FC 从 `STEER_FC_START` 开始。`steps` 让它做 FC 阶跃而不是运行算法，`log` 让它每一步写一条 `QE_TYPE_STEER` 条目 |
+| `disable()` | 立即停下，之后不再发命令 |
+| `status()` | `SteeringStatus`，包括 `STEER_STATUS` 的各标志、`index`、`low`、`last_change`、`theta_ps`、`missing`、`late_commands`、`last_command_tick`、`pairs` 和 `saturated` |
+
+`rf_clock.twtt.control.FrequencyControl(actuator="pl")`（§11.12）会调用这些方法，所以运行时不需要直接调用。
+
+链路在运行、B 的 FS725 接在 PL 的串口线上时，手动做法如下。`FrequencyControl` 还会先把细调 DAC 移回中间附近，结束时恢复 GA。
+
+```python
+from rf_clock.fs725 import FS725
+from rf_clock.pl.serial import PLPort
+from rf_clock.plmodel import steer as pm
+from rf_clock.twtt import steer
+
+unit = FS725(PLPort(pl.serial))         # switches the serial line on (SERIAL_CONFIG.ENABLE)
+unit.set_gain(1)                        # at GA 1 the FS725's own loop barely moves FC
+high, low = unit.frequency_control()    # FC's coarse and fine DAC values
+plant = pl.board.config.fs725["fc"]     # the FS725's response to FC, from the board config
+law = steer.predictive_fc(-21.5, 1000 * high + low, plant, late_s=0.05, step_s=0.1,  # theta0 -21.5 ps
+                          command_s=20000e-8)
+t = pm.tables(law, low0=low, lo=max(low - 500, 1024), hi=min(low + 500, 3072))  # limits in fine DAC values
+pl.steering.load(t, step_slots=50, late_slots=25, write_delay_ticks=20000, prefix=f"FC{high},".encode())
+pl.steering.enable(role_b=True)
+for entry in pl.queue.read(): ...       # SteerStep entries, one a step
+```
+
 ## 12. 异常与返回码
 
 | 异常                                     | 基类              | 来源                                                                                       |
@@ -1604,7 +1817,7 @@ if second is not None and second.beats == 100_000_000:
 | `RFDCError`                            | `RuntimeError`  | tile 未启动或 MTS 状态非 OK                                                                |
 | `VersionMismatch`                      | `RuntimeError`  | overlay 或`BUILD_VERSION` 与安装的 rf-clock A.B.C 不同，或文件与 manifest 不符（§14.1） |
 | `FS725Error` | `RuntimeError` | `rf_clock.fs725`：没有回复、回复格式不对，或设置没有生效（§11.13） |
-| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`：修正连续 `max_saturated_s` 要求 SF 超出允许的偏移，或者 FS725 已不是修正设下的状态（§11.12） |
+| `SteeringError` | `RuntimeError` | `rf_clock.twtt.steer`：修正连续 `max_saturated_s` 要求 SF 超出允许的偏移，或者 FS725 已不是修正设下的状态（§11.12）。2.5 起还有 P13 因为想要的 FC 在限幅之外待得太久而停下的情况（§4.16）。用 P13 时，它由 `FrequencyControl.pl_step` 抛出并立即捕获，写一行 `steer_stopped` |
 
 | 返回码（§5.2）  | Python 表现                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------- |
@@ -1625,7 +1838,7 @@ if second is not None and second.beats == 100_000_000:
 | `mts_dtc`      | 板级配置（§11.1）  | `record [--write] [--runs N]` 不用已记录的码上电 N 次（默认 6），按转换器、时钟和 tile 取被选中次数最多的窗口，并按 tile 取出现次数最多的 MTS offset；`--write` 把两者都存进板级配置。`check [--runs N]` 用记录的码上电，报告每个选到的码离记录多远，以及有几次上电的 offset 与记录不同。在 `vco_bands scan --write` 之后运行（它会丢掉这些码，因为码与档位有关） |
 | `vco_bands`    | 板级配置（§11.1）  | `scan [--write] [--label S/N] [--calibrations N]` 写 N 次时钟（默认 20），建议每片 LMX2594 校准最常选的档位，使芯片保持在校准自己的工作点上；再从它向两边逐档强制，直到锁不住，以显示两边的余量；`--write` 把建议的档位、各档次数、能锁定的档位和本板序列号存进板级配置。`delays [--write] [--span N] [--runs N] [--captures N]`，需接回环线 DAC_A → ADC_B：用载波相位测配置档位两边各 N 档（默认 2）以内每个档位的回环延时，每次上电在单独的进程里；`--write` 存入档位表；记录追加到 `vco_bands_runs.jsonl` |
 | `fs725_loop`   | 板级配置（§11.1） | `[--port PORT] --gain GA [--step 200] [--steps 4] [--hold 40] [--write]`：本板的 FS725（不给 `--port` 时用板级配置记录的端口），按 FC 对 SF 阶跃（交替上去和回来）的响应测出它在增益 GA 下的锁频环，所有阶跃共用一组参数拟合（`rf_clock.twtt.steer.fit_loop`；只用 FC 就能定出环路，不需要另一块板和链路，但期间不能有链路在用这块板的时钟）；`--write` 把设备、端口、GA 和环路记进板级配置（`fs725`）；记录写入 `fs725_loop_runs.jsonl`（2.2.0.8 起） |
-| `m4c_link`     | M4b、M5：rf-clock 2 链路 | `--role A\|B [--start-at T --stop-at T \| --start-file PATH [--start-timeout S]]`：链路的一个节点（`--start-file`，2.3.0.3 起：PL 打开、FS725 核对完成后打印 `ready: waiting for the start time in PATH`，等 PATH 出现后从中读出两个时间 `{"start_at": T, "stop_at": T}`；开始时间已过就拒绝运行；`experiments/m4c_v2_link.py` 在两个节点都就绪后立即写入，提前 2-3 s，某个节点 120 s 内没有就绪就停掉两边）；队列条目和每秒一行的 `second`（θ、单程延时及其离散）写入 `--out`（`--no-entries`：只写每秒的行），2.4.0.0 起还有 P11 保存的每一秒一行 `ref_phase`（§4.14）；协议测试（`--copy-every`、`--search-every`、`--silent-at`、`--refusal-checks`、`--pause-reads-at`）；`--fs725 [PORT]` 指定本节点的 FS725，不给 PORT 时用板级配置记录的端口（2.2.0.9 起），启动时按板级配置核对（`rf_clock.twtt.control.configure_fs725`：必须是配置里那台，GA 设成配置里的增益；否则拒绝运行，2.2.0.8 起）；`--acquire [--fs725 PORT]` 先捕获对端的 PPS（§11.15），再把本节点的 PPS 移过去；B 上带 `--fs725` 时有 `--sf-step N`（结束时对每次阶跃做拟合：FS725 每个 SF 单位的变化率和它的延迟，`sf_response` 行）和 `--steer-target-ns T`（对每秒的行运行 `rf_clock.twtt.steer`；结束时 SF 回到起始值，除非 `--keep-sf`），`--fc-every S`（每 S 秒读一次 FS725 的 FC，写成 `fc` 行，时间用本节点的 PPS 计数表示，2.2.0.1 起；2.2.0.4 起两个节点只要带 `--fs725` 都可以用，`--sf-step` 也一样）；`--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]`（用板级配置里该设备在其 GA 下的环路运行 `PredictiveSteering`，2.2.0.2 起；`--steer-step 0.2` 2.2.0.6 起；`--steer-actuator fc [--fc-model-lag S --fc-model-dead S]` 配合 `--steer-step 0.1`，2.3.0.2 起：改写 FC 而不是 SF，设备处于 GA 1，模型取板级配置中 `fs725.fc` 再放慢，记 `fc_set` 行，2.4.0.1 起带写入后立即读到的计数 `written_count` 和改动在它那一步结束后多久发出 `late_s`）；`--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` 打开输出 PPS（§4.13，2.1.0.0 起；结束时保持打开），并在 2.2.0.4 起按 `SyncedRule` 置位 SYNCED（A：链路锁定且收到 B 的测量包；B：此外还要修正在运行，θ − θ₀ 在 60 s 内的 rms 小于 `--synced-rms`（100 ps）、均值小于 `--synced-mean`（30 ps），10 s 的 rms 超过 `--synced-clear-rms`（200 ps）时清除），结束时清除。`--pps-out-comp`（节点 B，需 `--steer-target-ns`；2.3.0.0 起）：θ 补偿的输出 PPS（`rf_clock.twtt.control.EdgeCompensation`）：每秒的 `--pps-out-comp-at`（0.94）处，取最新配对（`--pps-out-comp-window`，0.02 s）的 θ，按它最近一秒的变化率推到下一个边沿，把 `PPS_OUT_FRAC` 设为 `--pps-out-base-frac`（32768）加上 θ 减目标值除以 `--pps-out-ps-per-frac`（示波器上的标定；2.3.0.1 起默认 0.0275 ps，即板子 8873292600AB 的值，§4.13）；记 `pps_comp` 行；结束时清除 `FRAC`。2.4.0.1 起，`--steer-mode steps --fc-step-size N --fc-step-hold S` 配合 `--steer-actuator fc` 不做修正，而是经修正所用的同一条路径把 FC 按 N 个细步上调、回原值、下调、回原值，每档保持 S 秒（`steer.FCSteps`，`experiments/m5_fc_response.py`）。`experiments/m4c_v2_link.py` 同时运行两个节点 |
+| `m4c_link`     | M4b、M5：rf-clock 2 链路 | `--role A\|B [--start-at T --stop-at T \| --start-file PATH [--start-timeout S]]`：链路的一个节点（`--start-file`，2.3.0.3 起：PL 打开、FS725 核对完成后打印 `ready: waiting for the start time in PATH`，等 PATH 出现后从中读出两个时间 `{"start_at": T, "stop_at": T}`；开始时间已过就拒绝运行；`experiments/m4c_v2_link.py` 在两个节点都就绪后立即写入，提前 2-3 s，某个节点 120 s 内没有就绪就停掉两边）；队列条目和每秒一行的 `second`（θ、单程延时及其离散）写入 `--out`（`--no-entries`：只写每秒的行），2.4.0.0 起还有 P11 保存的每一秒一行 `ref_phase`（§4.14）；协议测试（`--copy-every`、`--search-every`、`--silent-at`、`--refusal-checks`、`--pause-reads-at`）；`--fs725 [PORT]` 指定本节点的 FS725，不给 PORT 时用板级配置记录的端口（2.2.0.9 起），启动时按板级配置核对（`rf_clock.twtt.control.configure_fs725`：必须是配置里那台，GA 设成配置里的增益；否则拒绝运行，2.2.0.8 起）；`--acquire [--fs725 PORT]` 先捕获对端的 PPS（§11.15），再把本节点的 PPS 移过去；B 上带 `--fs725` 时有 `--sf-step N`（结束时对每次阶跃做拟合：FS725 每个 SF 单位的变化率和它的延迟，`sf_response` 行）和 `--steer-target-ns T`（对每秒的行运行 `rf_clock.twtt.steer`；结束时 SF 回到起始值，除非 `--keep-sf`），`--fc-every S`（每 S 秒读一次 FS725 的 FC，写成 `fc` 行，时间用本节点的 PPS 计数表示，2.2.0.1 起；2.2.0.4 起两个节点只要带 `--fs725` 都可以用，`--sf-step` 也一样）；`--steer-mode predictive [--steer-late-slots N --steer-step S --steer-ar A,B,… --steer-horizon H --steer-moves M --steer-lambda L]`（用板级配置里该设备在其 GA 下的环路运行 `PredictiveSteering`，2.2.0.2 起；`--steer-step 0.2` 2.2.0.6 起；`--steer-actuator fc [--fc-model-lag S --fc-model-dead S]` 配合 `--steer-step 0.1`，2.3.0.2 起：改写 FC 而不是 SF，设备处于 GA 1，模型取板级配置中 `fs725.fc` 再放慢，记 `fc_set` 行，2.4.0.1 起带写入后立即读到的计数 `written_count` 和改动在它那一步结束后多久发出 `late_s`）；`--pps-out OFFSET [--pps-out-amplitude A] [--pps-out-idle I]` 打开输出 PPS（§4.13，2.1.0.0 起；结束时保持打开），并在 2.2.0.4 起按 `SyncedRule` 置位 SYNCED（A：链路锁定且收到 B 的测量包；B：此外还要修正在运行，θ − θ₀ 在 60 s 内的 rms 小于 `--synced-rms`（100 ps）、均值小于 `--synced-mean`（30 ps），10 s 的 rms 超过 `--synced-clear-rms`（200 ps）时清除），结束时清除。`--pps-out-comp`（节点 B，需 `--steer-target-ns`；2.3.0.0 起）：θ 补偿的输出 PPS（`rf_clock.twtt.control.EdgeCompensation`）：每秒的 `--pps-out-comp-at`（0.94）处，取最新配对（`--pps-out-comp-window`，0.02 s）的 θ，按它最近一秒的变化率推到下一个边沿，把 `PPS_OUT_FRAC` 设为 `--pps-out-base-frac`（32768）加上 θ 减目标值除以 `--pps-out-ps-per-frac`（示波器上的标定；2.3.0.1 起默认 0.0275 ps，即板子 8873292600AB 的值，§4.13）；记 `pps_comp` 行；结束时清除 `FRAC`。2.4.0.1 起，`--steer-mode steps --fc-step-size N --fc-step-hold S` 配合 `--steer-actuator fc` 不做修正，而是经修正所用的同一条路径把 FC 按 N 个细步上调、回原值、下调、回原值，每档保持 S 秒（`steer.FCSteps`，`experiments/m5_fc_response.py`）。2.5.0.0 起，`--steer-actuator pl --fs725 pl [--steer-write-delay TICKS --steer-table-s S]` 在 PL 里运行同样的修正或 FC 阶跃（P13，§4.16），FS725 接在 PL 的串口线上（P12，§4.15）。`fc` 需要的选项这里也都要给，即 `--steer-target-ns`、`--steer-mode predictive` 或 `steps`、`--steer-step 0.1`，`--steer-late-slots` 要大于 0。每一步都由 PL 自己走，每条命令在它那一步结束后 `--steer-write-delay` 个 tick 发出（默认 20000，即 0.2 ms），改动表覆盖 `--steer-table-s` 秒（默认 40），`steer` 和 `fc_set` 行来自 P13 的队列条目，写入时间由 PL 的时序确定（§11.12）。开始和结束时各有一行 `serial` 日志，开始时 FS725 不应答也有一行，记下 P12 的各个计数，其中两个接收脚上的下降沿数说明模块插在 PMOD1 的哪一排（§4.15）。这种方式下，`m4c_link` 因出错、Ctrl-C 或 SIGTERM 结束时也会停掉 P13 并恢复 GA（`FrequencyControl.stop_pl`），`experiments/m4c_v2_link.py` 就是用 SIGTERM 停节点的。节点被直接杀掉时，P13 会继续修正，直到下一次 `PL.open()`。`experiments/m4c_v2_link.py` 同时运行两个节点 |
 | `pps_out`      | 输出 PPS（2.1） | `[seconds] [--offset N] [--sample S] [--width W] [--amplitude A] [--idle I] [--synced] [--keep]`：在 DAC_B 上发出输出 PPS（§4.13），每秒一行（脉冲相对它那一秒 PPS_TICK 的位置、脉冲数和飞轮脉冲数、有效状态线、芯片温度）；从第一个脉冲起每一秒都有一个在 PPS_TICK + offset 的脉冲、且都不来自飞轮时 PASS（带 `--synced` 时还要求有效状态线为低）；记录追加到 `pps_out_runs.jsonl`。边沿本身在示波器上测 |
 | `ref_phase`    | 10 MHz 相位（2.4） | `[seconds] [--min-amplitude A]`：ADC_D 上的 P11（§4.14），保存的每一秒一行 `second`（PPS_COUNT、PPS_TICK mod 10、拍数、峰值、幅度、tau_ref、芯片温度），最后一行是这次运行的 `record`（MTS、VCO 档位、整秒上 tau_ref 的均值、离散和斜率）。第一秒之后每一秒都是整秒、输入存在且不削顶时 PASS。`experiments/m5_ref_phase_restarts.py` 在两块板上一次次重启地运行它（2.4.0.0 起） |
 | `pps_pp_scan`  | PPS 亚 tick 相位 | `--fs725 PORT [--steps 22] [--edges 8] [--no-center]`：PP 以 1 ns 步进，直到 PPS_TICK 移动，由此得出 PPS 边沿比它的采样沿早多少；然后用 PP 把它移到 tick 中间；记录追加到 `pps_pp_scan_runs.jsonl` |
@@ -1655,6 +1868,7 @@ M2、M3 还记录本板序列号和两片 LMX2594 的 VCO 档位。M1–M3 三�
 | 2.2  | 新增 `PPS_OUT_IDLE`（0x168），即输出 PPS 在脉冲之间的电平 |
 | 2.3  | 新增 `PPS_OUT_FRAC`（0x16C）和 `PPS_OUT_CONTROL.FRAC`：输出 PPS 的边沿推迟一个采样的若干分之一 |
 | 2.4  | 新增 `REF_PHASE_*`（0x1C0，P11）：ADC_D（ADC tile 0 block 0，它的 I 数据流此后接进 PL）上 10 MHz 参考副本相对 tick 的相位 |
+| 2.5  | 新增 `SERIAL_*`（0x400，P12），由 PL 经 PMOD1 上的模块驱动 FS725 的串口线，以及 `STEER_*`（0x440，P13），在 PL 里运行改写 FC 来修正时用的预测修正算法，并新增队列条目 `QE_TYPE_STEER` |
 
 ### 14.1 软件包与 overlay
 

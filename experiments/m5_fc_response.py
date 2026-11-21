@@ -61,7 +61,8 @@ def windows(t: np.ndarray, th: np.ndarray, w: np.ndarray, c: np.ndarray, hold: f
         sel = (t >= w[i] - BEFORE_S) & (t < end)
         if sel.sum() < 100:
             continue
-        b = np.floor((t[sel] - w[i] + BEFORE_S) / BIN_S).astype(int)
+        # at 0, not -1, when a pair's time equals the window's start but for rounding (a write 15 ms after the step's end)
+        b = np.maximum(np.floor((t[sel] - w[i] + BEFORE_S) / BIN_S).astype(int), 0)
         n = np.asarray(np.bincount(b), dtype=float)
         keep = n > 0
         tb = (np.asarray(np.bincount(b, t[sel]), dtype=float) / np.maximum(n, 1))[keep]
@@ -173,20 +174,21 @@ def figure(out: Path, res: dict, grid: np.ndarray, mean: np.ndarray, late: np.nd
     f = res["fit"]
     model = f["ps_per_s_per_step"] * answer(grid, f["dead_s"], f["lag_s"])
     fig, ax = plt.subplots(1, 3, figsize=(15, 4.6))
-    label = f"fit, dead time {f['dead_s'] * 1000:.1f} ms, lag {f['lag_s']:.3f} s, {f['ps_per_s_per_step']:.3f} ps/s per step"
+    label = f"fit, dead time {f['dead_s'] * 1000:.1f} ms, lag {f['lag_s']:.3f} s, {f['ps_per_s_per_step']:.3f} ps/s per fine step"
     for a, lim in ((ax[0], (-BEFORE_S, grid[-1])), (ax[1], (-0.1, 0.4))):
         sel = (grid >= lim[0]) & (grid <= lim[1])
         a.plot(grid[sel], mean[sel], ".", color="C0", ms=4, label="mean of every change, 10 ms bins")
         a.plot(grid[sel], model[sel], "-", color="C3", lw=1.2, label=label)
         a.axvline(0, color="0.6", lw=0.8)
-        a.set(xlabel="time after the write, read on B's tick (s)", ylabel="θ per fine step of FC (ps)", xlim=lim)
-    ax[0].set_title(f"θ's answer to one fine step of FC ({res['changes']} changes)")
+        a.set(xlabel="time after the command's first start bit, on B's tick (s)",
+              ylabel="change of θ per fine step of FC (ps)", xlim=lim)
+    ax[0].set_title(f"θ's response to one fine step of FC ({res['changes']} changes)")
     ax[1].set_title("The same, its first 0.4 s")
     ax[1].set_ylim(-0.01, float(np.nanmax(model[(grid >= -0.1) & (grid <= 0.4)])) * 1.3 + 0.01)
     ax[0].legend(fontsize=8)
     ax[2].hist(late, bins=np.arange(0, max(80.0, float(late.max()) + 5), 2), color="C2")
-    ax[2].set(xlabel="write done after its step's end (ms)", ylabel="changes",
-              title="When each change of FC was written")
+    ax[2].set(xlabel="command's first start bit after its step's end (ms)", ylabel="changes",
+              title="When each change of FC was sent")
     fig.tight_layout()
     fig.savefig(out / "fc_response.png", dpi=130)
 
@@ -209,7 +211,9 @@ def io_figure(out: Path, after_s: float = 600.0, span_s: float = 8.5) -> None:
     w = np.array([e["written_count"] for e in sets])
     c = np.array([float(e["change"]) for e in sets])
     level = np.array([e["fc"] for e in sets]) - (sets[0]["fc"] - sets[0]["change"])  # FC less its value before the steps
-    up = w[(w >= w[0] + after_s) & (level == res["size"])][0]
+    ups = w[level == res["size"]]
+    later = ups[ups >= w[0] + after_s]
+    up = later[0] if later.size else ups[0]  # a short run has no jump up that late: its first
     t0, t1 = up - 0.5, up - 0.5 + span_s
     pairs = logs.pairs(b)
     t = np.array([p.count + (p.slot - 0.5) / sps for p in pairs])

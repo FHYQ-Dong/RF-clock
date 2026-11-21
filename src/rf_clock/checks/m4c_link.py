@@ -88,6 +88,13 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         fine steps up, back, down and back, each level held
                         ``--fc-step-hold`` s, through the same path
                         (``steer.FCSteps``, experiments/m5_fc_response.py).
+                        ``--steer-actuator pl`` (since 2.5.0.0) runs the same in the PL
+                        (P13, docs/ABI.md 4.16): the algorithm's tables go into the PL,
+                        which takes every step itself and sends FC through its own serial
+                        line (P12) ``--steer-write-delay`` ticks after each step's end; the
+                        FS725 must be on that line (``--fs725 pl``, the TTL-to-RS-232 module
+                        on PMOD1); ``steer`` and ``fc_set`` lines come from the PL's queue
+                        entries.
 
 ``--fc-every S``         on either node with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S
@@ -131,8 +138,11 @@ first lock.  The protocol tests change what is expected; m4c_check.py judges the
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import signal
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -147,7 +157,7 @@ from rf_clock.pl.abi import ABI, ResultCode
 from rf_clock.pl.board import die_c
 from rf_clock.pl.board_config import BoardConfigError
 from rf_clock.pl.client import CommandRejected
-from rf_clock.pl.measurements import OwnMeasurement
+from rf_clock.pl.measurements import OwnMeasurement, SteerStep
 from rf_clock.pl.slots import rx_offset_for
 from rf_clock.pl.tracking import quality_offset
 from rf_clock.pl.waveform import (DEFAULT_BETA, DEFAULT_SAMPLES_PER_SYMBOL, DEFAULT_SPAN_CHIPS, generate_test_chips,
@@ -201,7 +211,9 @@ def steering_law(args, late_s: float, loop: tuple[float, float, float] | None, f
                                            ("lam", args.steer_lambda)) if v is not None}
             if args.steer_ar is not None:
                 overrides["ar"] = tuple(float(a) for a in args.steer_ar.split(","))
-            if args.steer_actuator == "fc":
+            if args.steer_actuator == "pl":  # the PL's command leaves its write delay after the step's end
+                overrides["command_s"] = args.steer_write_delay * 1e-8
+            if args.steer_actuator in ("fc", "pl"):
                 if fc_plant is None:
                     raise steer.SteeringError("the board config has no answer of this FS725's crystal to FC "
                                               "(fs725.fc): measure it with experiments/m5_fll_off.py")
@@ -366,9 +378,13 @@ def main() -> None:
                         help="predictive: cost of a change, ps^2 per unit^2 (default: the step's)")
     parser.add_argument("--steer-response-lag", type=float, default=0.0,
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
-    parser.add_argument("--steer-actuator", choices=("sf", "fc"), default="sf",
+    parser.add_argument("--steer-actuator", choices=("sf", "fc", "pl"), default="sf",
                         help="predictive: what the algorithm sets, SF, or FC with the unit at GA 1 (2.3.0.2; 0.1 s steps, "
-                             "the board config's fs725 fc)")
+                             "the board config's fs725 fc), or FC from the PL (2.5.0.0: P13, the FS725 on --fs725 pl)")
+    parser.add_argument("--steer-write-delay", type=int, default=20000, metavar="TICKS",
+                        help="pl: ticks from a step's end to its FC command (P13 STEER_WRITE_DELAY)")
+    parser.add_argument("--steer-table-s", type=float, default=40.0, metavar="S",
+                        help="pl: seconds of the PL's change tables (P13 STEER_L)")
     parser.add_argument("--fc-model-lag", type=float, default=None, metavar="S",
                         help="FC: the algorithm's model lag (default: the board config's times steer.FC_MODEL_LAG)")
     parser.add_argument("--fc-model-dead", type=float, default=None, metavar="S",
@@ -437,7 +453,8 @@ def main() -> None:
                                               "synced_clear_rms", "fs725", "fc_every", "pps_out_comp",
                                               "pps_out_ps_per_frac", "pps_out_base_frac", "pps_out_comp_at",
                                               "pps_out_comp_window", "steer_actuator", "fc_model_lag",
-                                              "fc_model_dead", "fc_step_size", "fc_step_hold")})
+                                              "fc_model_dead", "fc_step_size", "fc_step_hold",
+                                              "steer_write_delay", "steer_table_s")})
     loop = None
     fc_plant = None
     if args.fs725 is not None:
@@ -445,6 +462,8 @@ def main() -> None:
         try:
             args.fs725, loop = configure_fs725(config, args.fs725 or None, emit)
         except (BoardConfigError, FS725Error) as exc:
+            if args.fs725 == "pl":  # both receive pins' edges at 0: nothing came from the FS725
+                emit("serial", **asdict(pl.serial.status()))
             raise SystemExit(str(exc)) from exc
         assert config is not None  # configure_fs725 refuses a board without one
         fs = config.fs725
@@ -453,6 +472,8 @@ def main() -> None:
              f"loop {loop if loop else 'not measured at this gain'}"
              + (f", FC answer {fc_plant['lag_s']} s lag, {fc_plant['dead_s']} s dead, {fc_plant['ps_per_step']} "
                 f"ps/s per step" if fc_plant else ""))
+        if args.fs725 == "pl":  # which receive pin counts the FS725's replies: the Pmod half of the module
+            emit("serial", **asdict(pl.serial.status()))
     if args.start_file is not None:
         if args.start_at is not None or args.stop_at is not None:
             raise SystemExit("--start-file replaces --start-at and --stop-at")
@@ -472,21 +493,31 @@ def main() -> None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
-        if args.steer_actuator == "fc" and (args.steer_mode not in ("predictive", "steps") or args.steer_target_ns is None
-                                            or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
-            raise SystemExit(f"--steer-actuator fc is for the predictive algorithm or FC steps with --steer-target-ns, "
-                             f"on steps of {sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
-        if args.steer_mode == "steps" and args.steer_actuator != "fc":
-            raise SystemExit("--steer-mode steps steps FC: it needs --steer-actuator fc")
+        if args.steer_actuator in ("fc", "pl") and (args.steer_mode not in ("predictive", "steps")
+                                                    or args.steer_target_ns is None
+                                                    or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
+            raise SystemExit(f"--steer-actuator {args.steer_actuator} is for the predictive algorithm or FC steps with "
+                             f"--steer-target-ns, on steps of {sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
+        if args.steer_mode == "steps" and args.steer_actuator not in ("fc", "pl"):
+            raise SystemExit("--steer-mode steps steps FC: it needs --steer-actuator fc or pl")
+        if args.steer_actuator == "pl" and (args.fs725 != "pl" or args.steer_late_slots <= 0):
+            raise SystemExit("--steer-actuator pl sends FC on the PL's serial line: it needs --fs725 pl and "
+                             "--steer-late-slots above 0")
         late_s = args.steer_late_slots / pl.slots.slots_per_second
         try:
             control = FrequencyControl(args.fs725, emit, set_sf=bool(args.sf_step or args.steer_target_ns is not None),
                                        law=steering_law(args, late_s, loop, fc_plant), step_s=args.steer_step,
                                        late=late_s > 0, keep_sf=args.keep_sf,
                                        actuator=args.steer_actuator if args.steer_target_ns is not None else "sf",
-                                       say=mark)
+                                       say=mark, pl_steering=pl.steering,
+                                       step_slots=round(args.steer_step * pl.slots.slots_per_second),
+                                       late_slots=args.steer_late_slots, write_delay_ticks=args.steer_write_delay,
+                                       table_s=args.steer_table_s)
         except (steer.SteeringError, FS725Error) as exc:
             raise SystemExit(str(exc)) from exc
+        if control.pl is not None:  # P13 would steer on by itself: stop it however this process ends, but SIGKILL
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # experiments/m4c_v2_link.py stops nodes so
+            atexit.register(control.stop_pl)
     step_theta = None
     if args.steer_step < 1:
         step_slots = round(args.steer_step * pl.slots.slots_per_second)
@@ -494,7 +525,8 @@ def main() -> None:
                 or abs(step_slots - args.steer_step * pl.slots.slots_per_second) > 1e-9
                 or pl.slots.slots_per_second % step_slots):
             raise SystemExit("--steer-step below 1 s is for the predictive steering algorithm, in whole slots dividing a second")
-        step_theta = StepTheta(step_slots, args.steer_late_slots, pl.slots.slots_per_second)
+        if args.steer_actuator != "pl":  # in the PL, P13 takes the steps from its own pairs
+            step_theta = StepTheta(step_slots, args.steer_late_slots, pl.slots.slots_per_second)
     comp = None
     if args.pps_out_comp:
         if args.role != "B" or args.pps_out is None or args.steer_target_ns is None:
@@ -557,6 +589,10 @@ def main() -> None:
                  dropped=pl.queue.dropped())
         if reading:
             for entry in pl.queue.read():
+                if isinstance(entry, SteerStep):  # a step P13 took (2.5)
+                    if control is not None:
+                        control.pl_step(entry)
+                    continue
                 kind = "own" if isinstance(entry, OwnMeasurement) else "peer"
                 if not args.no_entries:
                     emit(kind, **asdict(entry))
@@ -735,9 +771,15 @@ def main() -> None:
         pl.pps_out.set_synced(False)  # this node stops measuring: it can no longer vouch for its PPS
         if synced.synced:
             emit("synced", synced=False, reason="end")
+    if control is not None and control.pl is not None:
+        control.pl.disable()  # no FC from predictions once the slots stop
     pl.slots.disable()
     time.sleep(1.5)  # the engine stops at the next PPS edge; the last entries follow
     for entry in pl.queue.read():
+        if isinstance(entry, SteerStep):
+            if control is not None:
+                control.pl_step(entry)
+            continue
         if not args.no_entries:
             emit("own" if isinstance(entry, OwnMeasurement) else "peer", **asdict(entry))
         done = seconds.add(entry)
@@ -748,6 +790,8 @@ def main() -> None:
         emit("second", **done)
     if control is not None:
         control.close()
+    if args.fs725 == "pl":
+        emit("serial", **asdict(pl.serial.status()))
     responses = []
     for at, change in steps:  # the FS725's answer to each SF step
         fit = steer_fit(thetas, at)

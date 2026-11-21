@@ -122,6 +122,50 @@ class ABI:
         QUEUE_TAIL = 0x384
         QUEUE_ENTRIES = 0x388
         QUEUE_DROPPED_CNT = 0x38C
+        SERIAL_CONTROL = 0x400
+        SERIAL_CONFIG = 0x404
+        SERIAL_STATUS = 0x408
+        SERIAL_LINE = 0x40C
+        SERIAL_RX = 0x410
+        SERIAL_LINES_CNT = 0x414
+        SERIAL_CMDS_CNT = 0x418
+        SERIAL_RX_CNT = 0x41C
+        SERIAL_ERR_CNT = 0x420
+        SERIAL_RX_EDGES = 0x424
+        SERIAL_LINE_TICK_LO = 0x428
+        SERIAL_LINE_TICK_HI = 0x42C
+        STEER_CONTROL = 0x440
+        STEER_STATUS = 0x444
+        STEER_STEP = 0x448
+        STEER_WRITE_DELAY = 0x44C
+        STEER_L = 0x450
+        STEER_N = 0x454
+        STEER_P = 0x458
+        STEER_SETTLE = 0x45C
+        STEER_MAX_STEP = 0x460
+        STEER_FC_LIMITS = 0x464
+        STEER_FC_START = 0x468
+        STEER_MAX_SATURATED = 0x46C
+        STEER_STEPS = 0x470
+        STEER_PREFIX_LO = 0x474
+        STEER_PREFIX_HI = 0x478
+        STEER_PREFIX_LEN = 0x47C
+        STEER_COEF_ADDR = 0x480
+        STEER_COEF_HI = 0x484
+        STEER_COEF_LO = 0x488
+        STEER_INDEX = 0x490
+        STEER_FC = 0x494
+        STEER_THETA_LO = 0x498
+        STEER_THETA_HI = 0x49C
+        STEER_MISSING_CNT = 0x4A0
+        STEER_LATE_CNT = 0x4A4
+        STEER_CMD_TICK_LO = 0x4A8
+        STEER_CMD_TICK_HI = 0x4AC
+        STEER_PAIRS_CNT = 0x4B0
+        STEER_SATURATED_CNT = 0x4B4
+        STEER_LMAX = 0x4B8
+        STEER_NMAX = 0x4BC
+        STEER_PMAX = 0x4C0
 
     class CTRL:
         TX_DOORBELL = 0x0
@@ -191,6 +235,7 @@ class ABI:
     class QE:
         TYPE_OWN = 0x1
         TYPE_PEER = 0x2
+        TYPE_STEER = 0x3
         HEADER = 0x0
         PPS_COUNT = 0x1
         SLOT = 0x2
@@ -215,6 +260,19 @@ class ABI:
         P_TRX_LO = 0xB
         P_TRX_HI = 0xC
         P_PHASE = 0xD
+        S_STEP = 0x2
+        S_CMD_LO = 0x3
+        S_CMD_HI = 0x4
+        S_INDEX = 0x5
+        S_THETA_LO = 0x6
+        S_THETA_HI = 0x7
+        S_DF_LO = 0x8
+        S_DF_HI = 0x9
+        S_S_LO = 0xA
+        S_S_HI = 0xB
+        S_FC = 0xC
+        S_REM = 0xD
+        S_OLD = 0xE
 
     class QEF:
         LOCKED = 0x0
@@ -240,14 +298,69 @@ class ABI:
         FLYWHEEL = 0x2
         INVALID = 0x3
 
+    class SERCTL:
+        SEND = 0x0
+        CLEAR = 0x1
+        RX_FLUSH = 0x2
+
+    class SERCFG:
+        BIT_TICKS_LSB = 0x0
+        ENABLE = 0x10
+
+    class SERST:
+        LINE_QUEUED = 0x0
+        TX_ACTIVE = 0x1
+        CMD_PENDING = 0x2
+        LINE_LEN_LSB = 0x8
+        RXD_A = 0x10
+        RXD_B = 0x11
+        RX_LEVEL_LSB = 0x14
+
+    class SERRX:
+        VALID = 0x8
+        LEFT_LSB = 0x10
+
+    class STEERCTL:
+        ENABLE = 0x0
+        ROLE_B = 0x1
+        STEPS = 0x2
+        LOG = 0x3
+
+    class STEERST:
+        ENABLED = 0x0
+        STARTED = 0x1
+        STOPPED = 0x2
+        SETTLING = 0x3
+        LATE = 0x4
+        BUSY = 0x5
+
+    class COEF_TABLE:
+        H = 0x0
+        K = 0x1
+        ALPHA = 0x2
+        AR = 0x3
+        GAMMA = 0x4
+        MEAN2 = 0x5
+        SCALAR = 0x6
+
+    class QESF:
+        MISSING = 0x0
+        SETTLING = 0x1
+        SATURATED = 0x2
+        STOPPED = 0x3
+        FIRST = 0x4
+        LATE = 0x5
+        STEPS = 0x6
+
     TX_REPEAT_MAX = 0xFFFF
     PPSOUT_MIN_OFFSET = 0x8
+    SERIAL_BIT_TICKS_MIN = 0x10
     QUEUE_ENTRY_WORDS = 0x10
     PACKET_FORMAT_VERSION = 0x1
     RX_RESULT_FLAGS_LSB = 0x8
     FAULT_INFO_COUNT_LSB = 0x10
     DESIGN_ID = 0x52434C4B
-    VERSION = 0x00020004
+    VERSION = 0x00020005
 
 class TxState(IntEnum):
     IDLE = 0x0

@@ -160,7 +160,22 @@ module p2_control_regs #(
     input  wire [31:0] ref_phase_beats,
     input  wire [15:0] ref_phase_peak,
     input  wire [63:0] ref_phase_i,
-    input  wire [63:0] ref_phase_q
+    input  wire [63:0] ref_phase_q,
+    // P12 and P13 (2.5): 0x400 .. 0x4FF are decoded there.  ext_wr_ok and
+    // ext_rd_ok/ext_rdata answer the access on the bus now (ext_waddr_live,
+    // ext_wdata_live, ext_raddr); the write itself and a pulse after each read
+    // follow a cycle later.
+    output wire [11:0] ext_waddr_live,
+    output wire [31:0] ext_wdata_live,
+    input  wire        ext_wr_ok,
+    output reg         ext_wr,
+    output reg  [11:0] ext_waddr,
+    output reg  [31:0] ext_wdata,
+    output wire [11:0] ext_raddr,
+    input  wire [31:0] ext_rdata,
+    input  wire        ext_rd_ok,
+    output reg         ext_rd,
+    output reg  [11:0] ext_rd_addr
 );
     `include "src/p_regs.vh"
     `include "src/p_defs.vh"
@@ -177,6 +192,9 @@ module p2_control_regs #(
     assign s_axi_awready = wr_fire;
     assign s_axi_wready  = wr_fire;
     wire [11:0] wr_addr = {s_axi_awaddr[11:2], 2'b00};
+    wire        wr_ext  = (wr_addr[11:8] == 4'h4);
+    assign ext_waddr_live = wr_addr;
+    assign ext_wdata_live = s_axi_wdata;
 
     always @(posedge clk) begin
         tx_doorbell <= 1'b0;
@@ -189,6 +207,7 @@ module p2_control_regs #(
         p8_accept_strongest <= 1'b0;
         p8_accept_earliest  <= 1'b0;
         p8_unlock           <= 1'b0;
+        ext_wr              <= 1'b0;
         if (rst) begin
             s_axi_bvalid <= 1'b0;
             s_axi_bresp  <= RESP_OKAY;
@@ -222,6 +241,14 @@ module p2_control_regs #(
                 s_axi_bresp  <= RESP_OKAY;
                 if (s_axi_wstrb != 4'hF) begin
                     s_axi_bresp <= RESP_SLVERR;
+                end else if (wr_ext) begin
+                    if (ext_wr_ok) begin
+                        ext_wr    <= 1'b1;
+                        ext_waddr <= wr_addr;
+                        ext_wdata <= s_axi_wdata;
+                    end else begin
+                        s_axi_bresp <= RESP_SLVERR;
+                    end
                 end else begin
                     case (wr_addr)
                         REG_CONTROL: begin
@@ -305,6 +332,8 @@ module p2_control_regs #(
     wire rd_fire = !rst && s_axi_arvalid && !s_axi_rvalid;
     assign s_axi_arready = rd_fire;
     wire [11:0] rd_addr = {s_axi_araddr[11:2], 2'b00};
+    wire        rd_ext  = (rd_addr[11:8] == 4'h4);
+    assign ext_raddr = rd_addr;
 
     reg [31:0] tick_snap_hi;
     reg [31:0] pps_snap_hi;
@@ -442,11 +471,19 @@ module p2_control_regs #(
             REG_REF_PHASE_I_HI:       rd_value = ref_phase_i[63:32];
             REG_REF_PHASE_Q_LO:       rd_value = ref_phase_q[31:0];
             REG_REF_PHASE_Q_HI:       rd_value = ref_phase_q[63:32];
-            default:             rd_ok    = 1'b0;
+            default: begin
+                if (rd_ext) begin
+                    rd_value = ext_rdata;
+                    rd_ok    = ext_rd_ok;
+                end else begin
+                    rd_ok    = 1'b0;
+                end
+            end
         endcase
     end
 
     always @(posedge clk) begin
+        ext_rd <= 1'b0;
         if (rst) begin
             s_axi_rvalid   <= 1'b0;
             s_axi_rdata    <= 32'd0;
@@ -470,6 +507,10 @@ module p2_control_regs #(
                 end
                 if (rd_addr == REG_PPS_OUT_TICK_LO)
                     pps_out_snap_hi <= pps_out_tick[63:32];
+                if (rd_ext && ext_rd_ok) begin
+                    ext_rd      <= 1'b1;
+                    ext_rd_addr <= rd_addr;
+                end
             end
         end
     end

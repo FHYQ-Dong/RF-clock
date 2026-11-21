@@ -662,11 +662,14 @@ def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.
     SF, B's unit at GA 1 (``FrequencyControl`` with ``actuator="fc"``).  ``plant``: the board
     config's ``fs725["fc"]``, the crystal's answer to FC (``lag_s``, ``dead_s``, ``ps_per_step``);
     the algorithm's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``) unless ``lag_s`` and
-    ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2."""
+    ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2.
+    ``command_s`` (since 2.5) is when each command leaves after its step's end: the PL's
+    STEER_WRITE_DELAY for the steering in the PL (P13), the setting's 0.03 s otherwise."""
     if step_s not in FC_STEP_SETTINGS:
         raise SteeringError(f"no FC settings for steps of {step_s} s (known: {sorted(FC_STEP_SETTINGS)})")
     settings = dict(FC_STEP_SETTINGS[step_s])
-    command_s = settings.pop("command_s")
+    command_s = kwargs.pop("command_s", settings.pop("command_s"))
+    settings.pop("command_s", None)
     settings.update(kwargs)
     gain = float(plant["ps_per_step"])
     settings["lam"] = settings["lam"] * gain ** 2
