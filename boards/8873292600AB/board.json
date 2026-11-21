@@ -193,17 +193,17 @@
       }
     },
     "fc": {
-      "lag_s": 1.12,
-      "dead_s": 0.0,
-      "ps_per_step": 0.86,
+      "lag_s": 0.994,
+      "dead_s": 0.0235,
+      "ps_per_step": 0.849,
       "measured": {
-        "time": "2026-11-06T08:28:00+00:00",
-        "rf_clock": "2.3.0.1",
+        "time": "2026-11-12T21:40:00+00:00",
+        "rf_clock": "2.4.0.1",
         "gain": 1,
-        "run": "results/m4c-v2-acquire-20261106_030506",
-        "steps": 12,
-        "step": 200,
-        "note": "12 FC steps pooled: dead 0-0.1 s, lag 1.0-1.17 s, 0.86 ps/s per step"
+        "run": "results/m4c-v2-fc-steps-20261112_163935",
+        "steps": 1183,
+        "step": 500,
+        "note": "experiments/m5_fc_response.py: theta pair by pair, the dead time counted from the tick read right after each write; sd between the run's quarters 1.7 ms, 0.028 s, 0.021 ps/s; before: lag 1.12 s, dead 0, 0.86 ps/s from 12 steps (results/m4c-v2-acquire-20261106_030506)"
       }
     }
   }

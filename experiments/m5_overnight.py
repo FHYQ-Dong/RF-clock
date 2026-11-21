@@ -12,7 +12,8 @@ repeatable the constant and theta - theta0 are over many new starts (PL.open, a 
 acquisition, a new PP).
 
 Procedure.  ``--runs`` runs of ``--seconds`` each of experiments/m4c_v2_link.py ``--scenario
-steer`` (B through FC; A logs its FS725's FC every second) with ``--scope --scope-out-pps``
+steer`` (B through FC with the package's settings; A logs its FS725's FC every second unless
+``--a-args`` leaves its FS725 out) with ``--scope --scope-out-pps``
 (C1, C2 the two 10 MHz, C3, C4 the two output PPS), back to back: a run per hour, so that each
 starts with B's FC fine DAC near its middle and a scope that hangs costs one run.  Then, with
 ``--free-seconds``, one run with both clocks free (``--scenario free``, the two 10 MHz on the
@@ -22,7 +23,7 @@ after each, B's FS725 must be back at its board config's gain, or it is put back
 runs.jsonl lists the runs.  Results in results/m5-overnight-<time>/ (the runs in their own
 results/m4c-v2-*/ directories).
 
-    .venv/bin/python experiments/m5_overnight.py [--runs 8] [--seconds 3600] [--free-seconds 7200]
+    .venv/bin/python experiments/m5_overnight.py [--runs 8] [--seconds 3600] [--free-seconds 7200] [--a-args ARGS]
 """
 
 from __future__ import annotations
@@ -72,12 +73,13 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=8)
     parser.add_argument("--seconds", type=int, default=3600)
     parser.add_argument("--free-seconds", type=int, default=7200, help="0: no free run at the end")
+    parser.add_argument("--a-args", default="--pps-trig --fs725 --fc-every 1",
+                        help="node A's arguments (without --fs725 when A's FS725 cannot be reached)")
     args = parser.parse_args()
     out = results_dir("m5-overnight")
-    plan = [("steer", args.seconds, ["--scope-out-pps", "--node-args=--pps-out 20",
-                                     "--a-args=--pps-trig --fs725 --fc-every 1"])] * args.runs
+    plan = [("steer", args.seconds, ["--scope-out-pps", "--node-args=--pps-out 20", f"--a-args={args.a_args}"])] * args.runs
     if args.free_seconds:
-        plan.append(("free", args.free_seconds, ["--a-args=--pps-trig --fs725 --fc-every 1"]))
+        plan.append(("free", args.free_seconds, [f"--a-args={args.a_args}"]))
     for i, (scenario, seconds, extra) in enumerate(plan):
         others = busy()
         if others:

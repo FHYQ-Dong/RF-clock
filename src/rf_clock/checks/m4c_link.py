@@ -83,7 +83,11 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         model the board config's ``fs725.fc`` made slower
                         (``--fc-model-lag``, ``--fc-model-dead`` override it);
                         ``rf_clock.twtt.control.FrequencyControl``, results/precision-20261105
-                        section 8.
+                        section 8.  ``--steer-mode steps`` with ``--steer-actuator fc``
+                        (since 2.4.0.1) does not steer but steps FC by ``--fc-step-size``
+                        fine steps up, back, down and back, each level held
+                        ``--fc-step-hold`` s, through the same path
+                        (``steer.FCSteps``, experiments/m5_fc_response.py).
 
 ``--fc-every S``         on either node with ``--fs725``: read the FS725's FC (the frequency lock
                         loop's tuning of its crystal, PRS10 manual p. 24-25) every S
@@ -187,6 +191,8 @@ def steering_law(args, late_s: float, loop: tuple[float, float, float] | None, f
     target_ps = args.steer_target_ns * 1000
 
     def build(sf0: int, gain: int):
+        if args.steer_mode == "steps":
+            return steer.FCSteps(sf0, args.fc_step_size, round(args.fc_step_hold / args.steer_step))
         if args.steer_mode == "predictive":
             if loop is None:
                 raise steer.SteeringError(f"the board config has no frequency lock loop of this FS725 at GA {gain}: "
@@ -340,9 +346,13 @@ def main() -> None:
                         help="... and its 60 s mean below this")
     parser.add_argument("--synced-clear-rms", type=float, default=200.0, metavar="PS",
                         help="... and cleared when its 10 s rms exceeds this")
-    parser.add_argument("--steer-mode", choices=("kalman", "predictive"), default="kalman",
+    parser.add_argument("--steer-mode", choices=("kalman", "predictive", "steps"), default="kalman",
                         help="kalman: rf_clock.twtt.steer.Steering (tau, interval); predictive: PredictiveSteering, "
-                             "a correction every second from the FS725's loop at its GA (board config) and an AR prediction")
+                             "a correction every second from the FS725's loop at its GA (board config) and an AR prediction; "
+                             "steps: with --steer-actuator fc, FC stepped on a schedule instead (steer.FCSteps, 2.4.0.1)")
+    parser.add_argument("--fc-step-size", type=int, default=400, metavar="N",
+                        help="steps: fine steps of FC up, back, down and back")
+    parser.add_argument("--fc-step-hold", type=float, default=2.0, metavar="S", help="steps: seconds at each level")
     parser.add_argument("--steer-late-slots", type=int, default=0, metavar="N",
                         help="steer on theta over the last N slots of each step (with 1 s steps the second "
                              "lines get theta_late_ns)")
@@ -427,7 +437,7 @@ def main() -> None:
                                               "synced_clear_rms", "fs725", "fc_every", "pps_out_comp",
                                               "pps_out_ps_per_frac", "pps_out_base_frac", "pps_out_comp_at",
                                               "pps_out_comp_window", "steer_actuator", "fc_model_lag",
-                                              "fc_model_dead")})
+                                              "fc_model_dead", "fc_step_size", "fc_step_hold")})
     loop = None
     fc_plant = None
     if args.fs725 is not None:
@@ -462,10 +472,12 @@ def main() -> None:
             raise SystemExit("--sf-step, --steer-target-ns and --fc-every need --fs725")
         if args.steer_target_ns is not None and args.role != "B":
             raise SystemExit("--steer-target-ns is for node B")
-        if args.steer_actuator == "fc" and (args.steer_mode != "predictive" or args.steer_target_ns is None
+        if args.steer_actuator == "fc" and (args.steer_mode not in ("predictive", "steps") or args.steer_target_ns is None
                                             or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
-            raise SystemExit(f"--steer-actuator fc is for the predictive algorithm with --steer-target-ns, on steps of "
-                             f"{sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
+            raise SystemExit(f"--steer-actuator fc is for the predictive algorithm or FC steps with --steer-target-ns, "
+                             f"on steps of {sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
+        if args.steer_mode == "steps" and args.steer_actuator != "fc":
+            raise SystemExit("--steer-mode steps steps FC: it needs --steer-actuator fc")
         late_s = args.steer_late_slots / pl.slots.slots_per_second
         try:
             control = FrequencyControl(args.fs725, emit, set_sf=bool(args.sf_step or args.steer_target_ns is not None),
@@ -478,7 +490,7 @@ def main() -> None:
     step_theta = None
     if args.steer_step < 1:
         step_slots = round(args.steer_step * pl.slots.slots_per_second)
-        if (args.steer_mode != "predictive" or args.steer_target_ns is None
+        if (args.steer_mode not in ("predictive", "steps") or args.steer_target_ns is None
                 or abs(step_slots - args.steer_step * pl.slots.slots_per_second) > 1e-9
                 or pl.slots.slots_per_second % step_slots):
             raise SystemExit("--steer-step below 1 s is for the predictive steering algorithm, in whole slots dividing a second")
@@ -552,7 +564,7 @@ def main() -> None:
                 if step_theta is not None and step_theta.done:
                     for rec in step_theta.done:
                         if control is not None and first_lock is not None:
-                            control.step(rec, pps_now(pl))
+                            control.step(rec, pps_now(pl), lambda: pps_now(pl))
                     step_theta.done = []
                 if done is not None:
                     emit("second", **done)

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from rf_clock.twtt.steer import (AR4, AR20_STEP_02, AR40_STEP_01, FC_MODEL_DEAD_S, FC_MODEL_LAG, ClockFilter,
-                                  LoopModel, PredictiveSteering, Steering, SteeringError, check_unit, filter_for,
+                                  FCSteps, FCWatch, LoopModel, PredictiveSteering, Steering, SteeringError, check_unit, filter_for,
                                   fit_frequency_ar, fit_loop, fit_sf_response, follow, lag_phase, lag_response,
                                   loop_response, predictive_fc, predictive_for)
 
@@ -341,7 +341,7 @@ def test_old_changes_fold_into_the_linear_tail():
         assert steering.own(k) == pytest.approx(brute, abs=1e-6)
 
 
-FC_PLANT = {"lag_s": 1.12, "dead_s": 0.0, "ps_per_step": 0.86}  # B's crystal at GA 1 (results/precision-20261105)
+FC_PLANT = {"lag_s": 0.994, "dead_s": 0.0235, "ps_per_step": 0.849}  # B's crystal at GA 1 (results/fc-response-20261112)
 
 
 def test_the_crystal_model_answers_as_the_rc():
@@ -356,30 +356,32 @@ def test_the_crystal_model_answers_as_the_rc():
 
 def test_predictive_fc_slows_the_model_and_scales_the_cost():
     law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.05)
-    assert law.step_s == 0.1 and tuple(law.ar) == AR40_STEP_01 and (law.horizon, law.moves) == (30, 4)
-    assert law.lam == pytest.approx(0.08 * 0.86 ** 2) and (law.max_step, law.max_offset) == (1000, 1000)
-    slow = LoopModel.crystal(1.12 * FC_MODEL_LAG, FC_MODEL_DEAD_S, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    assert law.step_s == 0.1 and tuple(law.ar) == AR40_STEP_01 and (law.horizon, law.moves) == (30, 3)
+    assert law.lam == pytest.approx(0.01 * 0.849 ** 2) and (law.max_step, law.max_offset) == (1000, 1000)
+    slow = LoopModel.crystal(0.994 * FC_MODEL_LAG, 0.0235 + FC_MODEL_DEAD_S, 0.849, window=(0.05, 0.1), command_s=0.03,
+                             step_s=0.1)
     assert np.allclose(law.model.answer(np.arange(60)), slow.answer(np.arange(60)))
     given = predictive_fc(0.0, 0, FC_PLANT, late_s=0.05, lag_s=1.25, dead_s=0.2, lam=0.1)
-    other = LoopModel.crystal(1.25, 0.2, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    other = LoopModel.crystal(1.25, 0.2, 0.849, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
     assert np.allclose(given.model.answer(np.arange(60)), other.answer(np.arange(60)))
-    assert given.lam == pytest.approx(0.1 * 0.86 ** 2)
+    assert given.lam == pytest.approx(0.1 * 0.849 ** 2)
     with pytest.raises(SteeringError, match="0.2 s"):
         predictive_fc(0.0, 0, FC_PLANT, step_s=0.2)
 
 
 def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
-    # the 6 s resonance of wandering_pair on a 0.1 s grid; the FS725's response 0.05 s later and 5 % harder
-    # than the measured one, the algorithm's model slower still (FC_MODEL_LAG, FC_MODEL_DEAD_S)
+    # the 6 s resonance of wandering_pair on a 0.1 s grid, its second-to-second change about 14 ps as
+    # theta's on the bench (Allan deviation about 1.5e-11 at 1 s); the FS725's response 30 ms later and
+    # 5 % harder than the one measured, the algorithm's model a little slower (FC_MODEL_LAG, FC_MODEL_DEAD_S)
     rng = np.random.default_rng(6)
     r, w = 0.99, 2 * np.pi * 0.1 / 6
     ar = (2 * r * np.cos(w), -r * r)
     f = np.zeros(5000)
     for i in range(2, f.size):
-        f[i] = ar[0] * f[i - 1] + ar[1] * f[i - 2] + rng.normal(0, 1.0)
+        f[i] = ar[0] * f[i - 1] + ar[1] * f[i - 2] + rng.normal(0, 0.35)
     free = np.cumsum((-66.0 + f) * 0.1) + 2000.0
     law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.05, ar=ar)
-    plant = LoopModel.crystal(1.12, 0.05, 0.86 * 1.05, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+    plant = LoopModel.crystal(0.994, 0.0535, 0.849 * 1.05, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
     asked, changes, theta = [], [], []
     for k, fk in enumerate(free):
         theta.append(fk + (float(np.dot(changes, plant.answer(k - np.asarray(asked)))) if asked else 0.0))
@@ -388,7 +390,115 @@ def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
             asked.append(k)
             changes.append(record["sf"] - (law.sf0 + sum(changes)))
     theta = np.array(theta)
-    assert max(abs(c) for c in changes) <= law.max_step
+    assert max(abs(c) for c in changes) <= law.max_step / 2  # far from the clip, as on the bench
     after = theta[2000:]
-    assert abs(after.mean()) < 2
-    assert np.sqrt(np.mean(after ** 2)) < 0.2 * np.std(np.diff(free[::10]))  # a seventh of the second-to-second variation
+    assert abs(after.mean()) < 1
+    assert np.sqrt(np.mean(after ** 2)) < 0.25 * np.std(np.diff(free[::10]))  # a quarter of the second-to-second change
+
+
+@pytest.mark.parametrize("late", (0.01, 0.06, 0.08, 0.13))
+def test_a_change_that_left_late_is_counted_from_when_it_left(late):
+    # answer_late against the table of a model whose command_s is that time (B's crystal, the model
+    # predictive_fc builds and the one measured): the first-order rest within the bound stated
+    for lag, dead in ((1.4, 0.1), (1.12, 0.0)):
+        model = LoopModel.crystal(lag, dead, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1)
+        exact = LoopModel.crystal(lag, dead, 0.86, window=(0.05, 0.1), command_s=late, step_s=0.1)
+        j = np.arange(1300)
+        bound = {0.01: 1e-6, 0.06: 6e-4, 0.08: 1.3e-3, 0.13: 4.3e-3}[late]
+        assert np.max(np.abs(model.answer_late(j, late) - exact.answer(j))) < bound
+        assert np.allclose(model.answer_late(j, 0.03), model.answer(j))
+
+
+def test_own_counts_each_change_from_when_it_was_written():
+    # a run on 0.1 s steps whose old changes fold into the linear tail, every change written
+    # 0.01-0.05 s after its step (command_s 0.03): own() equals the sum over every change of its
+    # exact answer for when it left, to the first-order rest of answer_late
+    rng = np.random.default_rng(3)
+    free = np.cumsum((-66.0 + rng.normal(0, 8.0, 1500)) * 0.1)
+    model = LoopModel.crystal(1.4, 0.1, 0.86, window=(0.05, 0.1), command_s=0.03, step_s=0.1, table_s=20)
+    steering = PredictiveSteering(target_ps=0.0, sf0=0, ar=(0.5,), horizon=20, moves=2, lam=0.2, model=model,
+                                  max_step=1000, max_offset=10_000)
+    grid = np.arange(0.0525, 0.1, 0.005)
+    asked, changes, lates = np.zeros(0), np.zeros(0), np.zeros(0)
+
+    def brute(k: int) -> float:
+        if not asked.size:
+            return 0.0
+        t = (k - asked)[:, None] * 0.1 - 0.1 - lates[:, None] + grid[None, :]
+        return float(changes @ model.phase(t).mean(axis=1))
+
+    sf = 0
+    for k, f in enumerate(free):
+        record = steering.step(k, f + brute(k))
+        if record["sf"] is not None:
+            late = float(rng.uniform(0.01, 0.05))
+            steering.written(k, late)
+            asked, changes = np.append(asked, k), np.append(changes, record["sf"] - sf)
+            lates = np.append(lates, late)
+            sf = record["sf"]
+    assert steering.old_late != 0 and len(steering.asked) < changes.size  # some folded, late ones among them
+    recent = np.abs(changes[-5:]).sum()  # the first-order rest lies in the first steps after a change
+    for k in (1499, 1510, 1600):
+        assert steering.own(k) == pytest.approx(brute(k), abs=1e-6 + 3e-4 * recent)
+    assert steering._own_ahead(1499)[0] == pytest.approx(steering.own(1500), abs=1e-9)
+    before = steering.own(1499)
+    steering.written(1200, 0.2)  # a step long past, or one without a change: nothing changes
+    assert steering.own(1499) == before
+
+
+class WatchedUnit:
+    """An FS725 for FCWatch: replies come in only after ``delay`` polls."""
+
+    def __init__(self, values: dict[str, str], delay: int = 0) -> None:
+        self.values, self.delay = values, delay
+        self.sent: list[str] = []
+        self.waiting: tuple[str, int] | None = None
+
+    def send_query(self, command: str) -> str:
+        self.sent.append(command)
+        self.waiting = (self.values[command], self.delay)
+        return command
+
+    def reply(self) -> str | None:
+        assert self.waiting is not None
+        reply, left = self.waiting
+        if left:
+            self.waiting = (reply, left - 1)
+            return None
+        self.waiting = None
+        return reply
+
+
+def test_the_fc_watch_checks_the_unit_one_query_a_step_without_waiting():
+    good = {"PL?": "0", "GA?": "1", "FC?": "1676,250", "ST?": "0,0,0,0,128,0"}
+    unit = WatchedUnit(good)
+    watch = FCWatch(unit)
+    for _ in range(9):
+        watch.after_write(1_676_250)
+    assert unit.sent == ["PL?", "GA?", "FC?", "ST?", "PL?", "GA?", "FC?", "ST?", "PL?"]
+    slow = WatchedUnit(good, delay=2)  # a reply two steps late holds the next query back, nothing else
+    watch = FCWatch(slow)
+    for _ in range(4):
+        watch.after_write(1_676_250)
+    assert slow.sent == ["PL?", "GA?"]
+    for bad, match in (({"GA?": "7"}, "GA is 7"), ({"FC?": "1676,260"}, "not the 1676250"),
+                       ({"PL?": "1"}, "PLL is on"), ({"ST?": "0,0,0,3,128,0"}, "rubidium")):
+        watch = FCWatch(WatchedUnit({**good, **bad}))
+        with pytest.raises(SteeringError, match=match):
+            for _ in range(5):
+                watch.after_write(1_676_250)
+    watch = FCWatch(WatchedUnit(good, delay=100), max_wait_steps=5)
+    with pytest.raises(SteeringError, match="no reply to PL"):
+        for _ in range(8):
+            watch.after_write(1_676_250)
+
+
+def test_fc_steps_go_up_back_down_and_back_after_the_settling():
+    law = FCSteps(1_676_250, 400, hold=20, settle=100)
+    fc = {k: law.step(k, 0.0)["sf"] for k in range(300)}
+    assert all(fc[k] is None for k in range(100))
+    assert [fc[k] for k in (100, 120, 140, 160, 180)] == [1_676_650, 1_676_250, 1_675_850, 1_676_250, 1_676_650]
+    assert sum(v is not None for v in fc.values()) == 10
+    law.max_offset = 300  # FrequencyControl's room on the fine DAC
+    with pytest.raises(SteeringError, match="room"):
+        law.step(300, 0.0)

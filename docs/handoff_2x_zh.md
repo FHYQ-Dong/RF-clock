@@ -19,7 +19,7 @@
 
 1. 两块板都装 2.x 的 wheel，方法和以前一样（[docs/ABI_zh.md §9.1](ABI_zh.md)）：`sudo /usr/local/share/pynq-venv/bin/python -m pip install --no-deps --no-index rf_clock-2.3.0.4-py3-none-any.whl`。`experiments/m4c_v2_link.py` 等两个节点都就绪后才让它们开始（`m4c_link --start-file`），这要求两块板上都装 2.3.0.3 或更新的版本。
 2. 接线：每块板接自己的 FS725（10 MHz 和 1PPS）；每块板的 DAC_A 经带通滤波器和衰减器接到对方的 ADC_B；每台 FS725 的 RS-232 口接它所在板的 USB。输出 PPS 在 DAC_B 上。
-3. 把每块板的 FS725 记进它的板级配置，每台设备做一次：`$run -m rf_clock.checks.fs725_loop --port /dev/serial/by-id/... --gain GA --write`（`run` 同 README），B 用 GA 8，A 用 7；端口也会记下，之后运行不用再给。它把 SF 阶跃 200 再回来，共四次，只用 FC 拟合出设备的锁频环，约 3 分钟；不需要另一块板，也不需要链路。此后每次 `m4c_link --fs725` 启动时都会核对设备是不是记录的那台，并设定它的 GA，改了的话发 warning 说明从多少改成多少；配置里没有的设备会让节点停下，直到把它记进去。B 的设备改写 FC 来修正，所以它的那一项里还有晶振对 FC 的响应（`fc`：滞后 1.12 s，死区 0 s，每个细步 0.86 ps/s），用 `experiments/m5_fll_off.py` 测出后手工写进去；B 的已经记好了。
+3. 把每块板的 FS725 记进它的板级配置，每台设备做一次：`$run -m rf_clock.checks.fs725_loop --port /dev/serial/by-id/... --gain GA --write`（`run` 同 README），B 用 GA 8，A 用 7；端口也会记下，之后运行不用再给。它把 SF 阶跃 200 再回来，共四次，只用 FC 拟合出设备的锁频环，约 3 分钟；不需要另一块板，也不需要链路。此后每次 `m4c_link --fs725` 启动时都会核对设备是不是记录的那台，并设定它的 GA，改了的话发 warning 说明从多少改成多少；配置里没有的设备会让节点停下，直到把它记进去。B 的设备改写 FC 来修正，所以它的那一项里还有晶振对 FC 的响应（`fc`：2026-11-12 起为滞后 0.994 s，死区 23.5 ms，每个细步 0.849 ps/s），用 `experiments/m5_fc_response.py` 测出后手工写进去；B 的已经记好了。
 4. 运行链路，可以在 RF-clock-PC 上（两块板空闲时）：
 
    ```bash

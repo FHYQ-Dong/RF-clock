@@ -265,9 +265,13 @@ class ScriptedLaw:
 
     def __init__(self, fc0: int, wanted: list[int | None]) -> None:
         self.fc0, self.wanted, self.max_offset = fc0, wanted, 1000
+        self.written_at: list[tuple[int, float]] = []
 
     def step(self, count: int, theta_ps: float | None) -> dict:
         return {"count": count, "sf": self.wanted.pop(0) if self.wanted else None}
+
+    def written(self, count: int, late_s: float) -> None:
+        self.written_at.append((count, late_s))
 
 
 def test_frequency_control_steers_through_fc_at_ga_1(monkeypatch):
@@ -287,8 +291,11 @@ def test_frequency_control_steers_through_fc_at_ga_1(monkeypatch):
     assert laws[0].max_offset == 822  # what the fine DAC has left above
     assert ("fc_recentred", {"before": [1675, 1250], "after": [1674, 2250]}) in lines
     for index in range(3):
-        control.step({"count": 10, "step": index, "index": index, "theta_late_ns": 0.0}, at_count=10.1 * index)
+        control.step({"count": 10, "step": index, "index": index, "theta_late_ns": 0.0}, at_count=10.1 * index,
+                     now=lambda index=index: 10.0 + 0.1 * (index + 1) + 0.02)
     assert prs.fc == (1674, 2247)
+    assert [f["late_s"] for kind, f in lines if kind == "fc_set"] == pytest.approx([0.02, 0.02])  # after the step's end
+    assert laws[0].written_at == [(0, pytest.approx(0.02)), (2, pytest.approx(0.02))]
     assert sum(1 for c in prs.sent if c.startswith("FC1674")) == 4  # every step, also when the algorithm keeps FC
     assert [f["change"] for kind, f in lines if kind == "fc_set"] == [5, -8]
     prs.ga = 7  # the unit restarted, with its EEPROM's GA: the once-a-second check stops the steering

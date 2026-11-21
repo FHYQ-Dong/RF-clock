@@ -1,6 +1,6 @@
 [project]
 name = "rf-clock"
-version = "2.4.0.0"
+version = "2.4.0.1"
 description = "RF clock control library for Q-LATS Project. This library provides a Python interface for controlling the RF clock overlay on PYNQ platforms."
 readme = "README.md"
 authors = [
@@ -29,6 +29,11 @@ plot = [
 # the rf-clock package. From the Tanglab Gitea registry (yale.internal network).
 instruments = [
     "tanglab-instruments[pyvisa-py]>=0.2.0",
+]
+# GPU replays on the development machine (results/precision-20261105/batch.py --gpu); optional,
+# `uv sync --group gpu`. Below 13, since CuPy 13 and later need a newer numpy than the pin above.
+gpu = [
+    "cupy-cuda12x>=12.3,<13",
 ]
 
 [tool.uv]

@@ -93,6 +93,7 @@ class FrequencyControl:
             if self.fc:
                 gain = self.unit.gain()
                 self.sf0 = self.sf = self._start_fc(gain)
+                self.watch = steer.FCWatch(self.unit)
                 self.steering: Law | None = law(self.sf0, gain) if law is not None else None
                 room = min(self.sf0 - 1000 * self.fc_high - FC_LOW[0], FC_LOW[1] - (self.sf0 - 1000 * self.fc_high))
                 if self.steering is not None and hasattr(self.steering, "max_offset"):
@@ -159,10 +160,12 @@ class FrequencyControl:
         self.steering = None
         self._restore_gain()  # FC steering: the unit's own loop takes the crystal back
 
-    def step(self, record: dict, at_count: float) -> None:
+    def step(self, record: dict, at_count: float, now: Callable[[], float] | None = None) -> None:
         """One step's theta (``StepTheta``) into an algorithm faster than a second; SF written at
-        once without a read-back (``at_count``: now on this node's PPS count, logged), the
-        unit checked once a second."""
+        once without a read-back (``at_count``: now on this node's PPS count, logged).  Through
+        SF the unit is checked once a second.  Through FC, ``now()`` (this node's PPS count) is
+        read right after each write and the algorithm told how long after its step's end the
+        change left, and ``FCWatch`` checks the unit without holding any write back."""
         if self.steering is None:
             return
         try:
@@ -173,17 +176,23 @@ class FrequencyControl:
             if self.fc:  # every step: also undoes what the slow loop pulled since the last
                 new = self.sf if out["sf"] is None else out["sf"]
                 self.unit.write_frequency_control(self.fc_high, new - 1000 * self.fc_high)
+                written = now() if now is not None else None
                 if new != self.sf:
-                    self.emit("fc_set", fc=new, low=new - 1000 * self.fc_high, at_count=at_count, change=new - self.sf)
+                    late = None if written is None else written - (record["count"] + (record["step"] + 1) * self.step_s)
+                    if late is not None and hasattr(self.steering, "written"):
+                        self.steering.written(out["index"], late)  # type: ignore[union-attr]
+                    self.emit("fc_set", fc=new, low=new - 1000 * self.fc_high, at_count=at_count, change=new - self.sf,
+                              written_count=written, late_s=late)
                 self.sf = new
+                self.watch.after_write(new)
             elif out["sf"] is not None:
                 before = self.sf
                 self.unit.write_frequency(out["sf"])
                 self.sf = out["sf"]
                 self.emit("sf", sf=self.sf, why="steer", at_count=at_count, change=self.sf - before)
             self.steps_taken += 1
-            if self.steps_taken % round(1 / self.step_s) == 0:
-                (steer.check_fc if self.fc else steer.check_unit)(self.unit, self.sf)
+            if not self.fc and self.steps_taken % round(1 / self.step_s) == 0:
+                steer.check_unit(self.unit, self.sf)
         except Exception as exc:  # SteeringError, FS725Error: stop steering, keep the link
             self._stopped(exc)
 

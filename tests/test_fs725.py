@@ -197,3 +197,14 @@ def test_write_frequency_control_sends_fc_alone():
         with pytest.raises(ValueError):
             unit.write_frequency_control(high, low)  # type: ignore[arg-type]
     assert not any(c.startswith("FC!") for c in prs.sent)
+
+
+def test_a_query_sent_now_is_answered_later_without_waiting():
+    prs = FakePRS10()
+    unit = FS725(prs)
+    assert unit.send_query("ga ?") == "GA?"
+    assert unit.reply() == "7"
+    assert unit.reply() is None  # nothing more came in
+    prs.restart_pending = True
+    unit.send_query("FC?")
+    assert unit.reply() == "1675,1618"  # the restart's PRS_10 line skipped

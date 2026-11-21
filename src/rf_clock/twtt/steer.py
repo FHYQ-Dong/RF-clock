@@ -92,7 +92,7 @@ from typing import Any, Iterator, Sequence
 
 import numpy as np
 
-from rf_clock.fs725 import FC_HIGH, FC_LOW, FS725Error
+from rf_clock.fs725 import FC_HIGH, FC_LOW, FS725Error, Status, parse_fc
 
 GATE = 5.0  # reject a theta further than this many standard deviations from the prediction
 MAX_REJECTS = 10  # rejections in a row after which the filter starts again
@@ -289,18 +289,21 @@ STEP_DT = 0.02  # s, the grid of the loop's step response
 # Steering through FC (``predictive_fc``), B's unit at GA 1: the AR model of theta's frequency on
 # 0.1 s steps (40 of them, fitted on B's record at GA 1, results/m4c-v2-acquire-20261106_030506);
 # the algorithm's settings, lam per (ps/s)^2 as for SF (scaled by the FS725's gain squared for FC's
-# steps), changes of up to 1000 fine steps; and its model slower than the FS725's response measured, the lag
-# times FC_MODEL_LAG and the dead time plus FC_MODEL_DEAD_S: in replay (results/precision-20261105
-# section 8) that holds theta to 4.6-5.6 ps rms with the FS725's lag 0.8-1.1 s, dead time up to
-# 0.1 s and gain +-10 %, and oscillates once its dead time is 0.2 s
+# steps), changes of up to 1000 fine steps; and its model a little slower than the FS725's response
+# measured, the lag times FC_MODEL_LAG and the dead time plus FC_MODEL_DEAD_S.  Since 2.4.0.1, with
+# each change counted from its own write and B's response measured to a few ms (lag 0.994 s, dead
+# time 23.5 ms after the write), these leave theta 2.73 ps rms in replay on B's GA 1 record and at most
+# 3.53 ps with the FS725 30 ms later, 10 % faster or slower or 15 % harder or softer, and held theta to
+# 2.77-2.88 ps on the bench against 4.44-4.94 ps for the settings before (lag x 1.25, dead time + 0.1 s,
+# lam 0.08 or 0.04, 4 or 3 changes; results/fc-response-20261112)
 AR40_STEP_01 = (0.3493, 0.4318, 0.2519, 0.0724, -0.001, -0.0456, -0.05, -0.047, -0.0346, -0.0154,
                 -0.0204, -0.0002, 0.0018, 0.004, 0.0113, -0.0014, 0.0057, -0.0149, -0.0007, 0.0021,
                 -0.0126, -0.0041, -0.0036, -0.004, 0.0231, 0.0197, -0.0042, 0.0039, -0.019, -0.0016,
                 0.0122, -0.0109, 0.0011, -0.0066, -0.0004, 0.0035, 0.0105, 0.0131, 0.0206, -0.0201)
 FC_STEP_SETTINGS: dict[float, dict[str, Any]] = {
-    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=4, lam=0.08, command_s=0.03, max_step=1000, max_offset=1000)}
-FC_MODEL_LAG = 1.25
-FC_MODEL_DEAD_S = 0.1
+    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=3, lam=0.01, command_s=0.03, max_step=1000, max_offset=1000)}
+FC_MODEL_LAG = 1.1
+FC_MODEL_DEAD_S = 0.02
 FC_TOLERANCE = 3  # fine steps between the FC last written and FC? (the slow loop's pull in a step)
 
 
@@ -401,10 +404,12 @@ class LoopModel:
                  command_s: float = 0.15, table_s: int = 120, step_s: float = 1.0,
                  response: np.ndarray | None = None) -> None:
         y = loop_response(k, lag_s, dead_s) if response is None else np.asarray(response, dtype=float)
+        self._y = y
         self._phase = np.concatenate([[0.0], np.cumsum(y[:-1]) * STEP_DT])
         self._t = np.arange(self._phase.size) * STEP_DT
         self._final = float(y[-1])
         self.step_s = step_s
+        self.command_s = command_s
         # the window's mean from 5 ms midpoints, the phase interpolated: rounding to the 20 ms
         # grid put times exactly half-way between grid points (0.03 s, 0.15 s after a step's
         # end), where round-half-to-even made the table jagged from one step to the next, and
@@ -413,6 +418,10 @@ class LoopModel:
         n = int(round(table_s / step_s))
         self._table = np.array([float(np.mean(self.phase(j * step_s - step_s - command_s + grid)))
                                 for j in range(n + 1)])
+        # the frequency's window mean at the same times, for changes that leave later or earlier
+        # than command_s (answer_late)
+        self._rate = np.array([float(np.mean(self.frequency(j * step_s - step_s - command_s + grid)))
+                               for j in range(n + 1)])
 
     @classmethod
     def crystal(cls, lag_s: float, dead_s: float, gain: float, **kwargs: Any) -> "LoopModel":
@@ -426,6 +435,25 @@ class LoopModel:
         span = self._t[-1]
         inside = np.interp(s, self._t, self._phase)
         return np.where(s <= 0, 0.0, np.where(s <= span, inside, self._phase[-1] + (s - span) * self._final))
+
+    def frequency(self, s: np.ndarray | float) -> np.ndarray:
+        """The rate of theta (ps/s) a unit change gives, s seconds after it leaves (interpolated)."""
+        s = np.asarray(s, dtype=float)
+        return np.where(s <= 0, 0.0, np.interp(s, self._t, self._y, right=self._final))
+
+    def rate(self, j: np.ndarray | int) -> np.ndarray:
+        """The frequency's mean over the window of step k for a unit change asked for in step k - j."""
+        j = np.asarray(j)
+        return np.where(j <= self.last, self._rate[np.clip(j, 0, self.last)], self._final)
+
+    def answer_late(self, j: np.ndarray | int, late_s: np.ndarray | float) -> np.ndarray:
+        """``answer(j)`` for a change that left ``late_s`` after the end of its step instead of
+        ``command_s``.  To first order in the difference, the change has gained less phase by
+        the difference times its frequency.  What that leaves out lies in the first steps after
+        the change and grows with the difference squared, at most 1.2e-3 ps per fine step of FC
+        for a change 0.05 s late on B's crystal and 4.2e-3 ps for 0.1 s (test_steer); taking
+        no account of the difference would leave 0.077 ps per fine step for good for 0.09 s."""
+        return self.answer(j) - (np.asarray(late_s) - self.command_s) * self.rate(j)
 
     @property
     def last(self) -> int:
@@ -479,8 +507,10 @@ class PredictiveSteering:
     free: list[float] = field(default_factory=list)  # theta less B's own corrections, one per step from first_count
     asked: deque = field(default_factory=deque)  # step that asked for each change within the model's table
     changes: deque = field(default_factory=deque)
+    late: deque = field(default_factory=deque)  # s after the end of its step each change left (written)
     old_total: float = 0.0  # the changes older than the table, summed (their answer is linear: LoopModel.tail)
     old_moment: float = 0.0  # ... each times its step
+    old_late: float = 0.0  # ... each times how much later than the model's command_s it left
     remainder: float = 0.0
     saturated_since: int | None = None
 
@@ -497,8 +527,10 @@ class PredictiveSteering:
         """The phase the corrections so far give theta in step ``count``, the last step taken
         or a later one (older changes are folded for those)."""
         total = self.model.tail(count, self.old_total, self.old_moment) if self.old_total or self.old_moment else 0.0
+        total -= self.old_late * self.model._final
         if self.asked:
-            total += float(np.dot(self.changes, self.model.answer(count - np.asarray(self.asked))))
+            total += float(np.dot(self.changes, self.model.answer_late(count - np.asarray(self.asked),
+                                                                      np.asarray(self.late))))
         return total
 
     def _own_ahead(self, count: int) -> np.ndarray:
@@ -506,9 +538,12 @@ class PredictiveSteering:
         ahead = count + np.arange(1, self.horizon + 1)
         rate = self.model.step_s * self.model._final
         out = (self.old_total * (float(self.model.answer(self.model.last)) - self.model.last * rate)
-               + rate * (ahead * self.old_total - self.old_moment))
+               + rate * (ahead * self.old_total - self.old_moment) - self.old_late * self.model._final)
         if self.asked:
-            out = out + self.model.answer(ahead[:, None] - np.asarray(self.asked)[None, :]) @ np.asarray(self.changes)
+            j = ahead[:, None] - np.asarray(self.asked)[None, :]
+            changes = np.asarray(self.changes)
+            out = (out + self.model.answer(j) @ changes
+                   - self.model.rate(j) @ (changes * (np.asarray(self.late) - self.model.command_s)))
         return out
 
     def _fold(self, count: int) -> None:
@@ -516,9 +551,10 @@ class PredictiveSteering:
         so that ``own`` costs the same at any age (at 0.2 s steps it summed every change since
         the start, and after 13 minutes the node fell behind its queue)."""
         while self.asked and count - self.asked[0] > self.model.last + self.horizon + 1:
-            asked, change = self.asked.popleft(), self.changes.popleft()
+            asked, change, late = self.asked.popleft(), self.changes.popleft(), self.late.popleft()
             self.old_total += change
             self.old_moment += change * asked
+            self.old_late += change * (late - self.model.command_s)
 
     def _predict(self, steps: int) -> list[float]:
         """The free frequency (ps/s) of the next ``steps`` steps."""
@@ -580,8 +616,16 @@ class PredictiveSteering:
             record["sf"] = sf
             self.asked.append(count)
             self.changes.append(sf - self.sf)
+            self.late.append(self.model.command_s)  # until ``written`` says when it left
             self.sf = sf
         return record
+
+    def written(self, count: int, late_s: float) -> None:
+        """The change asked for in step ``count`` left ``late_s`` after the end of that step (the
+        node reads its tick right after the write); ``own`` then counts it from then on, not
+        from the model's ``command_s``.  Nothing for a step that asked for no change."""
+        if self.asked and self.asked[-1] == count:
+            self.late[-1] = float(late_s)
 
     def _next_free(self) -> float:
         """The free-running clocks' theta of a step without a measurement, as predicted."""
@@ -628,20 +672,94 @@ def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.
     return PredictiveSteering(target_ps=target_ps, sf0=fc0, model=model, **settings)
 
 
+class FCSteps:
+    """Not a steering algorithm but FC stepped on a schedule, to measure the FS725's response to
+    FC through the same path as the steering (``m4c_link --steer-mode steps``,
+    experiments/m5_fc_response.py).  After ``settle`` steps FC goes ``size`` fine steps up, back,
+    down and back, each level held ``hold`` steps, theta ignored."""
+
+    def __init__(self, fc0: int, size: int, hold: int, settle: int = 100) -> None:
+        if size <= 0 or hold <= 0:
+            raise ValueError(f"FC steps need a size and a hold above 0: {size}, {hold}")
+        self.sf0, self.size, self.hold, self.settle = fc0, size, hold, settle
+        self.max_offset = size  # FrequencyControl lowers it to the fine DAC's room
+
+    def step(self, count: int, theta_ps: float | None) -> dict:
+        if self.size > self.max_offset:
+            raise SteeringError(f"FC steps of {self.size} need that much room; the fine DAC has {self.max_offset}")
+        record: dict[str, Any] = {"count": count, "theta_ps": theta_ps, "sf": None}
+        k = count - self.settle
+        if k >= 0 and k % self.hold == 0:
+            record["sf"] = self.sf0 + (1, 0, -1, 0)[(k // self.hold) % 4] * self.size
+        return record
+
+
+FC_CHECKS = ("PL?", "GA?", "FC?", "ST?")
+
+
 def check_fc(unit: Any, fc: int) -> None:
     """Now and then while steering through FC: the 1 pps PLL still off, GA still 1 and the unit
-    locked (else its 1PPS stops), and FC within ``FC_TOLERANCE`` of the value last written."""
-    if unit.phase_lock():
-        raise SteeringError("the FS725's 1 pps PLL is on again (did the unit restart?): steering stops")
-    gain = unit.gain()
-    if gain != 1:
-        raise SteeringError(f"the FS725's GA is {gain}, not the 1 FC steering set (did the unit restart?): steering stops")
-    high, low = unit.frequency_control()
-    if abs(1000 * high + low - fc) > FC_TOLERANCE:
-        raise SteeringError(f"the FS725's FC is {high},{low} ({1000 * high + low}), not the {fc} last written: "
-                            "steering stops")
-    if not unit.status().rb_locked:
-        raise SteeringError("the FS725 lost its rubidium lock: steering stops")
+    locked (else its 1PPS stops), and FC within ``FC_TOLERANCE`` of the value last written.
+    Each query waits for its reply; the steering itself uses ``FCWatch``, which does not."""
+    for command in FC_CHECKS:
+        check_fc_reply(command, unit.query(command), fc)
+
+
+def check_fc_reply(command: str, reply: str, fc: int) -> None:
+    """One of ``check_fc``'s checks, on the reply to ``command`` (one of ``FC_CHECKS``) sent
+    right after FC ``fc`` was written."""
+    if command in ("PL?", "GA?"):
+        try:
+            value = int(reply)
+        except ValueError:
+            raise FS725Error(f"{command} returned {reply!r}") from None
+        if command == "PL?" and value == 1:
+            raise SteeringError("the FS725's 1 pps PLL is on again (did the unit restart?): steering stops")
+        if command == "GA?" and value != 1:
+            raise SteeringError(f"the FS725's GA is {value}, not the 1 FC steering set (did the unit restart?): "
+                                "steering stops")
+    elif command == "FC?":
+        high, low = parse_fc(reply)
+        if abs(1000 * high + low - fc) > FC_TOLERANCE:
+            raise SteeringError(f"the FS725's FC is {high},{low} ({1000 * high + low}), not the {fc} last written: "
+                                "steering stops")
+    elif command == "ST?":
+        if not Status.parse(reply).rb_locked:
+            raise SteeringError("the FS725 lost its rubidium lock: steering stops")
+    else:
+        raise ValueError(f"not one of the FC checks {FC_CHECKS}: {command!r}")
+
+
+class FCWatch:
+    """``check_fc`` spread over the steps of the steering through FC.  Right after each step's FC
+    write one query goes out (``FC_CHECKS`` in turn), and its reply is read right after the next
+    step's write without waiting, so that no write waits for the unit.  The blocking ``check_fc``
+    once a second held the next step's write back by about 100 ms and the one after by about
+    35 ms (results/fc-steering-20261112).  A reply that has not come after ``max_wait_steps``
+    steps stops the steering."""
+
+    def __init__(self, unit: Any, max_wait_steps: int = 5) -> None:
+        self.unit = unit
+        self.max_wait_steps = max_wait_steps
+        self.turn = 0
+        self.pending: tuple[str, int] | None = None  # the query out, and the FC written just before it
+        self.waited = 0
+
+    def after_write(self, fc: int) -> None:
+        """Called right after each step's write of FC ``fc``."""
+        if self.pending is not None:
+            reply = self.unit.reply()
+            if reply is None:
+                self.waited += 1
+                if self.waited > self.max_wait_steps:
+                    raise SteeringError(f"no reply to {self.pending[0]} from the FS725 in {self.waited} steps: "
+                                        "steering stops")
+                return
+            check_fc_reply(self.pending[0], reply, self.pending[1])
+        command = FC_CHECKS[self.turn % len(FC_CHECKS)]
+        self.turn += 1
+        self.pending = (self.unit.send_query(command), fc)
+        self.waited = 0
 
 
 def fit_sf_response(counts: Sequence[float], theta_ps: Sequence[float], at_count: float, *,

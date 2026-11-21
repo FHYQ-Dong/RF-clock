@@ -111,11 +111,12 @@ class SerialPort:
         os.write(self.fd, data)
 
     def read_line(self, timeout: float) -> bytes | None:
-        """Up to the next carriage return, without it; None if none came in ``timeout``."""
+        """Up to the next carriage return, without it; None if none came in ``timeout`` (0: take
+        what has come in already, without waiting)."""
         deadline = time.monotonic() + timeout
         while b"\r" not in self.rest:
-            left = deadline - time.monotonic()
-            if left <= 0 or not select.select([self.fd], [], [], left)[0]:
+            left = max(0.0, deadline - time.monotonic())
+            if not select.select([self.fd], [], [], left)[0]:
                 return None
             self.rest += os.read(self.fd, 256)
         line, self.rest = self.rest.split(b"\r", 1)
@@ -136,6 +137,17 @@ class Status:
     """The six status bytes of ``ST?``.  The PRS10 latches each bit until it is read."""
 
     bytes: tuple[int, ...]
+
+    @classmethod
+    def parse(cls, reply: str) -> Status:
+        """The reply to ``ST?``, six comma-separated bytes."""
+        try:
+            values = tuple(int(v) for v in reply.split(","))
+        except ValueError:
+            values = ()
+        if len(values) != 6:
+            raise FS725Error(f"ST? returned {reply!r}")
+        return cls(values)
 
     def conditions(self) -> list[str]:
         """The condition of every set bit, by the PRS10 manual."""
@@ -158,6 +170,15 @@ class Status:
         return bool(self.bytes[5] & 0b0110_0000)
 
 
+def parse_fc(reply: str) -> tuple[int, int]:
+    """The reply to ``FC?``, the (high, low) DAC."""
+    try:
+        high, low = (int(v) for v in reply.split(","))
+    except ValueError as exc:
+        raise FS725Error(f"FC? returned {reply!r}") from exc
+    return high, low
+
+
 class FS725:
     """One FS725 on a serial port.  ``log`` receives every setting written, as a dict."""
 
@@ -177,18 +198,33 @@ class FS725:
 
     def query(self, command: str) -> str:
         """Send a query (``SF?``, ``FC!?``, ``AD10?``) and return its reply."""
+        command = self.send_query(command)
+        line = self._line(self.timeout)
+        if line is None:
+            raise FS725Error(f"no reply to {command} within {self.timeout} s")
+        return line
+
+    def send_query(self, command: str) -> str:
+        """Send a query without waiting for its reply, which ``reply`` takes later; the
+        command as sent.  For a loop that must not wait on the unit, such as the steering
+        through FC, whose writes the blocking checks once delayed by about 100 ms."""
         command = command.replace(" ", "").upper()
         if not command.endswith("?") or len(command) < 3 or not command[:2].isalpha():
             raise ValueError(f"not a query: {command!r}")
         self.port.flush_input()
         self.port.write(command.encode() + b"\r")
-        line = self.port.read_line(self.timeout)
+        return command
+
+    def reply(self) -> str | None:
+        """The reply to the query ``send_query`` sent, if it has come in by now; None otherwise."""
+        return self._line(0.0)
+
+    def _line(self, timeout: float) -> str | None:
+        line = self.port.read_line(timeout)
         if line == b"PRS_10":  # the unit restarted just now; its reply follows
             self.log({"time": time.time(), "event": "unit restarted (PRS_10)"})
-            line = self.port.read_line(self.timeout)
-        if line is None:
-            raise FS725Error(f"no reply to {command} within {self.timeout} s")
-        return line.decode("ascii", "replace").strip()
+            line = self.port.read_line(timeout)
+        return None if line is None else line.decode("ascii", "replace").strip()
 
     def _int(self, command: str) -> int:
         reply = self.query(command)
@@ -214,14 +250,7 @@ class FS725:
 
     def status(self) -> Status:
         """The six status bytes; reading clears the latched bits."""
-        reply = self.query("ST?")
-        try:
-            values = tuple(int(v) for v in reply.split(","))
-        except ValueError:
-            values = ()
-        if len(values) != 6:
-            raise FS725Error(f"ST? returned {reply!r}")
-        return Status(values)
+        return Status.parse(self.query("ST?"))
 
     def frequency(self) -> int:
         """SF: the frequency offset in parts in 1e12, whichever source set it (pot, SF, 1 pps PLL)."""
@@ -281,12 +310,7 @@ class FS725:
         0.97e-12 measured on B's unit (results/fs725-fll-20261105).  It changed between
         most reads 0.1 s apart, so more often than the loop's 0.2 s frame; about 30 reads
         a second are possible."""
-        reply = self.query("FC?")
-        try:
-            high, low = (int(v) for v in reply.split(","))
-        except ValueError as exc:
-            raise FS725Error(f"FC? returned {reply!r}") from exc
-        return high, low
+        return parse_fc(self.query("FC?"))
 
     def write_frequency_control(self, high: int, low: int) -> None:
         """Set FC, the crystal's tuning, without reading it back, for an algorithm that writes it

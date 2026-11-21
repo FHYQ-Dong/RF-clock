@@ -35,7 +35,9 @@ from 120 s to 240 s (theta's rate must rise by 100 ps/s), and ``steer`` steers B
 FS725 so that theta goes to theta0, through FC with the predictive algorithm on 0.1 s steps
 (``--steer-actuator fc``, since rf-clock 2.3.0.2; ``--b-args`` overrides it), the shared-reference theta of the wiring on the bench
 (links/887329260072A_8873292600AB.json: its ``current`` wiring, or ``--wiring NAME``;
-``--target-ns`` overrides it).  B's FS725 is the one its board config names, on the port
+``--target-ns`` overrides it).  ``fc-steps`` (rf-clock 2.4.0.1 on both boards) steps B's FC on a
+schedule through the same path instead, B keeping its queue entries, for the FS725's response
+(experiments/m5_fc_response.py).  B's FS725 is the one its board config names, on the port
 the config records (``m4c_link --fs725``).  ``--scope`` logs the two FS725s' 10 MHz on the
 HDO9404-MS for the length of the run (experiments/m5_hdo_phase.py, run as root
 through sudo), with ``--scope-pps`` the two 1PPS too, with ``--scope-out-pps`` the two
@@ -81,6 +83,7 @@ NODE = " -m rf_clock[.]checks[.]m4c_link "
 READY_S = 120
 READY = "ready: waiting for the start time in"  # rf_clock.checks.m4c_link.READY
 MIN_VERSION = (2, 3, 0, 3)  # the first rf-clock whose m4c_link takes --start-file
+SCENARIO_VERSION = {"fc-steps": (2, 4, 0, 1)}  # scenarios that need a later one (m4c_link --steer-mode steps)
 LINK = Path(__file__).parents[1] / "links" / "887329260072A_8873292600AB.json"  # theta0 by wiring
 SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "link": ("", ""),
@@ -100,6 +103,10 @@ SCENARIOS = {  # scenario: (node A's arguments, node B's)
     # section 8); --b-args overrides it, e.g. --steer-actuator sf --steer-step 0.2 --steer-late-slots 50
     "steer": ("--no-entries", "--no-entries --acquire --fs725 --steer-target-ns {target} --steer-mode predictive "
                               "--steer-step 0.1 --steer-late-slots 25 --steer-actuator fc"),
+    # B's FC stepped on a schedule through the steering's path, B keeping its queue entries for
+    # theta pair by pair (rf-clock 2.4.0.1, experiments/m5_fc_response.py)
+    "fc-steps": ("--no-entries", "--acquire --fs725 --steer-target-ns {target} --steer-mode steps "
+                                 "--steer-step 0.1 --steer-late-slots 25 --steer-actuator fc"),
 }
 
 
@@ -114,17 +121,17 @@ def start(ip: str, role: str, extra: str) -> None:
     print(f"node {role} started on {ip}", flush=True)
 
 
-def check_version(role: str, ip: str) -> None:
-    """The node's rf-clock must know ``--start-file`` (2.3.0.3); an older one would refuse the
-    argument only once started."""
+def check_version(role: str, ip: str, need: tuple[int, ...] = MIN_VERSION) -> None:
+    """The node's rf-clock must know ``--start-file`` (2.3.0.3), and ``need`` for scenarios that
+    take a later one (``SCENARIO_VERSION``); an older one would refuse the arguments only once started."""
     got = ssh(ip, f"{PYNQ_PYTHON} -c 'import importlib.metadata as m; print(m.version(\"rf-clock\"))'").stdout.strip()
     try:
-        ok = tuple(int(v) for v in got.split(".")) >= MIN_VERSION
+        ok = tuple(int(v) for v in got.split(".")) >= need
     except ValueError:
         ok = False
     if not ok:
         sys.exit(f"node {role} ({ip}) has rf-clock {got or '(none)'}; this script needs "
-                 f"{'.'.join(map(str, MIN_VERSION))} or later on both boards (m4c_link --start-file): install the "
+                 f"{'.'.join(map(str, need))} or later on both boards (m4c_link --start-file): install the "
                  f"release's wheel there (docs/handoff_2x.md, step 1), or run this script from that release")
 
 
@@ -251,7 +258,7 @@ def main() -> None:
               + ("" if args.target_ns is not None else f", theta0 of wiring {wiring} ({LINK.name})"), flush=True)
     for role, ip in BOARDS.items():
         check_idle(ip)
-        check_version(role, ip)
+        check_version(role, ip, SCENARIO_VERSION.get(args.scenario, MIN_VERSION))
     out = results_dir(f"m4c-v2-{args.scenario}")
     own = {"A": args.a_args, "B": args.b_args}
     extra = {role: f"{a.format(target=target)} {args.node_args} {own[role]}".strip()
