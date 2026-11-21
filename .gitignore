@@ -1,3 +1,7 @@
+# .claude/ holds settings that stay on each machine and skills that belong to the repository
+.claude/*
+!.claude/skills/
+
 # python
 __pycache__/
 .pytest_cache/
@@ -43,3 +47,12 @@ results/
 
 # vendor data sheets and manuals used for the board designs (not ours to redistribute)
 hw/ref/
+
+# archives of the board folders made by hand
+hw/*.zip
+
+# plan 1 of the OCXO board, given up on 2026-11-20 (hw/ocxo_board is the board)
+hw/ocxo_carrier/
+
+# KiCad's lock files while a project is open
+~*.lck

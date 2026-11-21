@@ -1,0 +1,4 @@
+# LTspice outputs, rebuilt by run_sims.py
+*.raw
+*.log
+*.net

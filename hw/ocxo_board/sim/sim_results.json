@@ -1,0 +1,40 @@
+{
+ "efc": {
+  "step_settle_99pct_ms": 0.507,
+  "step_overshoot_pct": 0.0,
+  "corner_hz": 1444.1,
+  "ad8675_output_peaking_db": 0.091,
+  "noise_uv_rms": {
+   "0.1-10 Hz": 0.175,
+   "10 Hz-1 kHz": 1.318,
+   "1 kHz-1 MHz": 1.586
+  },
+  "noise_0.1-10Hz_fractional_rms": 1e-14
+ },
+ "clock": [
+  {
+   "edge_ns": 0.7,
+   "lmk_vpp": 1.14,
+   "lmk_slew_v_per_ns": 1.62,
+   "buffer_peak_ma_4x2": 22.3,
+   "scope_vpp": 3.296,
+   "buffer_peak_ma_scope": 42.2
+  },
+  {
+   "edge_ns": 1.5,
+   "lmk_vpp": 1.139,
+   "lmk_slew_v_per_ns": 0.756,
+   "buffer_peak_ma_4x2": 19.0,
+   "scope_vpp": 3.296,
+   "buffer_peak_ma_scope": 36.8
+  },
+  {
+   "edge_ns": 3.0,
+   "lmk_vpp": 1.139,
+   "lmk_slew_v_per_ns": 0.378,
+   "buffer_peak_ma_4x2": 17.6,
+   "scope_vpp": 3.296,
+   "buffer_peak_ma_scope": 34.4
+  }
+ ]
+}

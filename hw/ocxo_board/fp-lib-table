@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "ocxo_board") (type "KiCad") (uri "${KIPRJMOD}/ocxo_board.pretty") (options "") (descr "Footprints of the OCXO board"))
+)

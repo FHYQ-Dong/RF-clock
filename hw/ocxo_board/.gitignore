@@ -1,0 +1,5 @@
+# KiCad local settings, caches and backups, and the generators' intermediate files and check reports in build/
+*.kicad_prl
+fp-info-cache
+*-backups/
+build/

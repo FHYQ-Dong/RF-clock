@@ -1,0 +1,9 @@
+* Noise at Vcon with the DAC at mid scale (2.5 V): the reference, the DAC ladder, the AD8675, R8 and the OCXO input.
+VSTEP dacs dacv 0
+.include efc_circuit.inc
+.noise V(vcon) VSTEP dec 40 0.01 1meg
+.meas noise vn_0p1_10 INTEG V(onoise) FROM 0.1 TO 10
+.meas noise vn_10_1k INTEG V(onoise) FROM 10 TO 1k
+.meas noise vn_1k_1M INTEG V(onoise) FROM 1k TO 1meg
+.meas noise vn_at_1hz FIND V(onoise) AT 1
+.end

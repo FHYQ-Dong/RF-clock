@@ -168,6 +168,30 @@ module tb_p13_steer;
         end
     end
 
+    // the reservation for P12 (rf-clock 2.5.1.0): from one command to the next, the tick that P12 keeps its
+    // line free for must never lie beyond the next command's tick.  Before, it moved on to the next step at the
+    // step's end, while the step's command was still being computed, and a line P12 had held back started in
+    // that gap and made the command late (2026-11-17, steps of 0.02 s).
+    reg [63:0] res_max = 64'd0;
+    reg        res_have = 1'b0;
+    integer    res_errors = 0;
+    always @(posedge clk) begin
+        if (rst || !reserve_valid) begin
+            res_max <= 64'd0;
+        end else if (cmd_valid) begin
+            if (res_have && res_max > cmd_tick) begin
+                if (res_errors < 5)
+                    $display("FAIL: the reservation reached %0d before the command for %0d was handed over", res_max, cmd_tick);
+                res_errors = res_errors + 1;
+                errors = errors + 1;
+            end
+            res_have <= 1'b1;
+            res_max  <= reserve_tick;
+        end else if (reserve_tick > res_max) begin
+            res_max <= reserve_tick;
+        end
+    end
+
     initial begin
         errors = 0; pi = 0; ei = 0; ci = 0;
         $readmemh("st_cfg.hex", cfg);

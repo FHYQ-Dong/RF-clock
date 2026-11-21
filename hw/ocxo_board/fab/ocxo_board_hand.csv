@@ -1,0 +1,9 @@
+Designator,Value,Footprint,MPN,LCSC Part #
+C21,1u C0G,C_1210_3225Metric,C3225C0G1E105J250AC,
+C22,100n C0G,C_0805_2012Metric,GRM21B5C1H104JA01L,
+J6,SMA,SMA_Amphenol_132289_EdgeMount,132289,
+J7,SMA,SMA_Amphenol_132289_EdgeMount,132289,
+J8,Pmod to RFSoC 4x2 PMOD0,Pmod_Header_2x06_P2.54mm_Horizontal,"2x6 male header, 2.54 mm, right angle",
+TP8,GND loop,TestPoint_Keystone_5000-5004_Miniature,5001,
+TP9,GND loop,TestPoint_Keystone_5000-5004_Miniature,5001,
+X1,NI-10M-3660,OCXO_Taitien_NI-10M-3600,NI-10M-3660,

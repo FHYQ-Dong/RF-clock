@@ -1,0 +1,17 @@
+* Step response of the tuning voltage path: the DAC output steps by 1 mV at 1 ms.
+VSTEP dacs dacv PULSE(0 1m 1m 1u 1u 1 2)
+.include efc_circuit.inc
+.save V(vcon) V(out) V(dacs)
+.tran 0 4m 0 1u
+.options plotwinsize=0
+.meas tran v0 FIND V(vcon) AT 0.99m
+.meas tran v1 FIND V(vcon) AT 3.9m
+.meas tran t50 WHEN V(vcon)=v0+0.5*(v1-v0) TD=1m RISE=1
+.meas tran t99 WHEN V(vcon)=v0+0.99*(v1-v0) TD=1m RISE=1
+.meas tran settle_99 PARAM t99-1m
+.meas tran vmax MAX V(vcon) FROM 1m TO 4m
+.meas tran overshoot_pct PARAM 100*(vmax-v1)/(v1-v0)
+.meas tran out0 FIND V(out) AT 0.99m
+.meas tran outmax MAX V(out) FROM 1m TO 1.2m
+.meas tran out_overshoot_mv PARAM 1000*(outmax-out0)
+.end

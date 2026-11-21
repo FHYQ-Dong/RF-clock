@@ -355,9 +355,6 @@ module p13_steer #(
     reg [8:0]   fin_step;
     reg [63:0]  fin_end;
 
-    assign reserve_valid = ctl_enable && sec_valid && !stopped;
-    assign reserve_tick  = end_tick + {32'd0, write_delay};
-
     always @(posedge clk) begin
         if (rst) begin
             sec_valid <= 1'b0;
@@ -452,6 +449,15 @@ module p13_steer #(
     reg [31:0] s_cnt;
     reg [8:0]  s_step;
     reg [63:0] s_end;
+
+    // The tick P12 keeps its line free for (it starts an ARM line only if the line ends a bit before it):
+    // this step's command, and from a step's end until that step's command has been handed over (fin_req,
+    // then the computation) still that command, not the next step's.  Moving it on at the step's end let a
+    // line P12 had held back start in the tens of microseconds the computation takes and made the command
+    // late (2026-11-17, steps of 0.02 s; rf-clock 2.5.1.0).
+    wire hold_step = fin_req || st != E_IDLE;
+    assign reserve_valid = ctl_enable && sec_valid && !stopped;
+    assign reserve_tick  = (hold_step ? (fin_req ? fin_end : s_end) : end_tick) + {32'd0, write_delay};
     reg [9:0]  s_pairs;
     reg signed [63:0] s_sum;
 

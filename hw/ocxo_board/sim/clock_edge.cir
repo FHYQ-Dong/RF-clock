@@ -1,0 +1,31 @@
+* 10 MHz from the 74LVC2G34 through 33 ohm and 100 nF into 1 m of 50 ohm coax.
+* Branch A ends in the 4x2's CLK IN (J14), 100 nF, a 3 dB pi pad and 50 ohm, which is what the LMK04828 sees.
+* Branch B ends in a scope input at 1 Meg || 15 pF, so only the source end is terminated.
+* The buffer is an edge of 'tr' (0 to 100 %) behind 'rout', the output resistance of an LVC output at 3.3 V.
+.param tr=1n rout=20
+.step param tr list 0.7n 1.5n 3n
+VDRV drv 0 PULSE(0 3.3 0 {tr} {tr} {50n-tr} 100n)
+* branch A
+ROA drv a1 {rout}
+CPA a1 0 2p
+R18 a1 a2 33
+C25 a2 a3 100n
+TA a3 0 a4 0 Z0=50 Td=5n
+CJ14 a4 a5 100n
+RP1 a5 0 292.4
+RP2 a5 lmk 17.61
+RP3 lmk 0 292.4
+RT lmk 0 50
+* branch B
+ROB drv b1 {rout}
+CPB b1 0 2p
+R19 b1 b2 33
+C26 b2 b3 100n
+TB b3 0 b4 0 Z0=50 Td=5n
+RS b4 0 1meg
+CS b4 0 15p
+.tran 0 30u 29.7u 10p
+.options plotwinsize=0
+.save V(lmk) V(b4) I(ROA) I(ROB)
+* Measured in run_sims.py over the last period, after the two 100 nF coupling capacitors have settled (5 us time constant).
+.end

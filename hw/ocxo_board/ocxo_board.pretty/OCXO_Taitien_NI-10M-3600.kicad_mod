@@ -1,0 +1,213 @@
+(footprint "OCXO_Taitien_NI-10M-3600"
+	(version 20260206)
+	(generator "gen_footprints")
+	(layer "F.Cu")
+	(descr "Taitien NI-10M-3600 series double-oven OCXO, 36.32x27.18 mm DIP, data sheet XO-0238 Rev 3 p. 4")
+	(tags "OCXO Taitien")
+	(property "Reference" "X**"
+		(at -18.16 -15.09 0)
+		(layer "F.SilkS")
+		(uuid "65acf1b8-a5d7-439c-8f8b-64b1426ec011")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "NI-10M-3600"
+		(at 0 15.09 0)
+		(layer "F.Fab")
+		(uuid "d077539e-8201-444f-89ab-d642b8e7db98")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole)
+	(fp_line
+		(start -18.16 -13.59)
+		(end 18.16 -13.59)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "f0f2d32a-8352-48f1-bba4-d39c332c34d6")
+	)
+	(fp_line
+		(start 18.16 -13.59)
+		(end 18.16 13.59)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "29b36cac-93bf-4c05-96a6-1679c88fff04")
+	)
+	(fp_line
+		(start 18.16 13.59)
+		(end -18.16 13.59)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "d65e5f0e-e914-4035-ab8d-f5bc5a1c333d")
+	)
+	(fp_line
+		(start -18.16 13.59)
+		(end -18.16 -13.59)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "ac591134-d5ce-4746-9a49-222aa1c22e00")
+	)
+	(fp_line
+		(start -18.31 -13.74)
+		(end 18.31 -13.74)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "0ae40e41-937b-4475-a276-4d7cd0bc35c3")
+	)
+	(fp_line
+		(start 18.31 -13.74)
+		(end 18.31 13.74)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "472d8ec7-16bb-45f0-a914-2323ef2d04f4")
+	)
+	(fp_line
+		(start 18.31 13.74)
+		(end -18.31 13.74)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "1225cccb-4299-406c-93b9-c9d6b6b0a5ce")
+	)
+	(fp_line
+		(start -18.31 13.74)
+		(end -18.31 -13.74)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "e87c0086-30e1-4447-88c8-55ea949f5202")
+	)
+	(fp_line
+		(start -18.66 -14.09)
+		(end 18.66 -14.09)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "53a8c5f3-4d21-4add-8a6b-af49fc8817c3")
+	)
+	(fp_line
+		(start 18.66 -14.09)
+		(end 18.66 14.09)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "2357f89b-2f1b-4df0-89bc-b147e2e164a2")
+	)
+	(fp_line
+		(start 18.66 14.09)
+		(end -18.66 14.09)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "bd568370-758c-4d4f-9bfa-e04c4b70c89a")
+	)
+	(fp_line
+		(start -18.66 14.09)
+		(end -18.66 -14.09)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "1b0e0b1b-7833-46f0-845a-1a24a1fa5f47")
+	)
+	(fp_circle
+		(center -15.96 -11.39)
+		(end -15.46 -11.39)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.SilkS")
+		(uuid "7d0d1f48-d6da-41e8-87c5-f2d579dc46cd")
+	)
+	(pad "1" thru_hole rect
+		(at -12.7 -8.9)
+		(size 1.9 1.9)
+		(drill 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "ca5e7089-a16b-4f4a-8d36-e88e0a8b7b56")
+	)
+	(pad "2" thru_hole circle
+		(at -12.7 0)
+		(size 1.9 1.9)
+		(drill 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "f2fbafd6-752b-4911-a1ac-944fbcc4717f")
+	)
+	(pad "3" thru_hole circle
+		(at -12.7 8.9)
+		(size 1.9 1.9)
+		(drill 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "c7d848e0-abb7-4518-91df-5415a5c71928")
+	)
+	(pad "5" thru_hole circle
+		(at 12.7 -8.9)
+		(size 1.9 1.9)
+		(drill 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "d7e4c95d-fea8-4ebf-814b-4186b904b348")
+	)
+	(pad "4" thru_hole circle
+		(at 12.7 8.9)
+		(size 1.9 1.9)
+		(drill 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "6f8a070b-97d7-458a-8680-30b826fa0388")
+	)
+	(model "${KIPRJMOD}/ocxo_board.3dshapes/OCXO_Taitien_NI-10M-3600.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+	(embedded_fonts no)
+)

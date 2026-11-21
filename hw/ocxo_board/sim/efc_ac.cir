@@ -1,0 +1,9 @@
+* Small-signal response from the DAC to Vcon, and the AD8675's output (peaking there means a poor phase margin).
+VSTEP dacs dacv 0 AC 1
+.include efc_circuit.inc
+.save V(vcon) V(out)
+.ac dec 50 1 10meg
+.meas ac f3db WHEN mag(V(vcon))=0.7071 FALL=1
+.meas ac out_peak MAX mag(V(out))
+.meas ac at_1M FIND mag(V(vcon)) AT 1meg
+.end

@@ -1,0 +1,20 @@
+#VRML V2.0 utf8
+# Taitien NI-10M-3600 OCXO, made by gen/footprints.py
+Transform { translation 0.0000 0.0000 3.7598 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 14.2992 10.7008 7.2835 } } ] }
+Transform { translation -5.0000 3.5039 -1.2992 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 0.3110 0.3110 2.5984 } } ] }
+Transform { translation -5.0000 0.0000 -1.2992 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 0.3110 0.3110 2.5984 } } ] }
+Transform { translation -5.0000 -3.5039 -1.2992 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 0.3110 0.3110 2.5984 } } ] }
+Transform { translation 5.0000 3.5039 -1.2992 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 0.3110 0.3110 2.5984 } } ] }
+Transform { translation 5.0000 -3.5039 -1.2992 children [ Shape {
+  appearance Appearance { material Material { diffuseColor 0.75 0.75 0.78 specularColor 0.2 0.2 0.2 shininess 0.3 } }
+  geometry Box { size 0.3110 0.3110 2.5984 } } ] }
