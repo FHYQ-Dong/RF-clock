@@ -203,7 +203,7 @@ def test_the_link_checks_its_fs725_against_the_board_config(monkeypatch):
 
 def test_the_edge_compensation_carries_theta_to_the_edge():
     """theta 30 ps above the target at count 9, rising 4 ps/s: at the edge of count 10 the
-    steering error is 34 ps, which the fraction stands for about the base."""
+    theta - theta0 is 34 ps, which the fraction stands for about the base."""
     comp = EdgeCompensation(-21.5, ps_per_frac=1250 / 65536, slots_per_second=500)
     assert comp.frac(10.0) is None  # no pairs yet
     for count in (8, 9):
@@ -261,7 +261,7 @@ class SteeredPRS10:
 
 
 class ScriptedLaw:
-    """A control law that returns the FC values it is given, one a step."""
+    """A steering algorithm that returns the FC values it is given, one a step."""
 
     def __init__(self, fc0: int, wanted: list[int | None]) -> None:
         self.fc0, self.wanted, self.max_offset = fc0, wanted, 1000
@@ -289,7 +289,7 @@ def test_frequency_control_steers_through_fc_at_ga_1(monkeypatch):
     for index in range(3):
         control.step({"count": 10, "step": index, "index": index, "theta_late_ns": 0.0}, at_count=10.1 * index)
     assert prs.fc == (1674, 2247)
-    assert sum(1 for c in prs.sent if c.startswith("FC1674")) == 4  # every step, also when the law keeps FC
+    assert sum(1 for c in prs.sent if c.startswith("FC1674")) == 4  # every step, also when the algorithm keeps FC
     assert [f["change"] for kind, f in lines if kind == "fc_set"] == [5, -8]
     prs.ga = 7  # the unit restarted, with its EEPROM's GA: the once-a-second check stops the steering
     for index in range(3, 10):

@@ -3,7 +3,7 @@
 Problem.  The FS725's 1PPS moves by what a PP realizes, up to 0.23 ns off the move asked
 for, and jitters by 34 ps against the unit's 10 MHz (results/m5-v2-20261103/REPORT.md
 sections 9.5, 9.6), so a PPS difference calibrated at one theta holds only until the next
-PP.  The output PPS is made from the node's time scale: its pulse of second k leaves at
+PP.  The output PPS is made from the PL's 100 MHz clock: its pulse of second k leaves at
 PPS_TICK(k) + OFFSET ticks, and the tick and the DAC's sample clock both come from the
 FS725's 10 MHz.  So against that 10 MHz the output edge should hold to the scope's
 resolution from second to second, over power-ups (MTS fixes the DAC's latency, the LMK's

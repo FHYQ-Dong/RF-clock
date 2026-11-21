@@ -65,6 +65,14 @@ class ABI:
         PPS_OUT_TICK_HI = 0x164
         PPS_OUT_IDLE = 0x168
         PPS_OUT_FRAC = 0x16C
+        REF_PHASE_SEQ = 0x1C0
+        REF_PHASE_COUNT = 0x1C4
+        REF_PHASE_BEATS = 0x1C8
+        REF_PHASE_PEAK = 0x1CC
+        REF_PHASE_I_LO = 0x1D0
+        REF_PHASE_I_HI = 0x1D4
+        REF_PHASE_Q_LO = 0x1D8
+        REF_PHASE_Q_HI = 0x1DC
         BURST_PRN_CHIPS = 0x180
         BURST_GUARD_CHIPS = 0x184
         BURST_BEATS = 0x188
@@ -239,7 +247,7 @@ class ABI:
     RX_RESULT_FLAGS_LSB = 0x8
     FAULT_INFO_COUNT_LSB = 0x10
     DESIGN_ID = 0x52434C4B
-    VERSION = 0x00020003
+    VERSION = 0x00020004
 
 class TxState(IntEnum):
     IDLE = 0x0

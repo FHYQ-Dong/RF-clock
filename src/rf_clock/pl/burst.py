@@ -69,7 +69,7 @@ class BurstMemory:
 
     def load(self, prn: Sequence[int] | np.ndarray, taps: Sequence[int] | np.ndarray, *,
              packet_code: Sequence[int] | np.ndarray | None = None, guard: int = p9.GUARD_CHIPS) -> None:
-        """Write the PRN (or acquisition code), the packet code (default: the 288 x L
+        """Write the PRN (or the fixed code used before acquisition), the packet code (default: the 288 x L
         chips of ``rf_clock.plmodel.packet.code_chips``) and the taps
         (``rf_clock.plmodel.fir.coefficients``), then BURST_PRN_CHIPS and
         BURST_GUARD_CHIPS.  BurstMemoryError while the slot engine is on."""

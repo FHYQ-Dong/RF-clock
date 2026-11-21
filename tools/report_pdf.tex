@@ -1,0 +1,28 @@
+% LaTeX header for the PDF of docs/technical_report.md (tools/build_report.ps1)
+\usepackage{fancyvrb}
+\makeatletter
+\def\verbatim@font{\scriptsize\ttfamily}   % text diagrams and command lines: up to about 108 columns
+\makeatother
+\fvset{fontsize=\scriptsize}
+\usepackage{etoolbox}
+\AtBeginEnvironment{longtable}{\small}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\makeatletter
+\@ifpackageloaded{xeCJK}{%                  the Chinese translation
+  \fancyhead[L]{\small RF-clock：技术报告与交接文档}
+  \fvset{formatcom=\xeCJKVerbAddon}         % a CJK character two code columns wide, so text diagrams line up
+}{%
+  \fancyhead[L]{\small RF-clock: technical report and handoff}
+}
+\makeatother
+\fancyhead[R]{\small rf-clock 2.3.0.2}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\usepackage[htt]{hyphenat}                % let long paths in typewriter text break
+\tolerance=9999                          % a loose line rather than a long path running into the margin
+\setlength{\emergencystretch}{3em}

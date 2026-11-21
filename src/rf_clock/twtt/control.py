@@ -5,10 +5,10 @@ the theta-compensated output PPS.
 ``configure_fs725`` checks the node's FS725 against the board config at the start of a run
 and sets its gain (``rf_clock.fs725.check_config``); ``FrequencyControl`` holds the unit for
 the run: the 1 pps PLL off so that SF takes effect, SF handed over from the calibration pot,
-each second's or step's theta into the control law, SF back at the end; ``SyncedRule``
+each second's or step's theta into the steering algorithm, SF back at the end; ``SyncedRule``
 decides when the output PPS is declared synchronized; ``EdgeCompensation`` gives, before
-each PPS edge, the fractional delay of B's output edge that makes it follow A's time scale
-to the measurement rather than to the steering.  ``rf_clock.checks.m4c_link`` drives them
+each PPS edge, the fractional delay of B's output edge that makes it follow the 100 MHz clock
+on A's PL to the measurement rather than to the steering.  ``rf_clock.checks.m4c_link`` drives them
 (docs/ABI.md 11.12, 13).
 """
 
@@ -26,7 +26,7 @@ from . import steer
 
 
 class Law(Protocol):
-    """A control law of ``rf_clock.twtt.steer``: ``Steering`` or ``PredictiveSteering``."""
+    """A steering algorithm of ``rf_clock.twtt.steer``: ``Steering`` or ``PredictiveSteering``."""
 
     def step(self, count: int, theta_ps: float | None) -> dict: ...
 
@@ -57,19 +57,19 @@ class FrequencyControl:
     """This node's FS725 for the run.  With ``set_sf`` (SF steps or steering): the unit's 1 pps
     PLL off, so that SF takes effect, and back on at the end if it was; SF set once to the
     value read (``sf0``), and back there at the end unless ``keep_sf``.  ``law(sf0, gain)``
-    builds the control law once SF and GA are read; ``late``: steer on theta over the end of
+    builds the steering algorithm once SF and GA are read; ``late``: steer on theta over the end of
     each second; ``step_s`` below 1: on ``StepTheta``'s steps instead.
 
-    ``actuator="fc"`` (with a law on steps below a second, ``steer.predictive_fc``): the law
+    ``actuator="fc"`` (with an algorithm on steps below a second, ``steer.predictive_fc``): the algorithm
     sets FC, the crystal's tuning, instead of SF (results/precision-20261105 section 8).  The
     unit goes to GA 1, where it stays locked and keeps its 1PPS while FC written stays (GA 0
-    or LO 0 would stop the 1PPS); FC is written every step, also when the law keeps it, which
-    undoes the slow loop's pull; the law starts from the FC read (``sf0`` holds 1000 coarse +
+    or LO 0 would stop the 1PPS); FC is written every step, also when the algorithm keeps it, which
+    undoes the slow loop's pull; the algorithm starts from the FC read (``sf0`` holds 1000 coarse +
     fine steps), its fine DAC first brought back near the middle of its range by a carry to
-    the coarse one when less than ``FC_ROOM`` is left, and the law's range is what is left;
+    the coarse one when less than ``FC_ROOM`` is left, and the algorithm's range is what is left;
     SF is not touched.  When the steering stops, and at the end, GA goes back."""
 
-    FC_ROOM = 500  # fine steps the law needs on either side of its start
+    FC_ROOM = 500  # fine steps the algorithm needs on either side of its start
 
     def __init__(self, port: str, emit: Callable[..., None], *, set_sf: bool,
                  law: Callable[[int, int], Law] | None = None, step_s: float = 1.0, late: bool = False,
@@ -77,7 +77,7 @@ class FrequencyControl:
         if actuator not in ("sf", "fc"):
             raise ValueError(f"actuator is 'sf' or 'fc': {actuator!r}")
         if actuator == "fc" and (law is None or step_s >= 1):
-            raise ValueError("the FC actuator is for a control law on steps below a second")
+            raise ValueError("the FC actuator is for a steering algorithm on steps below a second")
         self.emit, self.say = emit, say
         self.fc = actuator == "fc"
         self.gain_restore: int | None = None
@@ -160,7 +160,7 @@ class FrequencyControl:
         self._restore_gain()  # FC steering: the unit's own loop takes the crystal back
 
     def step(self, record: dict, at_count: float) -> None:
-        """One step's theta (``StepTheta``) into a law faster than a second; SF written at
+        """One step's theta (``StepTheta``) into an algorithm faster than a second; SF written at
         once without a read-back (``at_count``: now on this node's PPS count, logged), the
         unit checked once a second."""
         if self.steering is None:
@@ -201,7 +201,7 @@ class FrequencyControl:
             self._stopped(exc)
 
     def close(self) -> None:
-        if self.fc:  # FC stays where the law left it; the unit's own loop at its gain takes it back
+        if self.fc:  # FC stays where the algorithm left it; the unit's own loop at its gain takes it back
             self._restore_gain()
         elif not self.keep and self.sf != self.sf0:
             try:
@@ -221,7 +221,7 @@ class SyncedRule:
     """When this node's output PPS is declared synchronized (SYNCED: the validity line
     and the LED).  Node A, the master: while its link is locked and a second brings at
     least ``min_pairs`` pairs (B's packets come in).  Node B: the same, while the steering
-    runs, and over the last ``window_s`` seconds the steering error (theta, the mean over
+    runs, and over the last ``window_s`` seconds theta - theta0 (theta, the mean over
     each second, minus the target) has an rms below ``set_rms_ps`` and a mean below
     ``set_mean_ps``; cleared when the link or the steering stops, or the last
     ``clear_window_s`` seconds have an rms above ``clear_rms_ps``."""
@@ -232,7 +232,7 @@ class SyncedRule:
         self.role_b = role_b
         self.set_rms, self.set_mean, self.clear_rms = set_rms_ps, set_mean_ps, clear_rms_ps
         self.min_pairs, self.window, self.clear_window = min_pairs, window_s, clear_window_s
-        self.errors: list[float] = []  # the steering error of consecutive good seconds
+        self.errors: list[float] = []  # theta - theta0 of consecutive good seconds
         self.last_count: int | None = None
         self.synced = False
 
@@ -273,7 +273,7 @@ class EdgeCompensation:
 
     Each node's output PPS leaves at its own tick, so out_B - out_A = C - (theta - theta0) at
     an edge (results/pps-out-20261104 section 8): moved later by theta - theta0, B's edge
-    follows A's time scale to the measurement.  Before the edge that starts second ``edge``
+    follows the 100 MHz clock on A's PL to the measurement.  Before the edge that starts second ``edge``
     (on B's PPS count), ``frac(edge)`` takes the mean theta of the pairs of the last
     ``window_s`` before the newest, carries it to the edge by theta's rate over the last
     ``rate_s``, and turns the delay into P10's fraction: ``base_frac`` (the plain edge's place

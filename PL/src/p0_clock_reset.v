@@ -2,7 +2,7 @@
 // P0: clock/reset qualification and time epoch.
 //
 // arst_n is the PS/board reset.  clocks_locked_async is the AND of every
-// lock/ready signal the timebase depends on (board PLLs, clocking wizard,
+// lock/ready signal the tick depends on (board PLLs, clocking wizard,
 // RFDC tiles).  Losing lock does not reset the PL: status must survive so
 // the ARM can read why timing became invalid.  It clears time_valid, and
 // the next qualified lock starts a new time_epoch (0 = never valid).

@@ -153,7 +153,14 @@ module p2_control_regs #(
     input  wire [3:0]  pps_out_status,
     input  wire [31:0] pps_out_count,
     input  wire [31:0] pps_out_flywheel_count,
-    input  wire [63:0] pps_out_tick
+    input  wire [63:0] pps_out_tick,
+    // P11, the 10 MHz reference's phase (2.4)
+    input  wire [31:0] ref_phase_seq,
+    input  wire [31:0] ref_phase_count,
+    input  wire [31:0] ref_phase_beats,
+    input  wire [15:0] ref_phase_peak,
+    input  wire [63:0] ref_phase_i,
+    input  wire [63:0] ref_phase_q
 );
     `include "src/p_regs.vh"
     `include "src/p_defs.vh"
@@ -427,6 +434,14 @@ module p2_control_regs #(
             REG_PPS_OUT_FLYWHEEL_CNT: rd_value = pps_out_flywheel_count;
             REG_PPS_OUT_TICK_LO:      rd_value = pps_out_tick[31:0];
             REG_PPS_OUT_TICK_HI:      rd_value = pps_out_snap_hi;
+            REG_REF_PHASE_SEQ:        rd_value = ref_phase_seq;
+            REG_REF_PHASE_COUNT:      rd_value = ref_phase_count;
+            REG_REF_PHASE_BEATS:      rd_value = ref_phase_beats;
+            REG_REF_PHASE_PEAK:       rd_value = {16'd0, ref_phase_peak};
+            REG_REF_PHASE_I_LO:       rd_value = ref_phase_i[31:0];
+            REG_REF_PHASE_I_HI:       rd_value = ref_phase_i[63:32];
+            REG_REF_PHASE_Q_LO:       rd_value = ref_phase_q[31:0];
+            REG_REF_PHASE_Q_HI:       rd_value = ref_phase_q[63:32];
             default:             rd_ok    = 1'b0;
         endcase
     end

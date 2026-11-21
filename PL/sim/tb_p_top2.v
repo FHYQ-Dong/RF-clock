@@ -1,5 +1,5 @@
 `timescale 1ns / 1ps
-// Two p_top nodes on one timebase, each DAC looped into the other's ADC
+// Two p_top nodes on one clock, each DAC looped into the other's ADC
 // (A -> B as it is, B -> A rotated by +90 degrees), LOOP_D ticks apart, with
 // short slots, a small window and 16 search lanes.  Through AXI as the ARM
 // would: load the burst memories, configure the slot engines (A even slots,
@@ -109,6 +109,7 @@ module tb_p_top2;
                 .queue_rddata (qrdata[g]),
                 .m_axis_dac_tdata (dac[g]), .m_axis_dac_tvalid (dac_v[g]), .m_axis_dac_tready (1'b1),
                 .s_axis_adc_tdata (adc[g]), .s_axis_adc_tvalid (1'b1), .adc_overrange (1'b0),
+                .s_axis_adc0_tdata (128'd0), .s_axis_adc0_tvalid (1'b0),
                 .m_axis_s2mm_tdata (s2mm_tdata), .m_axis_s2mm_tkeep (), .m_axis_s2mm_tvalid (s2mm_tvalid),
                 .m_axis_s2mm_tready (1'b1), .m_axis_s2mm_tlast (s2mm_tlast),
                 .m_axis_dac0_tdata (), .m_axis_dac0_tvalid (), .m_axis_dac0_tready (1'b1),

@@ -22,7 +22,7 @@ with m_AB, m_BA = m_out, m_in on node A and m_in, m_out on node B, and
 
 Each node forms them from its own queue alone, and both see the same pairs.  ``Pairer``
 matches the two entries of a window, ``SecondTheta`` averages the pairs of each second (the
-node's ``second`` lines), and ``StepTheta`` the end of each step of a law that corrects more
+node's ``second`` lines), and ``StepTheta`` the end of each step of an algorithm that corrects more
 often than once a second; ``rf_clock.twtt.logs.pairs`` forms the same pairs from a log.
 """
 

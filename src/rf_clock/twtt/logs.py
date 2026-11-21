@@ -4,7 +4,7 @@ first (``config``, the queue entries ``own`` and ``peer`` unless ``--no-entries`
 
 ``read`` loads the lines of the types asked for, ``pairs`` forms every pair of a log of queue
 entries as the node does (``rf_clock.twtt.pairs``), ``seconds`` and ``fc`` give theta's and FC's
-series, and ``steering_error`` the steering error, theta less the target over the seconds after
+series, and ``steering_error`` theta - theta0, theta less the target over the seconds after
 the first ``settle_s``, by which steering runs are compared in the reports.
 """
 

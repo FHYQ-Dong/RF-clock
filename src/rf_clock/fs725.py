@@ -268,7 +268,7 @@ class FS725:
         return self._int("MR?")
 
     def write_frequency(self, sf: int) -> None:
-        """Set SF without reading it back or logging it, for a law that changes it several
+        """Set SF without reading it back or logging it, for an algorithm that changes it several
         times a second; the caller logs it and checks SF now and then (``set_frequency``
         reads back and logs)."""
         if not isinstance(sf, int) or not -SF_LIMIT <= sf <= SF_LIMIT:
@@ -289,7 +289,7 @@ class FS725:
         return high, low
 
     def write_frequency_control(self, high: int, low: int) -> None:
-        """Set FC, the crystal's tuning, without reading it back, for a law that writes it
+        """Set FC, the crystal's tuning, without reading it back, for an algorithm that writes it
         several times a second (``FrequencyControl`` with the FC actuator; the caller logs and
         checks it).  Meant for GA 1: the loop then pulls FC back with a 128 s time constant,
         about 2 low steps a second 200 steps off, so a value written every step stays (measured

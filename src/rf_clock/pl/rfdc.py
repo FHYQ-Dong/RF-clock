@@ -25,6 +25,7 @@ DAC = 1  # XRFDC_DAC_TILE
 TILE_STARTED = 0xF
 DEFAULT_TILES = (0, 2)
 PPS_OUT_TILE = 0  # DAC tile 0 (DAC_B, J20): the output PPS since 2.1 (rf_clock.pl.pps_out)
+REF_PHASE_TILE = 0  # ADC tile 0 (ADC_D): the 10 MHz reference into P11 since 2.4 (rf_clock.pl.ref_phase)
 
 # XRFDC_MTS_* status bits (embeddedsw 2020.2 xrfdc_mts.h); 0 is XRFDC_MTS_OK.
 MTS_STATUS_BITS = {
@@ -350,6 +351,26 @@ def baseband_dac(rfdc: Any, tile: int, nco_mhz: float = 0.0) -> Callable[[], Non
     restored = {**mixer, "FineMixerScale": xrfdc.MIXER_SCALE_0P7
                 if mixer["FineMixerScale"] == xrfdc.MIXER_SCALE_AUTO else mixer["FineMixerScale"]}
     return lambda: apply(*saved, restored)
+
+
+def baseband_adc(rfdc: Any, tile: int) -> None:
+    """Set ADC ``tile`` block 0's NCO to 0 Hz with phase 0, so its I stream carries the
+    samples (how P11 reads the 10 MHz reference on ADC_D, rf_clock.pl.ref_phase).
+
+    The tile shares the signal tile's datapath (NCO -1.0 GHz).  An NCO set to 0 Hz
+    keeps whatever phase its accumulator held, which would scale the samples by its
+    cosine and could invert them, so the accumulator is reset at once (event source
+    tile); at 0 Hz the instant does not matter.  The event source is then set back,
+    as sync_nco_phase leaves it.
+    """
+    import xrfdc  # board-only  # pyright: ignore[reportMissingImports]
+
+    block = rfdc.adc_tiles[tile].blocks[0]
+    source = block.MixerSettings["EventSource"]
+    block.MixerSettings = {**block.MixerSettings, "Freq": 0.0, "PhaseOffset": 0.0, "EventSource": xrfdc.EVNT_SRC_TILE}
+    block.ResetNCOPhase()
+    block.UpdateEvent(xrfdc.EVENT_MIXER)
+    block.MixerSettings = {**block.MixerSettings, "EventSource": source}
 
 
 def setup_rfdc_and_mts(

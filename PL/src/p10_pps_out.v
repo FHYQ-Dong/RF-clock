@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 // P10: the output PPS (since 2.1, plan/pps_output.md).
 //
-// The node's time scale starts each second at the tick that latched its PPS
+// The PL starts counting each second at the tick that latched its PPS
 // (P1's pps_tick).  P10 keeps a phase counter of ticks since that start: a
 // locked PPS edge (pps_event with pps_locked) sets it to raw_tick - pps_tick,
 // and between edges it counts and wraps every PPS_PERIOD ticks, so it carries
@@ -17,7 +17,7 @@
 // sample is AMPLITUDE + (IDLE - AMPLITUDE) x FRAC / 2^16 instead of AMPLITUDE, which
 // moves the edge after the DAC's interpolation by up to one sample (1.25 ns),
 // nearly in proportion to FRAC (calibrated on the scope): the fractional delay
-// with which the ARM makes B's output follow A's time scale to the measurement
+// with which the ARM makes B's output follow the 100 MHz clock on A's PL to the measurement
 // (plan/pps_output.md section 7).  TVALID stays high out of reset, so
 // the DAC reads IDLE between pulses and never repeats a pulse's last sample.
 //

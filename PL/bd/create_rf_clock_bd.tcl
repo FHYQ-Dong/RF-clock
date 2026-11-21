@@ -323,8 +323,9 @@ set failed [catch {
     }
 
     # Unused RFDC event/clear/shutdown inputs are tied inactive.  ADC tile 0
-    # streams stay unconnected (TREADY defaults high).  The DAC tile 0 stream
-    # carries the output PPS from p_top since 2.1.
+    # block 0's I stream (m00) carries the 10 MHz reference on ADC_D into p_top
+    # since 2.4 (P11); its Q stream stays unconnected (TREADY defaults high).  The
+    # DAC tile 0 stream carries the output PPS from p_top since 2.1.
     set unused {}
     foreach p [get_bd_pins rfdc/*] {
         set n [get_property NAME $p]
@@ -363,6 +364,7 @@ set failed [catch {
     connect_bd_net [pin p_top_0/pps_out_invalid] [get_bd_ports pps_out_invalid]
     connect_bd_net [pin p_top_0/pps_out_led] [get_bd_ports pps_out_led]
     connect_bd_intf_net [intf adc_iq_combiner/M_AXIS] [intf p_top_0/s_axis_adc]
+    connect_bd_intf_net [intf rfdc/m00_axis] [intf p_top_0/s_axis_adc0]
     set ovr [get_bd_pins rfdc/adc2_01_over_range -quiet]
     if {[llength $ovr] != 1} { error "RFDC over-range pin not found; see rfdc_pins.txt" }
     connect_bd_net $ovr [pin p_top_0/adc_overrange]

@@ -32,7 +32,7 @@ slope and the scatter about the fitted line.  The M5 scenarios, each board on it
 own FS725, all start with B's acquisition and log one line per second instead of
 the queue entries: ``free`` lets the clocks run, ``sf-step`` raises B's SF by 100
 from 120 s to 240 s (theta's rate must rise by 100 ps/s), and ``steer`` steers B's
-FS725 so that theta goes to theta0, through FC with the predictive law on 0.1 s steps
+FS725 so that theta goes to theta0, through FC with the predictive algorithm on 0.1 s steps
 (``--steer-actuator fc``, since rf-clock 2.3.0.2; ``--b-args`` overrides it), the shared-reference theta of the wiring on the bench
 (links/887329260072A_8873292600AB.json: its ``current`` wiring, or ``--wiring NAME``;
 ``--target-ns`` overrides it).  B's FS725 is the one its board config names, on the port

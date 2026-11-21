@@ -120,7 +120,7 @@ class PPSOut:
         self._control(abi.ABI.PPSOUTCTL.ENABLE, False)
 
     def set_synced(self, synced: bool) -> None:
-        """The ARM's word on the time scale, shown on the validity line at once."""
+        """The ARM's word that the PL's 100 MHz clock is synchronized, shown on the validity line at once."""
         self._control(abi.ABI.PPSOUTCTL.SYNCED, synced)
 
     def status(self) -> PPSOutStatus:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -11,6 +13,7 @@ from rf_clock.pl.client import PLClient
 from rf_clock.pl.measurements import MeasurementQueue, OwnMeasurement, PeerPacket, decode_entry
 from rf_clock.pl.mmio import MemoryMMIO
 from rf_clock.pl.pps_out import PPSOut
+from rf_clock.pl.ref_phase import RefPhase
 from rf_clock.pl.slots import Slots, rx_offset_for
 from rf_clock.pl.tracking import Correlator
 from rf_clock.plmodel import fir
@@ -116,6 +119,29 @@ def test_pps_out_configure_control_and_status():
     status = out.status()
     assert (status.have_ref, status.running, status.flywheel, status.invalid) == (True, False, True, True)
     assert (status.pulses, status.flywheel_pulses, status.last_tick) == (12, 2, 0x1_2345_6789)
+
+
+def test_ref_phase_delay_and_amplitude_from_the_sums():
+    ctrl, regs = client()
+    p11 = RefPhase(ctrl)
+    assert p11.read() is None
+    beats, amp = 100_000_000, 20000.0
+    start = 7_000_000_003  # the second's PPS_TICK: the grid's origin 3 ticks earlier
+    regs.values.update({REG.PPS_TICK_LO: (start + beats) & 0xFFFF_FFFF, REG.PPS_TICK_HI: (start + beats) >> 32,
+                        REG.PPS_COUNT: 42, REG.PPS_LAST_PERIOD: beats})
+    for tau_ns in (12.3456, 99.999, 50.0):  # against the second's start; the last two: Q < 0, I < 0
+        phi = 2 * math.pi * 10e6 * (tau_ns + 30.0) * 1e-9
+        i, q = (round(8 * beats * amp / 2 * f(phi) * 32767) for f in (math.cos, math.sin))
+        regs.values.update({REG.REF_PHASE_SEQ: 9, REG.REF_PHASE_COUNT: 41, REG.REF_PHASE_BEATS: beats,
+                            REG.REF_PHASE_PEAK: 20000,
+                            REG.REF_PHASE_I_LO: i & 0xFFFF_FFFF, REG.REF_PHASE_I_HI: (i >> 32) & 0xFFFF_FFFF,
+                            REG.REF_PHASE_Q_LO: q & 0xFFFF_FFFF, REG.REF_PHASE_Q_HI: (q >> 32) & 0xFFFF_FFFF})
+        second = p11.read()
+        assert second is not None
+        assert (second.seq, second.pps_count, second.beats, second.peak, second.i, second.q) == (9, 41, beats, 20000, i, q)
+        assert second.pps_tick == start
+        assert (second.delay_ns - tau_ns + 50) % 100 - 50 == pytest.approx(0, abs=1e-6)
+        assert second.amplitude == pytest.approx(amp, rel=1e-9)
 
 
 def test_correlator_configure_and_report():

@@ -44,7 +44,7 @@ def peer(count, slot, t_tx_fs, t_rx_fs, measured=True):
 
 def test_a_log_reads_back_as_the_node_formed_it(tmp_path):
     """Node B's queue for three seconds written as m4c_link writes it; the pairs read back are
-    those SecondTheta formed, the second lines and the steering error follow."""
+    those SecondTheta formed, the second lines and theta - theta0 follow."""
     path = tmp_path / "m4c_B.jsonl"
     on_node = []
     node = SecondTheta("B", 500, SLOT_TICKS, TX_OFFSET, pair_sink=lambda c, s, t: on_node.append((c, s, t)))

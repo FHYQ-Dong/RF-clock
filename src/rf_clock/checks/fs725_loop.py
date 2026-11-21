@@ -8,7 +8,7 @@ moves the frequency the loop holds the crystal to; the integrator then drives FC
 crystal, lagging behind FC, gets there.  So FC's answer to the step alone gives the loop,
 the integrator's gain k, the crystal's lag and the dead time (``rf_clock.twtt.steer.fit_loop``,
 results/fs725-fll-20261105 section 5.1), and neither the other board nor the link is
-needed.  The predictive control law steers by that loop, so it must be this unit's at the
+needed.  The predictive steering algorithm steers by that loop, so it must be this unit's at the
 gain it runs at: at GA 7, A's unit's integrator is 1.7 times B's (results/two-loops-20261105
 section 5.5).
 
@@ -17,7 +17,7 @@ config records).  The unit's frequency moves by
 ``--step`` parts in 1e12 and back, ``--steps`` times, ``--hold`` seconds each, so its 10 MHz
 and 1PPS move by up to step x hold (8 ns at the defaults) and return: no link may use this
 board's clock meanwhile.  One k, lag and dead time are fitted to all the steps together:
-FC's own wander moves the fit of a single step, and with steps of 100 the lag of A's unit,
+FC's own variation moves the fit of a single step, and with steps of 100 the lag of A's unit,
 whose FC moves only about 0.65 steps per unit of SF, came out at 1.05 s against 1.65 s
 from steps of 200 (2026-11-05).  The 1 pps PLL is off for the run and back on at the end if it was
 on; SF ends where it started; GA stays at ``--gain`` with ``--write`` and goes back to what it

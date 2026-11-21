@@ -282,7 +282,7 @@ def check_scenario(run: Path) -> int:
             expect(abs(response - step) <= 0.2 * abs(step),
                    f"theta's rate {before:.2f} -> {during:.2f} -> {after:.2f} ps/s: {response:+.2f} ps/s for SF {step:+d}")
         fits = events(logs["B"], "sf_response")
-        for fit in fits:  # the delay is judged; the rate over +-20 s carries the clocks' wander (+-20 %), the
+        for fit in fits:  # the delay is judged; the rate over +-20 s carries the clocks' variation (+-20 %), the
             # rates over the 120 s windows above judge the step's size
             expect(0.0 <= fit["delay_s"] <= 3.0,
                    f"FS725 answer to SF {fit['sf_change']:+d}: acting {fit['delay_s']:.2f} s after the command "

@@ -2,7 +2,7 @@
 // The burst memory window (docs/ABI.md 4.9), AXI BRAM Controller port A
 // (32-bit words, byte address, read latency 1):
 //
-//   0x0000 .. 0x1FFF  PRN or acquisition code, 32 chips a word
+//   0x0000 .. 0x1FFF  PRN or the fixed code used before acquisition, 32 chips a word
 //   0x2000 .. 0x3FFF  packet code
 //   0x4000 .. 0x4140  taps: tap k a signed 16-bit value in bits 15:0 of word k
 //

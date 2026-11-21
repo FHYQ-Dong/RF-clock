@@ -179,7 +179,7 @@ def test_a_correction_needs_the_unit_as_the_steering_left_it():
 @pytest.mark.parametrize("delay", [0.4, 1.3, 2.2])
 def test_the_response_to_an_sf_step_is_fitted(delay):
     # theta sampled finely, a rate change of +100 ps/s acting `delay` s after a command at second 30.3,
-    # wander and noise added, then averaged over each second as the node does
+    # variation and noise added, then averaged over each second as the node does
     rng = np.random.default_rng(3)
     t = np.arange(0, 60, 0.004)
     tc = 30.3 + delay
@@ -198,7 +198,7 @@ def test_a_fit_needs_seconds_on_both_sides():
 
 
 def run_predictive(steering: PredictiveSteering, free: np.ndarray, *, skip: tuple[int, ...] = ()) -> tuple[np.ndarray, list]:
-    """theta of every second for free clocks ``free`` (ps per second), the plant answering
+    """theta of every second for free-running clocks ``free`` (ps per second), the FS725's response answering
     exactly as the steering's model; the changes of SF made."""
     model = steering.model
     asked, changes, theta = [], [], []
@@ -212,11 +212,11 @@ def run_predictive(steering: PredictiveSteering, free: np.ndarray, *, skip: tupl
     return np.array(theta), changes
 
 
-RESONANCE = (2 * 0.9 * np.cos(2 * np.pi / 6), -0.81)  # AR(2) of a 6 s resonance, as the bench pair's wander
+RESONANCE = (2 * 0.9 * np.cos(2 * np.pi / 6), -0.81)  # AR(2) of a 6 s resonance, as the bench pair's variation
 
 
 def wandering_pair(seconds: int, seed: int = 3) -> np.ndarray:
-    """A pair 66 ps/s apart whose frequency wanders with a 6 s resonance, as on the bench."""
+    """A pair 66 ps/s apart whose frequency varies with a 6 s resonance, as on the bench."""
     rng = np.random.default_rng(seed)
     f = np.zeros(seconds)
     for k in range(2, seconds):
@@ -235,7 +235,7 @@ def test_the_loop_model_answers_as_the_loop():
 
 def test_predictive_steering_holds_a_wandering_pair():
     # 3 ns off at the start; with the resonance known, theta holds to about 1.3 times the pair's
-    # second-to-second wander (Steering at tau 5 s, every 2 s: 1.6 times; no prediction: 2.0 times)
+    # second-to-second variation (Steering at tau 5 s, every 2 s: 1.6 times; no prediction: 2.0 times)
     free = wandering_pair(900) + 3000.0
     steering = PredictiveSteering(target_ps=0.0, sf0=3, model=LoopModel(*LOOPS[8]), ar=RESONANCE)
     theta, changes = run_predictive(steering, free)
@@ -309,7 +309,7 @@ def test_predictive_steering_on_steps_of_a_fifth_of_a_second():
     assert max(abs(c) for c in changes) <= steering.max_step
     after = theta[1500:]
     assert abs(after.mean()) < 3
-    assert np.sqrt(np.mean(after ** 2)) < 0.5 * np.std(np.diff(free[::5]))  # half the pair's second-to-second wander
+    assert np.sqrt(np.mean(after ** 2)) < 0.5 * np.std(np.diff(free[::5]))  # half the pair's second-to-second variation
 
 
 def test_predictive_for_picks_the_steps_settings():
@@ -369,8 +369,8 @@ def test_predictive_fc_slows_the_model_and_scales_the_cost():
 
 
 def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
-    # the 6 s resonance of wandering_pair on a 0.1 s grid; the plant 0.05 s later and 5 % harder
-    # than the measured one, the law's model slower still (FC_MODEL_LAG, FC_MODEL_DEAD_S)
+    # the 6 s resonance of wandering_pair on a 0.1 s grid; the FS725's response 0.05 s later and 5 % harder
+    # than the measured one, the algorithm's model slower still (FC_MODEL_LAG, FC_MODEL_DEAD_S)
     rng = np.random.default_rng(6)
     r, w = 0.99, 2 * np.pi * 0.1 / 6
     ar = (2 * r * np.cos(w), -r * r)
@@ -391,4 +391,4 @@ def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
     assert max(abs(c) for c in changes) <= law.max_step
     after = theta[2000:]
     assert abs(after.mean()) < 2
-    assert np.sqrt(np.mean(after ** 2)) < 0.2 * np.std(np.diff(free[::10]))  # a seventh of the second-to-second wander
+    assert np.sqrt(np.mean(after ** 2)) < 0.2 * np.std(np.diff(free[::10]))  # a seventh of the second-to-second variation

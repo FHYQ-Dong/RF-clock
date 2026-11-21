@@ -1,7 +1,7 @@
 """Steering B's FS725 so that theta goes to its target (plan sections 7 and 7.1, M5).
 
 theta is B's clock reading minus A's (``rf_clock.twtt.timing``).  B's FS725 sets
-B's whole timebase, so raising its frequency offset SF by s parts in 1e12 makes
+all of B's clocks, so raising its frequency offset SF by s parts in 1e12 makes
 theta grow by s ps every second.  Each second's theta updates a Kalman filter with
 two states, theta itself (x, ps) and its rate, the relative frequency of the two
 clocks (y, ps/s = parts in 1e12):
@@ -22,7 +22,7 @@ SF takes effect some time after the second whose theta asked for it: the correct
 is sent once that second's theta is in, and the FS725's frequency follows its command
 about 1.1-1.6 s later (B's FS725, results/m5-v2-20261103); with theta averaged over
 each second that is ``response_delay_s`` = 1.9 s after that second.  The filter counts
-a change from then on (until then it is pending, and the control law already counts it
+a change from then on (until then it is pending, and the steering algorithm already counts it
 in y), and while a change is new it widens its outlier gate by the change times
 ``response_sd_s``, the uncertainty of that delay.  With ``response_lag_s`` the frequency
 then follows the change with that first-order time constant, as the PRS10's frequency
@@ -41,11 +41,11 @@ alternates between neighbouring values whose mean is SF_wanted.
 Only B is steered; A free-runs.  The target is the calibrated zero-baseline value of
 theta for this wiring (plan section 8), given explicitly: nothing is guessed.  SF is held within
 its starting value +- ``max_offset``: a large error at the start (a short tau) runs the
-correction at that limit for a while; if the control law still asks for more after
+correction at that limit for a while; if the steering algorithm still asks for more after
 ``max_saturated_s`` seconds in a row, the reference cannot be followed and steering
 stops, SF staying where it is.  That bounds SF; it does not show that the loop closes: where theta does not
 follow SF (both boards on one FS725, as in M4), the filter takes the missing response
-for clock noise and SF wanders by a few units.  Check that a step of SF moves theta's
+for clock noise and SF varies by a few units.  Check that a step of SF moves theta's
 rate by as much before steering.
 
 On B, beside ``rf_clock.twtt.node B``, following its log::
@@ -64,12 +64,12 @@ frequency.  The FS725 is shared through the EPG1, so after an experiment set SF 
 to the value the steering started from (logged, and printed at the end) with
 ``python -m rf_clock.fs725 sf``.
 
-``PredictiveSteering`` is the other control law (``m4c_link --steer-mode predictive``,
+``PredictiveSteering`` is the other steering algorithm (``m4c_link --steer-mode predictive``,
 results/fs725-fll-20261105).  It knows the FS725's answer to SF as its frequency lock loop
 gives it (the unit's loop at its gain GA, from the board config, ``fit_loop``: an
 integrator around the 1 s filter on the crystal's tuning), so it takes its own corrections out of each theta and keeps the free
 clocks' theta.  Their frequency about its 60 s mean is predicted a few seconds ahead by
-an autoregressive model (``AR4``: the pair's wander has a narrow band at 5-9 s periods,
+an autoregressive model (``AR4``: the pair's variation has a narrow band at 5-9 s periods,
 which is predictable over a second or two), and each second the next few changes of SF
 are chosen so that the predicted theta, with the loop's answer to them, stays on the
 target (least squares over ``horizon`` seconds, ``lam`` times the squared changes added);
@@ -178,7 +178,7 @@ def check_unit(unit: Any, sf: int) -> None:
 
 @dataclass
 class Steering:
-    """The filter and the control law: ``step`` takes each second's theta and returns a
+    """The filter and the steering algorithm: ``step`` takes each second's theta and returns a
     new SF when a correction is due."""
 
     target_ps: float
@@ -189,11 +189,11 @@ class Steering:
     settle_s: int = 60
     max_step: int = 100
     max_offset: int = 500
-    apply: bool = True  # False: compute corrections without changing the plant (dry run)
+    apply: bool = True  # False: compute corrections without changing the FS725's response (dry run)
     response_delay_s: float = 0.0  # a change of SF counts this long after the second that asked for it
     response_lag_s: float = 0.0  # then the frequency follows it with this first-order time constant
     response_sd_s: float = 0.5  # uncertainty of that delay: widens the gate while a change is new
-    max_saturated_s: int = 120  # the control law asking beyond max_offset this long stops the steering
+    max_saturated_s: int = 120  # the steering algorithm asking beyond max_offset this long stops the steering
     sf: int = 0
     saturated_since: int | None = None
     pending: list[tuple[float, float]] = field(default_factory=list)  # (count it counts from, change)
@@ -279,19 +279,19 @@ AR4 = (0.852, -0.825, 0.301, -0.171)
 # results/m4c-v2-acquire-20261105_105242 (A at GA 7, B at GA 7; results/two-loops-20261105).
 AR20_STEP_02 = (0.9459, 0.1592, -0.1282, -0.0948, -0.0379, 0.0127, -0.0142, -0.0179, -0.0192, 0.0026,
                 0.0160, -0.0307, -0.0069, -0.0244, 0.0333, 0.0052, -0.0306, 0.0323, -0.0129, -0.0199)
-# The law's settings by step (s): the AR model, the horizon and the changes planned (steps), the
+# The algorithm's settings by step (s): the AR model, the horizon and the changes planned (steps), the
 # cost of a change, when a change leaves after its step ends (s), theta's window (s at the end).
-# At 0.2 s lam 0.05 oscillates when the plant answers harder than the model; 0.2 does not.
+# At 0.2 s lam 0.05 oscillates when the FS725's response answers harder than the model; 0.2 does not.
 STEP_SETTINGS = {1.0: dict(ar=AR4, horizon=4, moves=2, lam=0.05, command_s=0.15),
                  0.2: dict(ar=AR20_STEP_02, horizon=20, moves=2, lam=0.2, command_s=0.03)}
 STEP_DT = 0.02  # s, the grid of the loop's step response
 
 # Steering through FC (``predictive_fc``), B's unit at GA 1: the AR model of theta's frequency on
 # 0.1 s steps (40 of them, fitted on B's record at GA 1, results/m4c-v2-acquire-20261106_030506);
-# the law's settings, lam per (ps/s)^2 as for SF (scaled by the plant's gain squared for FC's
-# steps), changes of up to 1000 fine steps; and its model slower than the plant measured, the lag
+# the algorithm's settings, lam per (ps/s)^2 as for SF (scaled by the FS725's gain squared for FC's
+# steps), changes of up to 1000 fine steps; and its model slower than the FS725's response measured, the lag
 # times FC_MODEL_LAG and the dead time plus FC_MODEL_DEAD_S: in replay (results/precision-20261105
-# section 8) that holds theta to 4.6-5.6 ps rms with the plant's lag 0.8-1.1 s, dead time up to
+# section 8) that holds theta to 4.6-5.6 ps rms with the FS725's lag 0.8-1.1 s, dead time up to
 # 0.1 s and gain +-10 %, and oscillates once its dead time is 0.2 s
 AR40_STEP_01 = (0.3493, 0.4318, 0.2519, 0.0724, -0.001, -0.0456, -0.05, -0.047, -0.0346, -0.0154,
                 -0.0204, -0.0002, 0.0018, 0.004, 0.0113, -0.0014, 0.0057, -0.0149, -0.0007, 0.0021,
@@ -338,7 +338,7 @@ def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, 
     beyond 3), the crystal's lag 0.5-2 s and the dead time 0-0.4 s in steps of 0.05.  FC
     alone fixes them: the loop drives FC until the crystal, lagging behind it, meets the
     new reference.  One k, lag and dead time hold for every change (each its own a, b, D):
-    FC's own wander, 10-20 steps rms over a fit, moves the fit of a single change of 100
+    FC's own variation, 10-20 steps rms over a fit, moves the fit of a single change of 100
     parts in 1e12 to the ends of the grid (fs725_loop on 2026-11-05).  Returns ``k_per_s``,
     ``lag_s``, ``dead_s``, ``rms_steps`` (FC about the fit), ``fc_changes`` (each D), and
     ``alone``: each change fitted by itself, which shows how well they agree."""
@@ -390,7 +390,7 @@ def fit_loop(t: Sequence[float] | np.ndarray, fc: Sequence[float] | np.ndarray, 
 
 class LoopModel:
     """theta's answer to one change of SF, as seen in the windows theta is averaged over, on
-    steps of ``step_s`` (a second, or less for a faster law).
+    steps of ``step_s`` (a second, or less for a faster algorithm).
 
     ``window``: the part of each step theta is the mean over, in s from the step's start,
     (0, step_s) for the whole step; ``command_s``: when the change leaves, after the end of the
@@ -408,7 +408,7 @@ class LoopModel:
         # the window's mean from 5 ms midpoints, the phase interpolated: rounding to the 20 ms
         # grid put times exactly half-way between grid points (0.03 s, 0.15 s after a step's
         # end), where round-half-to-even made the table jagged from one step to the next, and
-        # the law on 0.2 s steps followed the jags (63 ps instead of 16 in the replay)
+        # the algorithm on 0.2 s steps followed the jags (63 ps instead of 16 in the replay)
         grid = np.arange(window[0] + 0.0025, window[1], 0.005)
         n = int(round(table_s / step_s))
         self._table = np.array([float(np.mean(self.phase(j * step_s - step_s - command_s + grid)))
@@ -457,7 +457,7 @@ def fit_frequency_ar(theta_ps: Sequence[float] | np.ndarray, order: int = 4, mea
 
 @dataclass
 class PredictiveSteering:
-    """The predictive control law (module docstring): ``step`` takes each step's theta (a
+    """The predictive steering algorithm (module docstring): ``step`` takes each step's theta (a
     second's, or the model's shorter step's) and returns a new SF when it changes."""
 
     target_ps: float
@@ -476,7 +476,7 @@ class PredictiveSteering:
     apply: bool = True
     sf: int = 0
     first_count: int | None = None
-    free: list[float] = field(default_factory=list)  # the free clocks' theta, one per step from first_count
+    free: list[float] = field(default_factory=list)  # theta less B's own corrections, one per step from first_count
     asked: deque = field(default_factory=deque)  # step that asked for each change within the model's table
     changes: deque = field(default_factory=deque)
     old_total: float = 0.0  # the changes older than the table, summed (their answer is linear: LoopModel.tail)
@@ -545,7 +545,7 @@ class PredictiveSteering:
         if index < len(self.free):  # a step already taken (or an earlier one): nothing to do
             record["event"] = "second already taken"
             return record
-        while len(self.free) < index:  # steps without theta: the free clocks as predicted
+        while len(self.free) < index:  # steps without theta: the free-running clocks as predicted
             self.free.append(self._next_free())
         if theta_ps is None:
             if self.free:
@@ -584,7 +584,7 @@ class PredictiveSteering:
         return record
 
     def _next_free(self) -> float:
-        """The free clocks' theta of a step without a measurement, as predicted."""
+        """The free-running clocks' theta of a step without a measurement, as predicted."""
         if len(self.free) > len(self.ar) + 1:
             return self.free[-1] + self._predict(1)[0] * self.step_s
         return self.free[-1]
@@ -611,7 +611,7 @@ def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.
     """A ``PredictiveSteering`` that sets FC (1000 coarse + fine steps, from ``fc0``) instead of
     SF, B's unit at GA 1 (``FrequencyControl`` with ``actuator="fc"``).  ``plant``: the board
     config's ``fs725["fc"]``, the crystal's answer to FC (``lag_s``, ``dead_s``, ``ps_per_step``);
-    the law's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``) unless ``lag_s`` and
+    the algorithm's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``) unless ``lag_s`` and
     ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2."""
     if step_s not in FC_STEP_SETTINGS:
         raise SteeringError(f"no FC settings for steps of {step_s} s (known: {sorted(FC_STEP_SETTINGS)})")
@@ -652,7 +652,7 @@ def fit_sf_response(counts: Sequence[float], theta_ps: Sequence[float], at_count
 
     ``counts`` and ``theta_ps`` are the per-second thetas (each the mean over its second,
     second k spanning k .. k + 1 on the node's PPS count), ``at_count`` the command's time on
-    the same axis.  Over +-``window_s`` the model is a quadratic, the clocks' own wander, plus
+    the same axis.  Over +-``window_s`` the model is a quadratic, the clocks' own variation, plus
     rate * (the mean over each second of max(0, t - (at_count + delay))); the delay is searched
     from -0.5 to 4 s in steps of 0.02 s.  None with fewer than 10 seconds on either side."""
     k = np.asarray(counts, dtype=float)

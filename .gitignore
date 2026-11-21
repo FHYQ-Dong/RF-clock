@@ -37,3 +37,9 @@ project.sigasi
 
 # Results
 results/
+
+# PDFs of the technical report and their LaTeX files (tools/build_report.ps1)
+/build/
+
+# vendor data sheets and manuals used for the board designs (not ours to redistribute)
+hw/ref/

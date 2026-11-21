@@ -8,7 +8,7 @@ the delays of the cables, filters and boards change with the room's temperature 
 is not the same in both directions, the clocks' true offset moves while theta does not, which
 only an outside measurement shows: here the scope's out_B - out_A and the two 10 MHz, whose
 time deviation over minutes to an hour shows such a drift as a floor or a slope; (2) how
-repeatable the constant and the steering error are over many new starts (PL.open, a new
+repeatable the constant and theta - theta0 are over many new starts (PL.open, a new
 acquisition, a new PP).
 
 Procedure.  ``--runs`` runs of ``--seconds`` each of experiments/m4c_v2_link.py ``--scenario

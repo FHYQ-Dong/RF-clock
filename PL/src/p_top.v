@@ -17,6 +17,8 @@
 // its validity line (a Pmod pin, high = not valid) and an LED (lit = valid).
 // Since 2.2 the pulse can start from an idle level (PPS_OUT_IDLE); since 2.3 its edge can be delayed by a
 // fraction of a sample (PPS_OUT_FRAC with PPS_OUT_CONTROL.FRAC).
+// Since 2.4 P11 measures the phase of a copy of the node's 10 MHz on ADC_D (ADC
+// tile 0 block 0, whose I stream comes in as s_axis_adc0) against the tick.
 // The X_INTERFACE_* attributes let the block design (module reference) see
 // the clock/reset associations and the BRAM port as interfaces.
 module p_top #(
@@ -46,7 +48,7 @@ module p_top #(
     parameter integer LAG_KW         = 16        // lag bits
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:m_axis_dac0:s_axis_adc:BURST_PORT:QUEUE_PORT, ASSOCIATED_RESET arst_n" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axis_dac:m_axis_dac0:s_axis_adc:s_axis_adc0:BURST_PORT:QUEUE_PORT, ASSOCIATED_RESET arst_n" *)
     input  wire                      clk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 arst_n RST" *)
     (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
@@ -136,6 +138,10 @@ module p_top #(
     input  wire                      s_axis_adc_tvalid,
     input  wire                      adc_overrange,  // RFDC status, asynchronous
 
+    // RFDC ADC tile 0 block 0, I (2.4): the 10 MHz reference on ADC_D, 8 samples a beat.
+    input  wire [127:0]              s_axis_adc0_tdata,
+    input  wire                      s_axis_adc0_tvalid,
+
     // AXI DMA S2MM stream (dma_clk).
     output wire [DATA_W-1:0]         m_axis_s2mm_tdata,
     output wire [DATA_W/8-1:0]       m_axis_s2mm_tkeep,
@@ -221,6 +227,11 @@ module p_top #(
         .pps_locked         (pps_locked),
         .pps_fault_event    (pps_fault_event)
     );
+
+    // ---------------- 2.4: P11 ----------------
+    wire [31:0] ref_phase_seq, ref_phase_count, ref_phase_beats;
+    wire [15:0] ref_phase_peak;
+    wire [63:0] ref_phase_i, ref_phase_q;
 
     // ---------------- 2.0 signals ----------------
     localparam integer SPREAD = 64;
@@ -445,7 +456,13 @@ module p_top #(
         .pps_out_status     ({pps_out_invalid, pps_out_flywheel, pps_out_running, pps_out_have_ref}),
         .pps_out_count      (pps_out_count),
         .pps_out_flywheel_count(pps_out_flywheel_count),
-        .pps_out_tick       (pps_out_tick)
+        .pps_out_tick       (pps_out_tick),
+        .ref_phase_seq      (ref_phase_seq),
+        .ref_phase_count    (ref_phase_count),
+        .ref_phase_beats    (ref_phase_beats),
+        .ref_phase_peak     (ref_phase_peak),
+        .ref_phase_i        (ref_phase_i),
+        .ref_phase_q        (ref_phase_q)
     );
 
     // ---------------- P3 ----------------
@@ -700,6 +717,22 @@ module p_top #(
         .pps_out_invalid (pps_out_invalid)
     );
     assign pps_out_led = !pps_out_invalid;
+
+    // ---------------- P11 (2.4) ----------------
+    p11_ref_phase u_p11 (
+        .clk           (clk),
+        .rst           (rst),
+        .s_axis_tdata  (s_axis_adc0_tdata),
+        .s_axis_tvalid (s_axis_adc0_tvalid),
+        .pps_event     (pps_event),
+        .pps_count     (pps_count),
+        .snap_seq      (ref_phase_seq),
+        .snap_count    (ref_phase_count),
+        .snap_beats    (ref_phase_beats),
+        .snap_peak     (ref_phase_peak),
+        .snap_i        (ref_phase_i),
+        .snap_q        (ref_phase_q)
+    );
 
     // ---------------- P6 ----------------
     wire [3:0] fault_in;

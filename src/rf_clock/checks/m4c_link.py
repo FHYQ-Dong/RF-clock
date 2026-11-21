@@ -13,7 +13,8 @@ reference), PACKET_CONFIG_ID (the RRC configuration's id) and the slot engine
 (``--role``, ``--tx-offset``, the window opened 1.25 us before ``--arrival-ticks``
 or at ``--rx-offset``, with packets), enabled at ``--start-at`` (Unix time, default
 now); then until ``--stop-at`` (default ``--seconds`` later) read the measurement
-queue into ``--out``, one JSON line per entry, with the status every second.  Both
+queue into ``--out``, one JSON line per entry, with the status every second and, since
+2.4, P11's phase of the 10 MHz reference on ADC_D for each second (``ref_phase``).  Both
 nodes get the same two times, half a second into a second, so that their engines
 start and stop at the same PPS edge (the boards keep NTP time) and neither listens
 while the other is silent.  With ``--start-file PATH`` instead (since 2.3.0.3) the node,
@@ -66,7 +67,7 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         change of rate per SF unit and the delay after the command at
                         which it acts, the FS725's own response (``sf_response`` lines);
 ``--steer-target-ns T`` steer the FS725 (``rf_clock.twtt.steer``: the Kalman filter and
-                        the control law, one theta per second) so that theta goes to T,
+                        the steering algorithm, one theta per second) so that theta goes to T,
                         from the first lock on; at the end SF goes back to its starting
                         value unless ``--keep-sf``.  ``--steer-mode predictive`` uses
                         ``PredictiveSteering`` instead, with the unit's frequency lock
@@ -78,7 +79,7 @@ two clocks (each board on its own FS725), on B, with ``--fs725 PORT``:
                         without a read-back, the unit checked once a second.
                         ``--steer-actuator fc`` (since 2.3.0.2, with ``--steer-step 0.1``)
                         sets FC, the crystal's tuning, instead of SF: the unit at GA 1
-                        for the run, FC written every step, ``fc_set`` lines, the law's
+                        for the run, FC written every step, ``fc_set`` lines, the algorithm's
                         model the board config's ``fs725.fc`` made slower
                         (``--fc-model-lag``, ``--fc-model-dead`` override it);
                         ``rf_clock.twtt.control.FrequencyControl``, results/precision-20261105
@@ -95,13 +96,13 @@ inverted, so the leading edge rises) and ``--pps-out-idle`` between pulses (defa
 and puts its status into the status lines; it is left on at the end.  While it runs the
 node sets SYNCED (PPS_OUT_CONTROL: the validity line on the Pmod header and the LED) by
 ``rf_clock.twtt.control.SyncedRule``: node A while its link is locked and B's packets come in; node B while
-its link is locked, the steering runs, and over the last 60 s the steering error's rms
+its link is locked, the steering runs, and over the last 60 s the rms of theta - theta0
 is below ``--synced-rms`` and its mean below ``--synced-mean``, cleared when the link
 or the steering stops or the last 10 s exceed ``--synced-clear-rms``.  SYNCED is
 cleared at the end.
 
 ``--pps-out-comp`` (node B, with ``--pps-out`` and ``--steer-target-ns``; since 2.3) makes B's
-output PPS follow A's time scale to the measurement rather than to the steering
+output PPS follow the 100 MHz clock on A's PL to the measurement rather than to the steering
 (``rf_clock.twtt.control.EdgeCompensation``, plan/pps_output.md section 7): once a second,
 at ``--pps-out-comp-at`` of B's second (0.94), theta of the newest pairs (the last
 ``--pps-out-comp-window`` seconds, 0.02) is carried to the next edge by theta's rate over
@@ -112,7 +113,7 @@ experiments/m5_pps_frac.py; the default, 0.0275, is board 8873292600AB's of 2026
 good to 2 ps within 4096 units, 113 ps, of the base: the edge moves along an S-shaped curve,
 steepest there, docs/ABI.md 4.13).  ``pps_comp`` lines log each edge's fraction and delay;
 FRAC is cleared at the end.  B's output PPS then no longer keeps a fixed place against B's
-10 MHz: it moves against it by the steering error, so equipment that times one against the
+10 MHz: it moves against it by theta - theta0, so equipment that times one against the
 other sees that error (docs/ABI.md 4.13).
 
 PASS (the link alone): locked when the engine is disabled, no lock lost after the
@@ -178,7 +179,7 @@ def steer_fit(thetas: list[tuple[int, float]], at_count: float) -> dict | None:
 
 
 def steering_law(args, late_s: float, loop: tuple[float, float, float] | None, fc_plant: dict | None = None):
-    """The control law ``--steer-target-ns``, ``--steer-mode`` and ``--steer-actuator`` ask for, as a
+    """The steering algorithm ``--steer-target-ns``, ``--steer-mode`` and ``--steer-actuator`` ask for, as a
     function of the unit's SF (or FC) and GA (``FrequencyControl`` calls it once it has read them);
     None without a target.  ``fc_plant``: the board config's ``fs725["fc"]``."""
     if args.steer_target_ns is None:
@@ -334,7 +335,7 @@ def main() -> None:
     parser.add_argument("--steer-response-delay", type=float, default=1.9,
                         help="s after the second that asked for it that a change of SF acts (B's FS725, 2026-11-03)")
     parser.add_argument("--synced-rms", type=float, default=100.0, metavar="PS",
-                        help="node B with --pps-out: SYNCED once the steering error's 60 s rms is below this")
+                        help="node B with --pps-out: SYNCED once the 60 s rms of theta - theta0 is below this")
     parser.add_argument("--synced-mean", type=float, default=30.0, metavar="PS",
                         help="... and its 60 s mean below this")
     parser.add_argument("--synced-clear-rms", type=float, default=200.0, metavar="PS",
@@ -356,12 +357,12 @@ def main() -> None:
     parser.add_argument("--steer-response-lag", type=float, default=0.0,
                         help="then the frequency follows with this first-order time constant, s (0: at once)")
     parser.add_argument("--steer-actuator", choices=("sf", "fc"), default="sf",
-                        help="predictive: what the law sets, SF, or FC with the unit at GA 1 (2.3.0.2; 0.1 s steps, "
+                        help="predictive: what the algorithm sets, SF, or FC with the unit at GA 1 (2.3.0.2; 0.1 s steps, "
                              "the board config's fs725 fc)")
     parser.add_argument("--fc-model-lag", type=float, default=None, metavar="S",
-                        help="FC: the law's model lag (default: the board config's times steer.FC_MODEL_LAG)")
+                        help="FC: the algorithm's model lag (default: the board config's times steer.FC_MODEL_LAG)")
     parser.add_argument("--fc-model-dead", type=float, default=None, metavar="S",
-                        help="FC: the law's model dead time (default: the board config's plus steer.FC_MODEL_DEAD_S)")
+                        help="FC: the algorithm's model dead time (default: the board config's plus steer.FC_MODEL_DEAD_S)")
     parser.add_argument("--keep-sf", action="store_true", help="leave SF where the steering put it")
     parser.add_argument("--fc-every", type=float, default=0.0, metavar="S",
                         help="with --fs725: log the FS725's FC every S seconds (it changes between most reads 0.1 s apart)")
@@ -370,10 +371,10 @@ def main() -> None:
     parser.add_argument("--pps-out-amplitude", type=int, default=-24000, help="its DAC code")
     parser.add_argument("--pps-out-idle", type=int, default=0, help="its DAC code between pulses (2.2)")
     parser.add_argument("--pps-out-comp", action="store_true",
-                        help="node B: move the output edge by theta's steering error before each edge (2.3)")
+                        help="node B: move the output edge by theta - theta0 before each edge (2.3)")
     parser.add_argument("--pps-out-ps-per-frac", type=float, default=0.0275, metavar="PS",
                         help="the edge's delay per unit of P10's fraction about the base (calibrated on the scope)")
-    parser.add_argument("--pps-out-base-frac", type=int, default=0x8000, help="the fraction at zero steering error")
+    parser.add_argument("--pps-out-base-frac", type=int, default=0x8000, help="the fraction at theta = theta0")
     parser.add_argument("--pps-out-comp-at", type=float, default=0.94, metavar="S",
                         help="when in B's second the fraction for the next edge is written")
     parser.add_argument("--pps-out-comp-window", type=float, default=0.02, metavar="S",
@@ -463,7 +464,7 @@ def main() -> None:
             raise SystemExit("--steer-target-ns is for node B")
         if args.steer_actuator == "fc" and (args.steer_mode != "predictive" or args.steer_target_ns is None
                                             or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
-            raise SystemExit(f"--steer-actuator fc is for the predictive law with --steer-target-ns, on steps of "
+            raise SystemExit(f"--steer-actuator fc is for the predictive algorithm with --steer-target-ns, on steps of "
                              f"{sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
         late_s = args.steer_late_slots / pl.slots.slots_per_second
         try:
@@ -480,7 +481,7 @@ def main() -> None:
         if (args.steer_mode != "predictive" or args.steer_target_ns is None
                 or abs(step_slots - args.steer_step * pl.slots.slots_per_second) > 1e-9
                 or pl.slots.slots_per_second % step_slots):
-            raise SystemExit("--steer-step below 1 s is for the predictive control law, in whole slots dividing a second")
+            raise SystemExit("--steer-step below 1 s is for the predictive steering algorithm, in whole slots dividing a second")
         step_theta = StepTheta(step_slots, args.steer_late_slots, pl.slots.slots_per_second)
     comp = None
     if args.pps_out_comp:
@@ -520,6 +521,7 @@ def main() -> None:
     peer_windows = 0
     counted: set[tuple[int, int]] = set()  # windows counted whose packet has not come yet
     seen_report = 0
+    seen_ref = 0
     copies = 0
     copy_seq: int | None = None  # RX_SEQ before the copy in flight
     copy_asked = 0.0
@@ -606,6 +608,12 @@ def main() -> None:
                 else:
                     emit("reject", seq=report.seq, lag=report.strongest.lag, near=near, strong=strong,
                          psl_db=report.peak_to_sidelobe_db)
+
+        if pl.ref_phase.seq() != seen_ref:
+            ref = pl.ref_phase.read()
+            if ref is not None:
+                seen_ref = ref.seq
+                emit("ref_phase", **asdict(ref), delay_ns=ref.delay_ns, amplitude=ref.amplitude)
 
         # ---- protocol tests ----
         if args.search_every and status.locked and first_lock is not None and now >= next_search:

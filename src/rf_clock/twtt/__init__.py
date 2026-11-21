@@ -6,8 +6,8 @@ rf-clock 2, the measurements carried in the bursts (docs/ABI.md 11.12):
              or per step
 ``control``  what a node does with theta: its FS725 (the board config check, SF steps,
              steering) and the output PPS's SYNCED
-``steer``    the control laws that steer B's FS725: the Kalman control law and the
-             predictive control law, and the fits of the FS725's answer to SF
+``steer``    the steering algorithms that steer B's FS725: the Kalman steering algorithm and the
+             predictive steering algorithm, and the fits of the FS725's answer to SF
 ``logs``     reading the log of ``rf_clock.checks.m4c_link``, which runs one node
 
 rf-clock 1.x, deprecated: ``timing``, ``node`` and ``link`` exchange one record a second

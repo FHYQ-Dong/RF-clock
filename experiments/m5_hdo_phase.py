@@ -1,7 +1,7 @@
 """M5: the two FS725s' 10 MHz and 1PPS against each other on the HDO9404-MS, beside the link's theta.
 
 Problem.  With each board on its own FS725, theta drifts at the two clocks' frequency
-difference and wanders about that line (results of 2026-11-03: -68 ps/s, 31 ps about
+difference and varies about that line (results of 2026-11-03: -68 ps/s, 31 ps about
 the line over 32 s, sd of a single pair 1.0 ps).  Is that the clocks, or the link?
 Each board's tick and converter clocks are made from its FS725's 10 MHz, so the time
 offset of the two 10 MHz outputs, as an instrument outside the system sees it, must
@@ -10,15 +10,17 @@ as theta grows.  This logs that offset, modulo the 100 ns period, while the link
 so that theta(t) can be compared with it second by second.
 
 With ``--pps`` it also logs PPS_B - PPS_A, M5's acceptance quantity (plan section 9).
-theta aligns the two nodes' tick-anchored time scales, not the PPS edges: at the FS725
-outputs PPS_B - PPS_A = (d_A + l_A) - (d_B + l_B) + Delta/2 - theta, where d is each
-node's PPS lead on the tick that latches it and l its PPS cable and input path.  Steered
+theta aligns the two PLs' 100 MHz clocks, each counted from its PPS tick, not the PPS
+edges: at the FS725 outputs PPS_B - PPS_A = (d_A + l_A) - (d_B + l_B) + Delta/2 - theta,
+where d is each node's PPS lead on the tick that latches it and l its PPS cable and
+input path.  Steered
 to a target theta_0, the PPS difference is a constant, which this measures so that it
 can be put into theta_0 (plan/checklist.md, M5).
 
-Procedure.  C1 and C2 take the second 10 MHz output of the two FS725s (DC 50 ohm,
-0.5 V/div: the traces sit 0.4-0.8 V below zero, as read back), C1 B's and C2 A's; the
-scope records 2 us at 10 GS/s.  For each acquisition the script fits a 10 MHz sine to
+Procedure.  C1 and C2 take the second 10 MHz output of the two FS725s (0.5 V/div: the
+traces sit 0.4-0.8 V below zero, as read back), C1 B's and C2 A's; DC 50 ohm until
+2026-11-09, DC 1 Mohm since, when the same outputs go on through tees into each board's
+ADC_D (P11, docs/ABI.md 4.14), which terminates them; the scope records 2 us at 10 GS/s.  For each acquisition the script fits a 10 MHz sine to
 each channel (least squares, with a DC term) and writes the time by which C2's zero
 crossing lags C1's (ps, within +-50 ns), the two amplitudes and the times the
 acquisition was asked for and read.  Without ``--pps`` the scope triggers on C1 at its
@@ -49,6 +51,14 @@ and C2 the two 10 MHz as always; the scope triggers on B's output (C4 rising thr
 (out_b_vs_10mhz_ns against C1, out_a_vs_10mhz_ns against C2, wrapped into +-50 ns), so
 that a change of the difference can be told to come from one board or the other.
 
+``--out-pps-free``: one FS725 only.  C1 takes its 10 MHz (``--c1-coupling``, DC 1 Mohm through
+a tee as always, DC 50 ohm when the cable ends at the scope), ``--out-channel`` (C4, or C3) its
+board's output PPS (DAC_B, J20, DC 50 ohm, 0.1 V/div), and the scope triggers on that channel
+(rising through 0.1 V) and records 1 us at 20 GS/s.  The other channels are not read.  Each record holds d1_ns, out_ns and
+out_level_v (``pulse_edge``) and out_vs_10mhz_ns, the output edge against C1's phase wrapped
+into +-50 ns.  With the board's clocks running free the output edge walks against the 10 MHz
+by many periods a second, and experiments/m5_vcxo_scope.py counts the whole periods.
+
 Run on RF-clock-PC as root (the scope's USB node is root-only), with the project's
 ``instruments`` dependency group::
 
@@ -72,7 +82,7 @@ SCOPE = "USB0::0x05FF::0x1023::4404N30414::INSTR"  # HDO9404-MS on RF-clock-PC's
 F_REF = 10e6
 SETUP = [  # (VBS statement) for the 10 MHz channels and the timebase
     "app.Acquisition.C1.View = True", "app.Acquisition.C2.View = True",
-    'app.Acquisition.C1.Coupling = "DC50"', 'app.Acquisition.C2.Coupling = "DC50"',
+    'app.Acquisition.C1.Coupling = "DC1M"', 'app.Acquisition.C2.Coupling = "DC1M"',  # tees on to ADC_D
     "app.Acquisition.C1.VerScale = 0.5", "app.Acquisition.C2.VerScale = 0.5",
     "app.Acquisition.C1.VerOffset = 0", "app.Acquisition.C2.VerOffset = 0",
     "app.Acquisition.Horizontal.HorScale = 200e-9", "app.Acquisition.Horizontal.HorOffset = 0",
@@ -106,6 +116,18 @@ SETUP_OUT_PPS2 = [  # A's and B's output PPS, 1 us at 20 GS/s, trigger on B's
     'app.Acquisition.Trigger.Source = "C4"', 'app.Acquisition.Trigger.C4.Slope = "Positive"',
     "app.Acquisition.Trigger.C4.Level = 0.1",
 ]
+
+
+def setup_out_pps_free(ch: str, c1_coupling: str, negative: bool = False) -> list[str]:
+    """One board's output PPS on ``ch``, 1 us at 20 GS/s, trigger on it (on a falling edge through
+    -0.1 V when the board's pulse comes out negative, as board 887329260072A's DAC_B does)."""
+    return [f"app.Acquisition.{ch}.View = True", f'app.Acquisition.{ch}.Coupling = "DC50"',
+            f"app.Acquisition.{ch}.VerScale = 0.1", f"app.Acquisition.{ch}.VerOffset = 0",
+            f'app.Acquisition.C1.Coupling = "{c1_coupling}"',
+            "app.Acquisition.Horizontal.HorScale = 100e-9", "app.Acquisition.Horizontal.SampleRate = 20e9",
+            f'app.Acquisition.Trigger.Source = "{ch}"',
+            f'app.Acquisition.Trigger.{ch}.Slope = "{"Negative" if negative else "Positive"}"',
+            f"app.Acquisition.Trigger.{ch}.Level = {-0.1 if negative else 0.1}"]
 
 
 def pps_trigger(channel: str) -> list[str]:
@@ -184,6 +206,11 @@ def main() -> None:
                         help="B's 1PPS on C3 and B's output PPS (DAC_B) on C4, trigger on C3")
     parser.add_argument("--out-pps2", action="store_true",
                         help="A's output PPS on C3 and B's on C4, trigger on C4")
+    parser.add_argument("--out-pps-free", action="store_true",
+                        help="one FS725's 10 MHz on C1 and its board's output PPS on --out-channel, trigger on it")
+    parser.add_argument("--out-channel", choices=("C3", "C4"), default="C4", help="with --out-pps-free")
+    parser.add_argument("--c1-coupling", choices=("DC1M", "DC50"), default="DC1M", help="with --out-pps-free")
+    parser.add_argument("--out-negative", action="store_true", help="with --out-pps-free: the pulse is negative")
     args = parser.parse_args()
 
     stop = False
@@ -194,9 +221,11 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, on_term)
     scope = HDO9404(SCOPE, backend="pyusb")
-    setup = SETUP + (SETUP_OUT_PPS2 if args.out_pps2 else SETUP_OUT_PPS + pps_trigger("C3") if args.out_pps else
+    setup = SETUP + (setup_out_pps_free(args.out_channel, args.c1_coupling, args.out_negative) if args.out_pps_free else
+                     SETUP_OUT_PPS2 if args.out_pps2 else
+                     SETUP_OUT_PPS + pps_trigger("C3") if args.out_pps else
                      SETUP_PPS + pps_trigger(args.pps_trigger) if args.pps else SETUP_10MHZ_TRIGGER)
-    pps_mode = args.pps or args.out_pps or args.out_pps2
+    pps_mode = args.pps or args.out_pps or args.out_pps2 or args.out_pps_free
     before = {s.split(" = ")[0]: scope.vbs_query(s.split(" = ")[0]) for s in setup}
     for statement in setup:
         scope.vbs(statement)
@@ -214,7 +243,7 @@ def main() -> None:
     with out.open("a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps({"type": "start", "time": time.time(), "settings_before": before, "setup": setup,
                             "trigger_level": level, "pps": args.pps, "out_pps": args.out_pps,
-                            "out_pps2": args.out_pps2}) + "\n")
+                            "out_pps2": args.out_pps2, "out_pps_free": args.out_pps_free}) + "\n")
         while time.time() < end and not stop:
             asked = time.time()
             timeout = 2.5 if pps_mode else 2
@@ -223,6 +252,19 @@ def main() -> None:
                 continue
             got = time.time()
             t1, v1 = scope.get_waveform("C1")
+            if args.out_pps_free:
+                d1, a1 = sine_delay(t1, v1)
+                edge = pulse_edge(*scope.get_waveform(args.out_channel))
+                to = None if edge is None else edge[0]
+                record = {"type": "acq", "time": got, "asked": asked, "amp1": a1, "points": len(t1),
+                          "d1_ns": d1 * 1e9, "out_ns": None if to is None else to * 1e9,
+                          "out_level_v": None if edge is None else edge[1],
+                          "out_vs_10mhz_ns": None if to is None else ((to - d1 + period / 2) % period - period / 2) * 1e9}
+                f.write(json.dumps(record) + "\n")
+                f.flush()
+                n += 1
+                time.sleep(max(0.0, args.period - (time.time() - asked)))
+                continue
             t2, v2 = scope.get_waveform("C2")
             d1, a1 = sine_delay(t1, v1)
             d2, a2 = sine_delay(t2, v2)

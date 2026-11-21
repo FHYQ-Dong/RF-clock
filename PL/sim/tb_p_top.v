@@ -83,6 +83,7 @@ module tb_p_top;
         .queue_en(1'b0), .queue_we(4'd0), .queue_addr(16'd0), .queue_wrdata(32'd0), .queue_rddata(),
         .m_axis_dac_tdata(dac_tdata), .m_axis_dac_tvalid(dac_tvalid), .m_axis_dac_tready(dac_tready),
         .s_axis_adc_tdata(adc_tdata), .s_axis_adc_tvalid(1'b1), .adc_overrange(1'b0),
+        .s_axis_adc0_tdata({8{16'd1000}}), .s_axis_adc0_tvalid(1'b1),
         .m_axis_s2mm_tdata(s2mm_tdata), .m_axis_s2mm_tkeep(s2mm_tkeep),
         .m_axis_s2mm_tvalid(s2mm_tvalid), .m_axis_s2mm_tready(s2mm_tready),
         .m_axis_s2mm_tlast(s2mm_tlast),
@@ -104,6 +105,8 @@ module tb_p_top;
 
     // PPS source: one edge every PPS_P ticks; remember the edge tick.
     reg [63:0] last_pps_tick = 0;
+    reg [31:0] rp_seq, rp_count, rp_pps;
+    reg [63:0] rp_sum;
     initial begin
         @(posedge arst_n);
         repeat (30) @(negedge clk);
@@ -225,7 +228,7 @@ module tb_p_top;
 
         // ID/VERSION are checked against literal values: they are the ABI.
         rd(REG_ID, v);       check(v == 32'h5243_4C4B, "ID");
-        rd(REG_VERSION, v);  check(v == 32'h0002_0003, "VERSION");
+        rd(REG_VERSION, v);  check(v == 32'h0002_0004, "VERSION");
         rd(REG_BUILD_VERSION, v); check(v == 32'h0102_0304, "BUILD_VERSION");
         axi_write(REG_BUILD_VERSION, 32'h1, 4'hF, resp); check(resp == 2'b10, "BUILD_VERSION is read-only");
         rd(REG_TX_DEPTH, v); check(v == TX_DEPTH, "TX_DEPTH");
@@ -350,6 +353,20 @@ module tb_p_top;
         check(v == ((32'd1 << PPSOUTST_HAVE_REF) | (32'd1 << PPSOUTST_RUNNING)), "PPS_OUT_STATUS valid");
         check(!pps_out_invalid && pps_out_led, "validity line low, LED lit");
         rd(REG_PPS_OUT_CNT, v); check(v == pulses, "PPS_OUT_CNT");
+        // P11 (2.4): a constant on ADC_D sums to zero over a second of whole periods (200 ticks);
+        // the snapshots count the seconds, the peak is the constant.
+        axi_write(REG_REF_PHASE_SEQ, 32'h1, 4'hF, resp); check(resp == 2'b10, "REF_PHASE_SEQ is read-only");
+        rd(REG_REF_PHASE_SEQ, rp_seq);
+        repeat (2 * PPS_P + 20) @(negedge clk);
+        rd(REG_REF_PHASE_SEQ, v); check(v >= rp_seq + 2, "REF_PHASE_SEQ counts the seconds");
+        rd(REG_REF_PHASE_BEATS, v); check(v == PPS_P, "REF_PHASE_BEATS: a second");
+        rd(REG_REF_PHASE_PEAK, v); check(v == 1000, "REF_PHASE_PEAK");
+        rd64(REG_REF_PHASE_I_LO, rp_sum); check(rp_sum == 0, "REF_PHASE_I of a constant");
+        rd64(REG_REF_PHASE_Q_LO, rp_sum); check(rp_sum == 0, "REF_PHASE_Q of a constant");
+        rd(REG_REF_PHASE_COUNT, rp_count);
+        rd64(REG_PPS_TICK_LO, rp_sum);  // latches PPS_COUNT
+        rd(REG_PPS_COUNT, rp_pps);
+        check(rp_count + 1 == rp_pps || rp_count + 2 == rp_pps, "REF_PHASE_COUNT: the second before");
         rd(REG_PPS_OUT_FLYWHEEL_CNT, v); check(v <= start_n, "PPS_OUT_FLYWHEEL_CNT: pulses before the lock only");
         rd64(REG_PPS_OUT_TICK_LO, v64); check(v64 == pulse_tick, "PPS_OUT_TICK");
         wr(REG_PPS_OUT_CONTROL, 32'd1 << PPSOUTCTL_ENABLE);  // not synchronized: invalid at once

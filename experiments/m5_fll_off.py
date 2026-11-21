@@ -1,12 +1,12 @@
-"""M5: B's FS725 with its frequency lock loop slowed to 128 s: how its crystal wanders, how it answers FC.
+"""M5: B's FS725 with its frequency lock loop slowed to 128 s: how its crystal varies, how it answers FC.
 
 Problem.  Steering B through SF goes SF -> magnetic field -> FLL integrator -> 1 s RC -> crystal
 and leaves 15-17 ps (results/precision-20261105).  The PRS10 lets the crystal's tuning FC be set
-directly (docs/PRS10m.pdf p. 24-25), which leaves only the RC (p. 47): in replay that law holds
+directly (docs/PRS10m.pdf p. 24-25), which leaves only the RC (p. 47): in replay that algorithm holds
 B to 5-7 ps (results/precision-20261105/fcdirect.py, batch.py), but the replay used theta with
-both FLLs on and a guessed plant.  Two things decide whether it holds on the bench: the
-crystal's own wander without the FLL (B's FLL puts about half of theta's second-to-second rate
-in, docs/fs725_principles.md section 10, but the free crystal is not specified), and the plant:
+both FLLs on and a guessed FS725 response.  Two things decide whether it holds on the bench: the
+crystal's own variation without the FLL (B's FLL puts about half of theta's second-to-second rate
+in, docs/fs725_principles.md section 10, but the free crystal is not specified), and the FS725's response:
 FC's dead time and the RC's time constant.
 
 The FLL cannot simply be stopped: with ``LO 0`` or ``GA 0`` the unit reports itself unlocked and
@@ -14,7 +14,7 @@ its LOCK/1PPS pin stays high (p. 20, "LM"), so B's PL loses its PPS and the slot
 (2026-11-06, results/m4c-v2-acquire-20261106_023402).  At ``GA 1`` the loop runs with a 128 s
 time constant and the unit stays locked, its 1PPS on; an FC written there stays, the loop
 pulling it back by about 2 units a second (measured on B the same night), so on 0.1-10 s the
-crystal is as good as free, and a law writing FC every 0.1 s overrides the loop.
+crystal is as good as free, and an algorithm writing FC every 0.1 s overrides the loop.
 ``--node A --low-gain G --cycles 0`` does the same to A's unit at gain G without FC steps (A's
 link never opens its FS725), to see what A's loop puts into theta.
 

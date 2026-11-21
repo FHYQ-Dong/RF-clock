@@ -3,7 +3,7 @@
 Problem.  M5 steers the follower's FS725 to the master's reference through SF, which
 reaches only +-2e-9 (``rf_clock.fs725``).  With a free-running White Rabbit node as
 the master, its frequency against the FS725 has to lie well inside that range, and
-how much it wanders sets the steering's time constant (``experiments/m5_steer_sim.py``).
+how much it varies sets the steering's time constant (``experiments/m5_steer_sim.py``).
 
 The HDO9404-MS on RF-clock-PC's USB compares the two PPS: C1 is EPG1 output 4 (the
 FS725's PPS, retimed by the EPG1, which is locked to the FS725's 10 MHz; the

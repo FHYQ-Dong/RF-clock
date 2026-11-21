@@ -1,15 +1,15 @@
-"""The predictive control law steering a simulated FS725, on a development machine.
+"""The predictive steering algorithm steering a simulated FS725, on a development machine.
 
     python -m rf_clock.examples.twtt.02_fake_steer
 
 No FS725 needed.  On the board ``rf_clock.checks.m4c_link --steer-mode predictive`` does the
 same with node B's theta and its FS725 (``rf_clock.twtt.control.FrequencyControl``).
 
-The law steers by the FS725's frequency lock loop: the integrator's gain k, the crystal's lag
+The algorithm steers by the FS725's frequency lock loop: the integrator's gain k, the crystal's lag
 behind FC and the dead time, measured on each unit at the gain it runs at and kept in its
 board's config (``fs725``, written by ``rf_clock.checks.fs725_loop``); the entry below is B's.
 Each second it is given theta and returns the new SF, or None to leave SF as it is.  Here
-the two clocks drift 66 ps/s apart with a 6 s wander, as on the bench, and B's frequency
+the two clocks drift 66 ps/s apart with a 6 s variation, as on the bench, and B's frequency
 follows each change of SF as that loop makes it (``LoopModel``).
 """
 
@@ -27,7 +27,7 @@ SECONDS = 900
 
 
 def free_clocks(seconds: int, seed: int = 1) -> np.ndarray:
-    """theta of two free clocks each second, ps: 66 ps/s apart, the rate wandering at 6 s."""
+    """theta of two free-running clocks each second, ps: 66 ps/s apart, the rate varying at 6 s."""
     rng = np.random.default_rng(seed)
     a1, a2 = 2 * 0.9 * np.cos(2 * np.pi / 6), -0.81
     f = np.zeros(seconds)
@@ -44,7 +44,7 @@ def main() -> None:
     changes: list[int] = []  # by how much
     errors = []
     for k, free in enumerate(free_clocks(SECONDS)):
-        # theta: the free clocks plus what each change of SF has done to B's time by now
+        # theta: the free-running clocks plus what each change of SF has done to B's time by now
         own = float(np.dot(changes, law.model.answer(k - np.asarray(asked)))) if asked else 0.0
         theta = free + own
         record = law.step(k, theta)  # theta of second k; on the board the mean over its last 0.2 s
@@ -55,8 +55,8 @@ def main() -> None:
     late = np.array(errors[300:])
     rate_sd = np.std(np.diff(free_clocks(SECONDS)))
     print(f"FS725 S/N {fs725['serial']} at GA {fs725['gain']}: {len(changes)} changes of SF in {SECONDS} s; "
-          f"steering error after 300 s: mean {late.mean():+.1f} ps, rms {np.sqrt(np.mean(late ** 2)):.1f} ps, "
-          f"where the free clocks' rate scatters by {rate_sd:.0f} ps/s")
+          f"theta - theta0 after 300 s: mean {late.mean():+.1f} ps, rms {np.sqrt(np.mean(late ** 2)):.1f} ps, "
+          f"where the free-running clocks' rate scatters by {rate_sd:.0f} ps/s")
 
 
 if __name__ == "__main__":

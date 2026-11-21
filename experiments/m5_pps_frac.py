@@ -1,7 +1,7 @@
 """M5: by how much does P10's fraction (PPS_OUT_FRAC, rf-clock 2.3) delay B's output edge?
 
 Problem.  The theta-compensated output PPS (plan/pps_output.md section 7) moves B's output
-edge by the steering error, a few tens of ps, through a fraction of one 1.25 ns DAC sample:
+edge by theta - theta0, a few tens of ps, through a fraction of one 1.25 ns DAC sample:
 the step's first sample becomes amplitude + (idle - amplitude) x frac / 2^16.  After the DAC's
 interpolation the edge's 50 % crossing should move nearly in proportion to frac, but by how
 many ps per unit, and how straight, has to be measured before ``m4c_link --pps-out-comp`` can

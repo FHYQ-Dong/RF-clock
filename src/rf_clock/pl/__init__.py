@@ -8,6 +8,7 @@ from .client import PLClient, Status
 from .measurements import MeasurementQueue, OwnMeasurement, PeerPacket
 from .overlay import VersionMismatch
 from .pps_out import PPSOut, PPSOutStatus
+from .ref_phase import RefPhase, RefPhaseSecond
 from .slots import Slots
 from .tracking import Correlator, SearchReport
 from .waveform import WaveformGenerator
@@ -27,6 +28,8 @@ __all__ = [
     "PPSOutStatus",
     "PeerPacket",
     "RFDC",
+    "RefPhase",
+    "RefPhaseSecond",
     "ResultCode",
     "RxFlag",
     "RxState",

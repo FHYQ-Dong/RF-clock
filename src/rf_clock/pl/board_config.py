@@ -34,10 +34,10 @@ file written for another board.  ``python -m rf_clock.checks.vco_bands`` writes 
                   frequency lock loop's gain GA the link sets at its start; ``loops``,
                   per GA the loop measured from FC's answer to SF steps (``k_per_s``,
                   ``lag_s``, ``dead_s``, and ``measured``: when and how), which the
-                  predictive control law steers by; ``fc``, optional, the crystal's
+                  predictive steering algorithm steers by; ``fc``, optional, the crystal's
                   answer to FC with the unit at GA 1 (``lag_s``, ``dead_s``,
                   ``ps_per_step``: theta's rate per fine step, and ``measured``), which
-                  the law steers by when it sets FC (``m4c_link --steer-actuator fc``;
+                  the algorithm steers by when it sets FC (``m4c_link --steer-actuator fc``;
                   measured with experiments/m5_fll_off.py).  ``rf_clock.fs725.check_config``
                   checks a unit against it (docs/ABI.md 11.13)
 
