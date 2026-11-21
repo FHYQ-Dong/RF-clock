@@ -39,7 +39,9 @@ FS725 so that theta goes to theta0, through FC with the predictive algorithm on 
 schedule through the same path instead, B keeping its queue entries, for the FS725's response
 (experiments/m5_fc_response.py).  ``steer-pl`` and ``fc-steps-pl`` (rf-clock 2.5.0.0 on both
 boards) do the same in B's PL (P13, docs/ABI.md 4.16), which sends FC on its own serial line
-(P12): B's FS725 on the TTL-to-RS-232 module on PMOD1 instead of its USB adapter.  B's FS725 is the one its board config names, on the port
+(P12): B's FS725 on the TTL-to-RS-232 module on PMOD1 instead of its USB adapter.  ``steer-pl-20ms``
+(rf-clock 2.5.0.1 on both boards) steers in B's PL on 0.02 s steps with theta over their last 5
+slots (``FC_STEP_SETTINGS[0.02]``, results/pl-best-20261117).  B's FS725 is the one its board config names, on the port
 the config records (``m4c_link --fs725``).  ``--scope`` logs the two FS725s' 10 MHz on the
 HDO9404-MS for the length of the run (experiments/m5_hdo_phase.py, run as root
 through sudo), with ``--scope-pps`` the two 1PPS too, with ``--scope-out-pps`` the two
@@ -88,7 +90,8 @@ READY_S = 120
 READY = "ready: waiting for the start time in"  # rf_clock.checks.m4c_link.READY
 MIN_VERSION = (2, 3, 0, 3)  # the first rf-clock whose m4c_link takes --start-file
 SCENARIO_VERSION = {"fc-steps": (2, 4, 0, 1),  # scenarios that need a later one (m4c_link --steer-mode steps)
-                    "steer-pl": (2, 5, 0, 0), "fc-steps-pl": (2, 5, 0, 0)}  # --steer-actuator pl
+                    "steer-pl": (2, 5, 0, 0), "fc-steps-pl": (2, 5, 0, 0),  # --steer-actuator pl
+                    "steer-pl-20ms": (2, 5, 0, 1)}  # FC_STEP_SETTINGS[0.02]
 LINK = Path(__file__).parents[1] / "links" / "887329260072A_8873292600AB.json"  # theta0 by wiring
 SCENARIOS = {  # scenario: (node A's arguments, node B's)
     "link": ("", ""),
@@ -117,6 +120,9 @@ SCENARIOS = {  # scenario: (node A's arguments, node B's)
                                  "--steer-step 0.1 --steer-late-slots 25 --steer-actuator pl"),
     "fc-steps-pl": ("--no-entries", "--acquire --fs725 pl --steer-target-ns {target} --steer-mode steps "
                                     "--steer-step 0.1 --steer-late-slots 25 --steer-actuator pl"),
+    # B's PL on 0.02 s steps, theta over their last 10 ms (rf-clock 2.5.0.1, results/pl-best-20261117)
+    "steer-pl-20ms": ("--no-entries", "--no-entries --acquire --fs725 pl --steer-target-ns {target} "
+                                      "--steer-mode predictive --steer-step 0.02 --steer-late-slots 5 --steer-actuator pl"),
 }
 
 
@@ -265,7 +271,7 @@ def main() -> None:
     link = json.loads(LINK.read_text(encoding="utf-8"))
     wiring = args.wiring or link["current"]
     target = args.target_ns if args.target_ns is not None else link["wirings"][wiring]["theta0_ns"]
-    if args.scenario in ("steer", "steer-pl"):
+    if args.scenario in ("steer", "steer-pl", "steer-pl-20ms"):
         print(f"steering to {target * 1000:+.1f} ps"
               + ("" if args.target_ns is not None else f", theta0 of wiring {wiring} ({LINK.name})"), flush=True)
     for role, ip in BOARDS.items():

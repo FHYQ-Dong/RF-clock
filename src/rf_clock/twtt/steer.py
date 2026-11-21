@@ -306,8 +306,24 @@ AR40_STEP_01 = (0.3493, 0.4318, 0.2519, 0.0724, -0.001, -0.0456, -0.05, -0.047, 
                 -0.0204, -0.0002, 0.0018, 0.004, 0.0113, -0.0014, 0.0057, -0.0149, -0.0007, 0.0021,
                 -0.0126, -0.0041, -0.0036, -0.004, 0.0231, 0.0197, -0.0042, 0.0039, -0.019, -0.0016,
                 0.0122, -0.0109, 0.0011, -0.0066, -0.0004, 0.0035, 0.0105, 0.0131, 0.0206, -0.0201)
+# Since 2.5.0.1, steps of 0.02 s for the steering in the PL (P13), theta over the last 5 slots (10 ms)
+# of each 10-slot step: the AR model fitted on 0.02 s steps of the same record, 3 changes over 50 steps
+# (1 s), a cost 100 times lower, and the model's lag 1.1 times the board config's with no dead time
+# added.  In replay on B's GA 1 record and on R1, with B's response as measured from the PL (a lag of
+# 1.006 s after 27.5 ms), these left theta - theta0 at 0.65 and 0.55 ps rms against 1.69 and 1.52 ps for
+# the settings of 0.1 s steps, and at most 0.84 and 0.71 ps in the six departures.  They swing FC by up
+# to about 570 fine steps a step and over its whole room, which the bench has not yet tried
+# (results/pl-best-20261117).  ``model_lag`` and ``model_dead_s`` stand in for FC_MODEL_LAG and
+# FC_MODEL_DEAD_S where a step's settings give them.
+AR40_STEP_002 = (-0.4848, -0.2084, -0.0578, 0.0378, 0.0965, 0.1257, 0.153, 0.1733, 0.1748, 0.1547,
+                 0.1558, 0.1561, 0.1444, 0.1247, 0.1143, 0.1011, 0.078, 0.0613, 0.0513, 0.0369,
+                 0.0198, 0.0204, 0.0128, 0.0058, 0.0138, -0.0015, -0.0261, -0.0295, -0.0277, -0.0402,
+                 -0.0347, -0.0229, -0.039, -0.0411, -0.0419, -0.0281, -0.0284, -0.0262, -0.0256, -0.0175)
 FC_STEP_SETTINGS: dict[float, dict[str, Any]] = {
-    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=3, lam=0.0003, command_s=0.03, max_step=1000, max_offset=1000)}
+    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=3, lam=0.0003, command_s=0.03, max_step=1000, max_offset=1000),
+    0.02: dict(ar=AR40_STEP_002, horizon=50, moves=3, lam=3e-6, command_s=0.0002, max_step=1000, max_offset=1000,
+               model_dead_s=0.0)}
+FC_PL_ONLY_STEPS = (0.02,)  # too short for the ARM, whose writes leave 17-61 ms after their step's end
 FC_MODEL_LAG = 1.1
 FC_MODEL_DEAD_S = 0.02
 FC_TOLERANCE = 3  # fine steps between the FC last written and FC? (the slow loop's pull in a step)
@@ -661,8 +677,8 @@ def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.
     """A ``PredictiveSteering`` that sets FC (1000 coarse + fine steps, from ``fc0``) instead of
     SF, B's unit at GA 1 (``FrequencyControl`` with ``actuator="fc"``).  ``plant``: the board
     config's ``fs725["fc"]``, the crystal's answer to FC (``lag_s``, ``dead_s``, ``ps_per_step``);
-    the algorithm's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``) unless ``lag_s`` and
-    ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2.
+    the algorithm's model is slower (``FC_MODEL_LAG``, ``FC_MODEL_DEAD_S``, or the step's own
+    ``model_lag``, ``model_dead_s``) unless ``lag_s`` and ``dead_s`` are given; ``kwargs`` override ``FC_STEP_SETTINGS``, ``lam`` still per (ps/s)^2.
     ``command_s`` (since 2.5) is when each command leaves after its step's end: the PL's
     STEER_WRITE_DELAY for the steering in the PL (P13), the setting's 0.03 s otherwise."""
     if step_s not in FC_STEP_SETTINGS:
@@ -670,13 +686,15 @@ def predictive_fc(target_ps: float, fc0: int, plant: dict, *, late_s: float = 0.
     settings = dict(FC_STEP_SETTINGS[step_s])
     command_s = kwargs.pop("command_s", settings.pop("command_s"))
     settings.pop("command_s", None)
+    model_lag = settings.pop("model_lag", FC_MODEL_LAG)
+    model_dead_s = settings.pop("model_dead_s", FC_MODEL_DEAD_S)
     settings.update(kwargs)
     gain = float(plant["ps_per_step"])
     settings["lam"] = settings["lam"] * gain ** 2
     settings["limits"] = (1000 * FC_HIGH[0] + FC_LOW[0], 1000 * FC_HIGH[1] + FC_LOW[1])
     window = (step_s - late_s, step_s) if late_s else (0.0, step_s)
-    model = LoopModel.crystal(lag_s if lag_s is not None else plant["lag_s"] * FC_MODEL_LAG,
-                              dead_s if dead_s is not None else plant["dead_s"] + FC_MODEL_DEAD_S, gain,
+    model = LoopModel.crystal(lag_s if lag_s is not None else plant["lag_s"] * model_lag,
+                              dead_s if dead_s is not None else plant["dead_s"] + model_dead_s, gain,
                               window=window, command_s=command_s, step_s=step_s)
     return PredictiveSteering(target_ps=target_ps, sf0=fc0, model=model, **settings)
 
@@ -714,9 +732,10 @@ def check_fc(unit: Any, fc: int) -> None:
         check_fc_reply(command, unit.query(command), fc)
 
 
-def check_fc_reply(command: str, reply: str, fc: int) -> None:
+def check_fc_reply(command: str, reply: str, fc: int | Sequence[int]) -> None:
     """One of ``check_fc``'s checks, on the reply to ``command`` (one of ``FC_CHECKS``) sent
-    right after FC ``fc`` was written."""
+    right after FC ``fc`` was written.  ``fc`` may list the FCs written from the query on, any of
+    which the reply may show (``FCWatch`` with the PL's serial line)."""
     if command in ("PL?", "GA?"):
         try:
             value = int(reply)
@@ -729,8 +748,10 @@ def check_fc_reply(command: str, reply: str, fc: int) -> None:
                                 "steering stops")
     elif command == "FC?":
         high, low = parse_fc(reply)
-        if abs(1000 * high + low - fc) > FC_TOLERANCE:
-            raise SteeringError(f"the FS725's FC is {high},{low} ({1000 * high + low}), not the {fc} last written: "
+        written = [fc] if isinstance(fc, int) else list(fc)
+        if all(abs(1000 * high + low - f) > FC_TOLERANCE for f in written):
+            shown = written[0] if len(written) == 1 else written
+            raise SteeringError(f"the FS725's FC is {high},{low} ({1000 * high + low}), not the {shown} last written: "
                                 "steering stops")
     elif command == "ST?":
         if not Status.parse(reply).rb_locked:
@@ -745,17 +766,32 @@ class FCWatch:
     step's write without waiting, so that no write waits for the unit.  The blocking ``check_fc``
     once a second held the next step's write back by about 100 ms and the one after by about
     35 ms (results/fc-steering-20261112).  A reply that has not come after ``max_wait_steps``
-    steps stops the steering."""
+    steps stops the steering.  With ``every`` above 1 (since 2.5.0.1, steps shorter than 0.1 s) only
+    every ``every``-th write sends a query or reads a reply, and ``max_wait_steps`` counts those
+    writes, so that the unit gets no more queries a second than on 0.1 s steps.  On the PL's serial
+    line (P12) a query goes out in the first gap between commands, which on 0.02 s steps can come after
+    the next step's command, and the FS725 applies a command only at points of a cycle of its own, so a
+    reply to FC? may show the FC written before the query or any FC written from it until the reply
+    is read (2.5.0.1, results/pl-best-20261117 section 4.7)."""
 
-    def __init__(self, unit: Any, max_wait_steps: int = 5) -> None:
+    def __init__(self, unit: Any, max_wait_steps: int = 5, every: int = 1) -> None:
         self.unit = unit
         self.max_wait_steps = max_wait_steps
+        self.every = every
+        self.writes = 0
+        self.last: int | None = None  # the FC of the write before
         self.turn = 0
-        self.pending: tuple[str, int] | None = None  # the query out, and the FC written just before it
+        self.pending: tuple[str, list[int]] | None = None  # the query out, and the FCs written since just before it
         self.waited = 0
 
     def after_write(self, fc: int) -> None:
         """Called right after each step's write of FC ``fc``."""
+        self.writes += 1
+        before, self.last = self.last, fc
+        if self.pending is not None and self.pending[1][-1] != fc:
+            self.pending[1].append(fc)  # the query may have left after this write
+        if (self.writes - 1) % self.every:
+            return
         if self.pending is not None:
             reply = self.unit.reply()
             if reply is None:
@@ -767,7 +803,7 @@ class FCWatch:
             check_fc_reply(self.pending[0], reply, self.pending[1])
         command = FC_CHECKS[self.turn % len(FC_CHECKS)]
         self.turn += 1
-        self.pending = (self.unit.send_query(command), fc)
+        self.pending = (self.unit.send_query(command), [fc] if before is None or before == fc else [before, fc])
         self.waited = 0
 
 

@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from rf_clock.twtt.steer import (AR4, AR20_STEP_02, AR40_STEP_01, FC_MODEL_DEAD_S, FC_MODEL_LAG, ClockFilter,
+from rf_clock.twtt.steer import (AR4, AR20_STEP_02, AR40_STEP_01, AR40_STEP_002, FC_MODEL_DEAD_S, FC_MODEL_LAG, ClockFilter,
                                   FCSteps, FCWatch, LoopModel, PredictiveSteering, Steering, SteeringError, check_unit, filter_for,
                                   fit_frequency_ar, fit_loop, fit_sf_response, follow, lag_phase, lag_response,
                                   loop_response, predictive_fc, predictive_for)
@@ -369,6 +369,15 @@ def test_predictive_fc_slows_the_model_and_scales_the_cost():
         predictive_fc(0.0, 0, FC_PLANT, step_s=0.2)
 
 
+def test_predictive_fc_on_0_02_s_steps_keeps_the_dead_time_as_given():
+    # FC_STEP_SETTINGS[0.02] (2.5.0.1): the model's lag 1.1 times the plant's, no dead time added
+    law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.01, step_s=0.02, command_s=0.0002)
+    assert tuple(law.ar) == AR40_STEP_002 and (law.horizon, law.moves) == (50, 3)
+    assert law.lam == pytest.approx(3e-6 * 0.849 ** 2)
+    model = LoopModel.crystal(0.994 * FC_MODEL_LAG, 0.0235, 0.849, window=(0.01, 0.02), command_s=0.0002, step_s=0.02)
+    assert np.allclose(law.model.answer(np.arange(300)), model.answer(np.arange(300)))
+
+
 def test_predictive_fc_holds_a_wandering_pair_through_a_plant_off_its_model():
     # the 6 s resonance of wandering_pair on a 0.1 s grid, its second-to-second change about 14 ps as
     # theta's on the bench (Allan deviation about 1.5e-11 at 1 s); the FS725's response 30 ms later and
@@ -491,6 +500,23 @@ def test_the_fc_watch_checks_the_unit_one_query_a_step_without_waiting():
     with pytest.raises(SteeringError, match="no reply to PL"):
         for _ in range(8):
             watch.after_write(1_676_250)
+    every = WatchedUnit(good)  # on 0.02 s steps, one query every 5 writes
+    watch = FCWatch(every, every=5)
+    for _ in range(11):
+        watch.after_write(1_676_250)
+    assert every.sent == ["PL?", "GA?", "FC?"]
+    # FC changing every write (0.02 s steps through P12): the reply to FC?, sent after the second write
+    # and read after the third, may show the FC before the query, at it or after it
+    for shown in ("1675,750", "1676,250", "1676,750"):
+        watch = FCWatch(WatchedUnit({**good, "FC?": shown}), every=1)
+        watch.turn = 1  # GA? after the first write, FC? after the second
+        for fc in (1_675_750, 1_676_250, 1_676_750):
+            watch.after_write(fc)
+    watch = FCWatch(WatchedUnit({**good, "FC?": "1677,250"}), every=1)
+    watch.turn = 1
+    with pytest.raises(SteeringError, match="not the"):
+        for fc in (1_675_750, 1_676_250, 1_676_750):
+            watch.after_write(fc)
 
 
 def test_fc_steps_go_up_back_down_and_back_after_the_settling():

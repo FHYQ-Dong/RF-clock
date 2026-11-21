@@ -54,6 +54,12 @@ def test_the_tables_fit_the_pl():
         assert max(abs(v) for v in values) < 1 << 47
     assert t.K[t.L] == pytest.approx(t.k_inf, rel=1e-9)  # K is flat by the table's end
     assert t.h[t.L] == pytest.approx(t.rho, rel=1e-9)
+    # 0.02 s steps (2.5.0.1): 40 s of changes and the 60 s mean in 2000 and 3000 entries, within 4094
+    fast = steer.predictive_fc(-21.5, 1_677_000, PLANT, late_s=0.01, step_s=0.02, command_s=0.0002)
+    t = pm.tables(fast, low0=2000, lo=1500, hi=2500)
+    assert (t.L, t.n, t.p) == (2000, 3000, 40) and max(t.L, t.n) <= 4096 - 2
+    for values in (t.h, t.K, t.alpha, t.ar, t.gamma, t.mean2, [t.rho, t.k_inf, t.r0, t.target_q16]):
+        assert max(abs(v) for v in values) < 1 << 47
 
 
 def test_the_pl_steers_as_the_float_algorithm():

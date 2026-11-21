@@ -226,7 +226,7 @@ def io_figure(out: Path, after_s: float = 600.0, span_s: float = 8.5) -> None:
     model = model - np.polyval(np.polyfit(t - up, model, 1), t - up)
     fig, ax = plt.subplots(2, 1, figsize=(10, 6.2), sharex=True)
     inside = (w >= t0) & (w < t1)
-    before = level[w < t0][-1]
+    before = level[w < t0][-1] if (w < t0).any() else 0.0  # the first jump up of a short run: no change before it
     ax[0].step(np.concatenate([[t0], w[inside], [t1]]) - up, np.concatenate([[before], level[inside], [level[inside][-1]]]),
                where="post", color="C0", lw=1.6)
     ax[0].set(ylabel="FC less its value\nbefore the steps (fine steps)", title="The input, FC as written (each jump at the tick read right after its write)")

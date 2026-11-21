@@ -498,6 +498,9 @@ def main() -> None:
                                                     or args.steer_step not in steer.FC_STEP_SETTINGS or args.sf_step):
             raise SystemExit(f"--steer-actuator {args.steer_actuator} is for the predictive algorithm or FC steps with "
                              f"--steer-target-ns, on steps of {sorted(steer.FC_STEP_SETTINGS)} s, without --sf-step")
+        if args.steer_actuator == "fc" and args.steer_step in steer.FC_PL_ONLY_STEPS:
+            raise SystemExit(f"steps of {args.steer_step} s are for the steering in the PL (--steer-actuator pl): "
+                             "the ARM's writes leave 17-61 ms after their step's end")
         if args.steer_mode == "steps" and args.steer_actuator not in ("fc", "pl"):
             raise SystemExit("--steer-mode steps steps FC: it needs --steer-actuator fc or pl")
         if args.steer_actuator == "pl" and (args.fs725 != "pl" or args.steer_late_slots <= 0):

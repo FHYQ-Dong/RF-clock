@@ -109,7 +109,7 @@ class FrequencyControl:
             if self.fc:
                 gain = self.unit.gain()
                 self.sf0 = self.sf = self._start_fc(gain)
-                self.watch = steer.FCWatch(self.unit)
+                self.watch = steer.FCWatch(self.unit, every=max(1, round(0.1 / step_s)))  # 10 queries a second
                 self.steering: Law | None = law(self.sf0, gain) if law is not None else None
                 room = min(self.sf0 - 1000 * self.fc_high - FC_LOW[0], FC_LOW[1] - (self.sf0 - 1000 * self.fc_high))
                 if self.steering is not None and hasattr(self.steering, "max_offset"):
