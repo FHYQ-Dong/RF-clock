@@ -295,13 +295,19 @@ STEP_DT = 0.02  # s, the grid of the loop's step response
 # time 23.5 ms after the write), these leave theta 2.73 ps rms in replay on B's GA 1 record and at most
 # 3.53 ps with the FS725 30 ms later, 10 % faster or slower or 15 % harder or softer, and held theta to
 # 2.77-2.88 ps on the bench against 4.44-4.94 ps for the settings before (lag x 1.25, dead time + 0.1 s,
-# lam 0.08 or 0.04, 4 or 3 changes; results/fc-response-20261112)
+# lam 0.08 or 0.04, 4 or 3 changes; results/fc-response-20261112).  Since 2.4.0.2 lam is 0.0003 instead
+# of 0.01.  FrequencyControl lowers max_offset to the fine DAC's room on either side of FC's start, at
+# least 500 fine steps.  With FC kept in that room, the replays on B's GA 1 record neither oscillated
+# nor ran away at any cost down to 0.00001, also in the six departures above, and 0.0003 left theta -
+# theta0 at 1.93 ps rms (2.50 ps in the worst departure).  On the bench 0.0003 held theta - theta0 to
+# 1.88 ps rms against 2.81-2.92 ps at 0.01, with FC within 500 fine steps of its start from 300 s on,
+# while 0.0001 needed up to 686 (results/fc-response-20261112 sections 8 and 9)
 AR40_STEP_01 = (0.3493, 0.4318, 0.2519, 0.0724, -0.001, -0.0456, -0.05, -0.047, -0.0346, -0.0154,
                 -0.0204, -0.0002, 0.0018, 0.004, 0.0113, -0.0014, 0.0057, -0.0149, -0.0007, 0.0021,
                 -0.0126, -0.0041, -0.0036, -0.004, 0.0231, 0.0197, -0.0042, 0.0039, -0.019, -0.0016,
                 0.0122, -0.0109, 0.0011, -0.0066, -0.0004, 0.0035, 0.0105, 0.0131, 0.0206, -0.0201)
 FC_STEP_SETTINGS: dict[float, dict[str, Any]] = {
-    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=3, lam=0.01, command_s=0.03, max_step=1000, max_offset=1000)}
+    0.1: dict(ar=AR40_STEP_01, horizon=30, moves=3, lam=0.0003, command_s=0.03, max_step=1000, max_offset=1000)}
 FC_MODEL_LAG = 1.1
 FC_MODEL_DEAD_S = 0.02
 FC_TOLERANCE = 3  # fine steps between the FC last written and FC? (the slow loop's pull in a step)

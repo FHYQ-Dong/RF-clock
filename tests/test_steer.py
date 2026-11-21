@@ -357,7 +357,7 @@ def test_the_crystal_model_answers_as_the_rc():
 def test_predictive_fc_slows_the_model_and_scales_the_cost():
     law = predictive_fc(0.0, 1_676_250, FC_PLANT, late_s=0.05)
     assert law.step_s == 0.1 and tuple(law.ar) == AR40_STEP_01 and (law.horizon, law.moves) == (30, 3)
-    assert law.lam == pytest.approx(0.01 * 0.849 ** 2) and (law.max_step, law.max_offset) == (1000, 1000)
+    assert law.lam == pytest.approx(0.0003 * 0.849 ** 2) and (law.max_step, law.max_offset) == (1000, 1000)
     slow = LoopModel.crystal(0.994 * FC_MODEL_LAG, 0.0235 + FC_MODEL_DEAD_S, 0.849, window=(0.05, 0.1), command_s=0.03,
                              step_s=0.1)
     assert np.allclose(law.model.answer(np.arange(60)), slow.answer(np.arange(60)))

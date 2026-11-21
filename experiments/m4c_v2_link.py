@@ -41,7 +41,9 @@ schedule through the same path instead, B keeping its queue entries, for the FS7
 the config records (``m4c_link --fs725``).  ``--scope`` logs the two FS725s' 10 MHz on the
 HDO9404-MS for the length of the run (experiments/m5_hdo_phase.py, run as root
 through sudo), with ``--scope-pps`` the two 1PPS too, with ``--scope-out-pps`` the two
-output PPS instead (C3 A's DAC_B, C4 B's; pass ``--node-args "--pps-out 20"``).  ``--a-args`` / ``--b-args`` go to
+output PPS instead (C3 A's DAC_B, C4 B's; pass ``--node-args "--pps-out 20"``).  ``--scope-tap`` uses the
+scope for B's RS-232 command line instead (experiments/m5_serial_tap.py, with the line on C1 and B's output PPS on
+C4 as the trigger, pass ``--node-args "--pps-out 20"``), not with ``--scope``.  ``--a-args`` / ``--b-args`` go to
 one node only: since 2026-11-04 A times its Schmitt-trigger PPS copy (``--a-args
 --pps-trig``), whose edge lies clear of A's sampling edge where the comparator's did not.
 
@@ -244,6 +246,8 @@ def main() -> None:
     parser.add_argument("--wiring", default=None, help="the wiring of links/ (default: its current one)")
     parser.add_argument("--scope", action="store_true", help="log the two 10 MHz on the HDO9404-MS")
     parser.add_argument("--scope-pps", action="store_true", help="with --scope: also the two 1PPS on C3 (B) and C4 (A)")
+    parser.add_argument("--scope-tap", action="store_true",
+                        help="B's RS-232 command line on C1, B's output PPS on C4 (experiments/m5_serial_tap.py)")
     parser.add_argument("--scope-out-pps", action="store_true",
                         help="with --scope: the two output PPS on C3 (A) and C4 (B) instead")
     parser.add_argument("--a-args", default="", help="extra arguments for node A only (e.g. --pps-trig)")
@@ -277,7 +281,11 @@ def main() -> None:
     give_times(start_at, stop_at)
     print(f"both nodes ready after {ready_s:.1f} s; start at {start_at}", flush=True)
     scope = None
-    if args.scope:
+    if args.scope_tap:
+        scope = subprocess.Popen(["sudo", "-n", sys.executable, str(Path(__file__).with_name("m5_serial_tap.py")),
+                                  "--seconds", str(stop_at - time.time() + 5), "--out", str(out / "tap.jsonl")],
+                                 stdout=open(out / "tap.out", "w"), stderr=subprocess.STDOUT)
+    elif args.scope:
         scope = subprocess.Popen(["sudo", "-n", sys.executable, str(Path(__file__).with_name("m5_hdo_phase.py")),
                                   "--seconds", str(stop_at - time.time() + 5), "--out", str(out / "hdo.jsonl")]
                                  + (["--out-pps2"] if args.scope_out_pps else ["--pps"] if args.scope_pps else []),
@@ -294,7 +302,7 @@ def main() -> None:
         try:
             scope.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            subprocess.run(["sudo", "-n", "pkill", "-TERM", "-f", "^" + sys.executable + " .*m5_hdo_phase[.]py"])
+            subprocess.run(["sudo", "-n", "pkill", "-TERM", "-f", "^" + sys.executable + " .*m5_(hdo_phase|serial_tap)[.]py"])
     summary = {}
     for role, ip in BOARDS.items():
         log = fetch(ip, role, out)
